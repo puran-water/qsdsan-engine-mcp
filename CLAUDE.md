@@ -1,132 +1,166 @@
-# QSDsan Engine MCP - Universal Biological Wastewater Simulation
+# QSDsan Engine MCP - Development Context
 
-## Overview
+## Plan Document
+**Path:** `/home/hvksh/.claude/plans/idempotent-napping-hoare.md`
 
-Universal simulation engine for biological wastewater treatment using QSDsan.
-Supports both anaerobic (mADM1) and aerobic (ASM2d) models with explicit state passing.
+## Project Goal
+Refactor `anaerobic-design-mcp` into a universal `qsdsan-engine-mcp` supporting both anaerobic (mADM1) and aerobic (ASM2d) treatment simulation with ~6-8 stateless tools.
 
-## Architecture
+---
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     qsdsan-engine-mcp                           │
-├─────────────────────────────────────────────────────────────────┤
-│  CLI Adapter (cli.py)           │  MCP Adapter (server.py)      │
-│  ─────────────                  │  ───────────                  │
-│  qsdsan-engine simulate \       │  simulate_system tool         │
-│    --template mle_mbr_asm2d \   │  (FastMCP, stdio/HTTP/SSE)    │
-│    --influent state.json \      │                               │
-│    --json-out result.json       │                               │
-└─────────────────────────────────┴───────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                        Engine Core                              │
-│  - core/plant_state.py: PlantState dataclass                    │
-│  - core/model_registry.py: Component management                 │
-│  - templates/anaerobic/: mADM1 flowsheet builders               │
-│  - templates/aerobic/: ASM2d MBR flowsheet builders             │
-└─────────────────────────────────────────────────────────────────┘
-```
+## Completed Work
 
-## Tools (6 Core + 3 Utility)
+### Phase 1A: Foundation ✅
+- Created `qsdsan-engine-mcp` repository
+- Copied core utilities from `anaerobic-design-mcp`
+- Created `core/plant_state.py` with PlantState dataclass
+- Created `core/model_registry.py` for component management
+- Created dual adapters: `server.py` (MCP) and `cli.py` (typer)
 
-| Tool | Purpose | Background Job? |
-|------|---------|-----------------|
-| `simulate_system` | Run QSDsan simulation to steady state | **YES** |
-| `get_job_status` | Check job progress | No |
-| `get_job_results` | Retrieve simulation results | No |
-| `list_templates` | List available flowsheet templates | No |
-| `validate_state` | Validate PlantState against model | No |
-| `convert_state` | ASM2d ↔ mADM1 state conversion | **YES** |
-| `list_jobs` | List all background jobs | No |
-| `terminate_job` | Stop a running job | No |
-| `get_timeseries_data` | Get time series (large, separate call) | No |
+### Phase 1B: Port Anaerobic Simulation ✅
+- Ported mADM1 model files to `models/`:
+  - `models/madm1.py` - mADM1 63-component process model
+  - `models/reactors.py` - AnaerobicCSTRmADM1 (4 biogas species)
+  - `models/sulfur_kinetics.py` - SRB processes and H2S inhibition
+  - `models/components.py` - mADM1 component creation
+  - `models/thermodynamics.py` - Thermodynamic calculations
+- Created `templates/anaerobic/cstr.py` - Template builder for mADM1 CSTR
+- Created `utils/simulate_madm1.py` - Simulation wrapper with convergence
+- Created `utils/stream_analysis.py` - Stream analysis functions
+- Created `utils/inoculum_generator.py` - CSTR startup inoculum scaling
+- **Codex gate review: APPROVED**
 
-## CLI Usage
+### Phase 1B Cleanup (per Codex review) ✅
+- Fixed SRB biomass reporting to use disaggregated components (X_hSRB, X_aSRB, X_pSRB, X_c4SRB)
+- Fixed FeCl3 dosing to use S_Fe3 instead of S_Fe
+- Updated outdated X_SRB comments in components.py and stream_analysis.py
+- Fixed undefined X_SRB variable bug in stream_analysis.py:646
 
-```bash
-# List available templates
-python cli.py templates --json-out
+---
 
-# Validate a state file
-python cli.py validate -s influent.json -m mADM1 --json-out
+## Next Phase: 1C - Add Aerobic MBR Templates
 
-# Run simulation
-python cli.py simulate -t anaerobic_cstr_madm1 -i influent.json -d 30 --json-out
+### Tasks
+1. Create `models/asm2d.py` component loader
+2. Create `templates/aerobic/mle_mbr.py` (MLE-MBR flowsheet)
+3. Create `templates/aerobic/a2o_mbr.py` (A2O-MBR with EBPR)
+4. Create `templates/aerobic/ao_mbr.py` (Simple A/O-MBR)
+5. Register aerobic templates in registry
 
-# Convert between models
-python cli.py convert -i was.json -f ASM2d -t mADM1 -o digester_feed.json
-```
+---
 
-## PlantState Schema
+## Reference Documents
 
+### Aerobic MBR Reference Implementation
+**Path:** `/tmp/qsdsan-aerobic-simulation-example/Pune_Nanded_WWTP_updated.py`
+
+Key patterns from Pune_Nanded:
 ```python
-@dataclass
-class PlantState:
-    model_type: ModelType        # "mADM1", "ASM2d", etc.
-    flow_m3_d: float             # m³/day
-    temperature_K: float         # Kelvin
-    concentrations: Dict[str, float]  # Component → kg/m³
-    reactor_config: Dict[str, Any]    # V_liq, HRT, etc.
-    metadata: Optional[Dict]          # Provenance
+from qsdsan import processes as pc, sanunits as su
+
+# Components
+cmps = pc.create_asm2d_cmps(set_thermo=False)
+qs.set_thermo(cmps)
+
+# Process model
+asm2d = pc.ASM2d(**default_asm2d_kwargs)
+
+# Anoxic zone (no aeration)
+A1 = su.CSTR('A1', ins=[...], V_max=V_an, aeration=None, DO_ID=None, suspended_growth_model=asm2d)
+
+# Aerobic zone (with aeration)
+O1 = su.CSTR('O1', ins=[A1-0], V_max=V_ae, aeration=DO_ae, DO_ID='S_O2', suspended_growth_model=asm2d)
+
+# MBR separation
+MBR = su.CompletelyMixedMBR('MBR', ins=O2-0, outs=('effluent', 'retain'),
+                             V_max=V_mbr, solids_capture_rate=0.999,
+                             pumped_flow=Q_was + Q_ras,
+                             aeration=DO_mbr, DO_ID='S_O2',
+                             suspended_growth_model=asm2d)
+
+# System
+sys = qs.System('Pune_MBR', path=(SP1, TA, A1, A2, O1, O2, MBR, SP2, CF), recycle=[RAS, recycle])
+sys.simulate(t_span=(0,t), method='RK23')
 ```
 
-## Supported Models
+### ASM2d Default Kinetic Parameters
+Located in Pune_Nanded lines 124-146 (`default_asm2d_kwargs`)
 
-| Model | Components | Description |
-|-------|------------|-------------|
-| mADM1 | 63 | Modified ADM1 with P/S/Fe extensions, 4 biogas species |
-| ADM1 | 27 | Standard ADM1 (upstream QSDsan) |
-| ASM2d | 17 | Activated Sludge Model 2d |
-| mASM2d | ~20 | Modified ASM2d with extensions |
-| ASM1 | 13 | Activated Sludge Model 1 |
+### Domestic Wastewater Composition (ASM2d)
+Located in Pune_Nanded lines 107-122 (`domestic_ww`)
 
-## Available Templates
+---
 
-### Anaerobic
-- `anaerobic_cstr_madm1` - Single CSTR with mADM1 (✅ available)
+## Key Technical Notes
 
-### Aerobic (MBR-based)
-- `mle_mbr_asm2d` - MLE-MBR (⏳ planned)
-- `a2o_mbr_asm2d` - A2O-MBR with EBPR (⏳ planned)
-- `ao_mbr_asm2d` - Simple A/O-MBR (⏳ planned)
+### mADM1 Component IDs
+- Disaggregated SRB: `X_hSRB`, `X_aSRB`, `X_pSRB`, `X_c4SRB` (NOT lumped `X_SRB`)
+- Ferric iron: `S_Fe3` (NOT generic `S_Fe`)
+- Total: 63 components (62 state variables + H2O)
 
-## Background Job Pattern
-
-Heavy operations run as background jobs:
-
+### Simulation API (Anaerobic)
 ```python
-# Start job
-result = await simulate_system(template="...", influent_json="...")
-job_id = result["job_id"]
+from utils.simulate_madm1 import run_simulation_sulfur
 
-# Monitor
-status = await get_job_status(job_id)
-# {"status": "running", "elapsed_time_seconds": 45}
-
-# Get results when complete
-results = await get_job_results(job_id)
+sys, inf, eff, gas, converged_at, status, time_series = run_simulation_sulfur(
+    basis={"Q": flow_m3_d, "Temp": temperature_K},
+    adm1_state_62=concentrations,
+    HRT=HRT_days,
+    check_interval=2,
+    tolerance=1e-3,
+)
 ```
 
-## Development
+### Template API
+```python
+from templates.anaerobic.cstr import build_and_run
 
-```bash
-# Install dependencies
-pip install -e ".[cli,dev]"
-
-# Run CLI
-python cli.py --help
-
-# Run MCP server
-python server.py
+result = build_and_run(
+    influent_state={"flow_m3_d": 1000, "temperature_K": 308.15, "concentrations": {...}},
+    reactor_config={"V_liq": 20000},
+)
 ```
 
-## Files to Port (from anaerobic-design-mcp)
+---
 
-Phase 1B tasks:
-- `utils/qsdsan_madm1.py` → `models/madm1.py`
-- `utils/qsdsan_reactor_madm1.py` → `models/reactors.py`
-- `utils/qsdsan_simulation_sulfur.py` → simulation engine
-- `utils/stream_analysis_sulfur.py` → result extraction
-- `utils/inoculum_generator.py` → startup helpers
+## File Structure
+
+```
+qsdsan-engine-mcp/
+├── server.py                    # MCP Adapter (FastMCP)
+├── cli.py                       # CLI Adapter (typer)
+├── core/
+│   ├── plant_state.py           # PlantState dataclass
+│   └── model_registry.py        # Model → component mapping
+├── templates/
+│   ├── anaerobic/
+│   │   └── cstr.py              # AnaerobicCSTR builder (mADM1) ✅
+│   └── aerobic/
+│       ├── __init__.py          # (empty)
+│       ├── mle_mbr.py           # MLE-MBR flowsheet (TODO)
+│       ├── a2o_mbr.py           # A2O-MBR flowsheet (TODO)
+│       └── ao_mbr.py            # A/O-MBR flowsheet (TODO)
+├── utils/
+│   ├── simulate_madm1.py        # mADM1 simulation wrapper ✅
+│   ├── stream_analysis.py       # Stream analysis functions ✅
+│   ├── inoculum_generator.py    # CSTR startup initialization ✅
+│   ├── qsdsan_loader.py         # Async component loading ✅
+│   └── path_utils.py            # WSL compatibility
+├── models/
+│   ├── madm1.py                 # mADM1 63-component ✅
+│   ├── asm2d.py                 # ASM2d wrapper (TODO)
+│   ├── reactors.py              # AnaerobicCSTRmADM1 ✅
+│   ├── sulfur_kinetics.py       # SRB processes ✅
+│   ├── components.py            # Component loader ✅
+│   └── thermodynamics.py        # Thermo calculations ✅
+└── CLAUDE.md                    # This file
+```
+
+---
+
+## Git Log (Recent)
+```
+9d0c2fd fix(phase1b): Clean up outdated X_SRB comments and fix undefined variable
+[prior]  fix(phase1b): Fix template API and mADM1 component IDs
+[prior]  feat(phase1b): Port anaerobic mADM1 simulation from anaerobic-design-mcp
+```
