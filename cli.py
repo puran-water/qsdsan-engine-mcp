@@ -37,6 +37,11 @@ from core.model_registry import (
     list_available_models,
     MODEL_REGISTRY,
 )
+from core.template_registry import (
+    list_templates as get_all_templates,
+    get_template,
+    is_template_available,
+)
 
 app = typer.Typer(
     name="qsdsan-engine",
@@ -288,31 +293,9 @@ def templates(
     Example:
         qsdsan-engine templates --json-out
     """
-    result = {
-        "anaerobic": [
-            {
-                "name": "anaerobic_cstr_madm1",
-                "description": "Single CSTR with mADM1 (63 components)",
-                "model_type": "mADM1",
-                "status": "available",
-            },
-        ],
-        "aerobic": [
-            {
-                "name": "mle_mbr_asm2d",
-                "description": "MLE-MBR with ASM2d",
-                "model_type": "ASM2d",
-                "status": "planned",
-            },
-            {
-                "name": "a2o_mbr_asm2d",
-                "description": "A2O-MBR with EBPR",
-                "model_type": "ASM2d",
-                "status": "planned",
-            },
-        ],
-        "models": list_available_models(),
-    }
+    # Use shared template registry (same as MCP server)
+    result = get_all_templates()
+    result["models"] = list_available_models()
 
     if json_out:
         print(json.dumps(result, indent=2))

@@ -1,10 +1,10 @@
 """
 QSDsan Engine MCP Server - Universal Biological Wastewater Treatment Simulation
 
-This is the MCP adapter for the QSDsan simulation engine. It provides 6 core tools
+This is the MCP adapter for the QSDsan simulation engine. It provides 9 tools
 for stateless simulation with explicit state passing.
 
-Tools:
+Core Tools:
     - simulate_system: Run QSDsan simulation to steady state (background job)
     - get_job_status: Check job progress
     - get_job_results: Retrieve simulation results
@@ -12,9 +12,14 @@ Tools:
     - validate_state: Validate PlantState against model
     - convert_state: ASM2d ↔ mADM1 state conversion (background job)
 
+Utility Tools:
+    - list_jobs: List all background jobs
+    - terminate_job: Terminate a running job
+    - get_timeseries_data: Retrieve time series from completed simulation
+
 Architecture:
     This server exposes the same engine core as the CLI adapter (cli.py).
-    Both adapters call identical functions from the engine/ module.
+    Both adapters use shared modules from core/ (model_registry, template_registry, plant_state).
 """
 
 import asyncio
@@ -33,6 +38,7 @@ from core.model_registry import (
     list_available_models,
     MODEL_REGISTRY,
 )
+from core.template_registry import list_templates as get_all_templates
 from utils.job_manager import JobManager
 from utils.path_utils import normalize_path_for_wsl, get_python_executable
 
@@ -197,47 +203,11 @@ async def list_templates() -> Dict[str, Any]:
     List available flowsheet templates for simulation.
 
     Returns:
-        Dict with anaerobic and aerobic template lists
+        Dict with anaerobic and aerobic template lists, plus supported models
     """
-    return {
-        "anaerobic": [
-            {
-                "name": "anaerobic_cstr_madm1",
-                "description": "Single CSTR with mADM1 model (63 components, 4 biogas species)",
-                "model_type": "mADM1",
-                "reactor_type": "AnaerobicCSTRmADM1",
-                "typical_hrt_days": "15-30",
-                "status": "available",
-            },
-        ],
-        "aerobic": [
-            {
-                "name": "mle_mbr_asm2d",
-                "description": "MLE-MBR (anoxic → aerobic → MBR) with ASM2d",
-                "model_type": "ASM2d",
-                "reactor_type": "CSTR + CompletelyMixedMBR",
-                "typical_hrt_hours": "5-24",
-                "status": "planned",
-            },
-            {
-                "name": "a2o_mbr_asm2d",
-                "description": "A2O-MBR (anaerobic → anoxic → aerobic → MBR) with EBPR",
-                "model_type": "ASM2d",
-                "reactor_type": "CSTR + CompletelyMixedMBR",
-                "typical_hrt_hours": "6-24",
-                "status": "planned",
-            },
-            {
-                "name": "ao_mbr_asm2d",
-                "description": "Simple A/O-MBR configuration",
-                "model_type": "ASM2d",
-                "reactor_type": "CSTR + CompletelyMixedMBR",
-                "typical_hrt_hours": "5-12",
-                "status": "planned",
-            },
-        ],
-        "models": list_available_models(),
-    }
+    templates = get_all_templates()
+    templates["models"] = list_available_models()
+    return templates
 
 
 # =============================================================================
