@@ -1,7 +1,8 @@
 """
-Stream analysis module for ADM1+sulfur simulation.
+Stream analysis module for mADM1 (Modified ADM1) simulation.
 
-Native implementation for 30-component ADM1+sulfur system (27 ADM1 + 3 sulfur).
+Native implementation for 63-component mADM1 system with P/S/Fe extensions.
+Includes disaggregated SRB biomass (X_hSRB, X_aSRB, X_pSRB, X_c4SRB).
 No dependency on parent ADM1 MCP server.
 
 Public API:
@@ -18,9 +19,9 @@ import logging
 from qsdsan.processes._adm1 import non_compet_inhibit
 from models.sulfur_kinetics import H2S_INHIBITION
 
-# Native implementations for ADM1+sulfur model (30 components)
+# Native implementations for mADM1 (Modified ADM1) model with 63 components
+# Includes P/S/Fe extensions with disaggregated SRB biomass (X_hSRB, X_aSRB, X_pSRB, X_c4SRB)
 # No dependency on ADM1 MCP server - that uses standard 27-component ADM1
-# Our model has 3 additional sulfur components: S_SO4, S_IS, X_SRB
 
 logger = logging.getLogger(__name__)
 
@@ -642,7 +643,7 @@ def calculate_sulfur_metrics(inf, eff, gas):
 
         # 4. SRB performance
         srb_performance = {
-            "biomass_conc": X_SRB if X_SRB else 0.0,  # mg COD/L
+            "biomass_conc": X_SRB_total,  # mg COD/L (sum of all SRB)
             "yield": calculate_srb_yield(inf, eff)
         }
 
