@@ -49,7 +49,7 @@ TEMPLATES: Dict[str, FlowsheetTemplate] = {
         model_type="mADM1",
         reactor_type="AnaerobicCSTRmADM1",
         category="anaerobic",
-        status=TemplateStatus.AVAILABLE,  # Phase 1B complete
+status=TemplateStatus.AVAILABLE,  # Phase 1B complete
         typical_hrt="15-30 days",
         reference="anaerobic-design-mcp",
     ),
@@ -57,7 +57,7 @@ TEMPLATES: Dict[str, FlowsheetTemplate] = {
     # Aerobic MBR templates
     "mle_mbr_asm2d": FlowsheetTemplate(
         name="mle_mbr_asm2d",
-        description="MLE-MBR (anoxic -> aerobic -> MBR) with ASM2d",
+description="MLE-MBR (anoxic -> aerobic -> MBR) with ASM2d",
         model_type="ASM2d",
         reactor_type="CSTR + CompletelyMixedMBR",
         category="aerobic",
@@ -67,7 +67,7 @@ TEMPLATES: Dict[str, FlowsheetTemplate] = {
     ),
     "a2o_mbr_asm2d": FlowsheetTemplate(
         name="a2o_mbr_asm2d",
-        description="A2O-MBR (anaerobic -> anoxic -> aerobic -> MBR) with EBPR",
+description="A2O-MBR (anaerobic -> anoxic -> aerobic -> MBR) with EBPR",
         model_type="ASM2d",
         reactor_type="CSTR + CompletelyMixedMBR",
         category="aerobic",
@@ -81,7 +81,7 @@ TEMPLATES: Dict[str, FlowsheetTemplate] = {
         model_type="ASM2d",
         reactor_type="CSTR + CompletelyMixedMBR",
         category="aerobic",
-        status=TemplateStatus.AVAILABLE,  # Phase 1C complete
+status=TemplateStatus.AVAILABLE,  # Phase 1C complete
         typical_hrt="5-12 hours",
         reference="Pune_Nanded_WWTP",
     ),

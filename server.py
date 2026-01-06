@@ -30,6 +30,11 @@ Session Management Tools:
     - get_flowsheet_session: Get details of an existing session
     - list_flowsheet_sessions: List all flowsheet sessions
 
+Utility Tools:
+    - list_jobs: List all background jobs
+    - terminate_job: Terminate a running job
+    - get_timeseries_data: Retrieve time series from completed simulation
+
 Architecture:
     This server exposes the same engine core as the CLI adapter (cli.py).
     Both adapters use shared modules from core/ (model_registry, template_registry, plant_state).

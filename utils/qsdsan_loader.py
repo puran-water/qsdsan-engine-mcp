@@ -41,7 +41,7 @@ async def _do_load_madm1():
 
         # Import from the models module (will be created in Phase 1B)
         try:
-            from models.madm1 import create_madm1_cmps
+from models.madm1 import create_madm1_cmps
             components = create_madm1_cmps()
         except ImportError:
             # Fallback for development - return None to indicate not yet implemented
@@ -72,7 +72,7 @@ async def _do_load_asm2d():
     Load ASM2d components in a background thread.
 
     Returns:
-        QSDsan Components object for ASM2d (19 components)
+QSDsan Components object for ASM2d (19 components)
     """
     def _import_asm2d():
         """Synchronous import work (runs in thread pool)."""
@@ -80,7 +80,7 @@ async def _do_load_asm2d():
         import_start = time.time()
 
         try:
-            # Use centralized ASM2d module (wraps QSDsan's pc.create_asm2d_cmps)
+# Use centralized ASM2d module (wraps QSDsan's pc.create_asm2d_cmps)
             from models.asm2d import create_asm2d_components
             components = create_asm2d_components(set_thermo=False)
         except ImportError as e:
@@ -214,7 +214,7 @@ async def wait_for_load(model_type: str, timeout: float = 30.0) -> bool:
 
 def clear_cache():
     """Clear all cached components. Useful for testing."""
-    global _components_cache, _load_tasks, _model_cache
+global _components_cache, _load_tasks, _model_cache
     _components_cache.clear()
     _load_tasks.clear()
     _model_cache.clear()
@@ -385,3 +385,9 @@ async def full_warmup(models: list = None):
 
     elapsed = time.time() - warmup_start
     logger.info(f"Full warmup completed in {elapsed:.1f}s")
+=======
+    global _components_cache, _load_tasks
+    _components_cache.clear()
+    _load_tasks.clear()
+    logger.info("Component cache cleared")
+>>>>>>> 9a5a50b (fix(phase1a): Address Codex review findings)
