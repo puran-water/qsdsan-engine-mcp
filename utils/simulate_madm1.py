@@ -195,12 +195,9 @@ def initialize_62_component_state(adm1_state_62):
     2. H2S inhibition can be calculated
     3. Sulfur mass balance is meaningful
     """
-    # Per Codex: Filter initialization against actual component set to avoid KeyError
-    # Import components here to ensure they're loaded
-    from models.components import ADM1_SULFUR_CMPS
-
-    if ADM1_SULFUR_CMPS is None:
-        raise RuntimeError("ADM1_SULFUR_CMPS not initialized. Call get_qsdsan_components() first.")
+    # Get the mADM1 component set directly - it will be initialized when simulation runs
+    # This avoids dependency on async loader initialization state
+    madm1_cmps = create_madm1_cmps(set_thermo=False)  # Don't reset thermo if already set
 
     def _to_number(val):
         """Coerce input value to float; handle [value, unit, comment] lists."""
@@ -221,9 +218,9 @@ def initialize_62_component_state(adm1_state_62):
         except Exception:
             return None
 
-    # Filter and align initialization against ADM1_SULFUR_CMPS (30 components)
-    # Per Codex: This prevents KeyError when input state has extra components (e.g., S_IP from mADM1)
-    valid_ids = ADM1_SULFUR_CMPS.IDs
+    # Filter and align initialization against mADM1 component set (63 components)
+    # This prevents KeyError when input state has extra components
+    valid_ids = madm1_cmps.IDs
     init_conds = {}
     extras = []
 
@@ -237,7 +234,7 @@ def initialize_62_component_state(adm1_state_62):
         if comp_id not in valid_ids:
             extras.append(comp_id)
     if extras:
-        logger.debug(f"Ignoring components not in ADM1_SULFUR_CMPS: {extras}")
+        logger.debug(f"Ignoring components not in mADM1 component set: {extras}")
 
     # Apply sulfur defaults (ensure SRB processes can activate)
     if init_conds.get('S_SO4', 0) < 1e-6:

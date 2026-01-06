@@ -41,8 +41,8 @@ async def _do_load_madm1():
 
         # Import from the models module (will be created in Phase 1B)
         try:
-            from models.madm1 import create_madm1_components
-            components = create_madm1_components()
+            from models.madm1 import create_madm1_cmps
+            components = create_madm1_cmps()
         except ImportError:
             # Fallback for development - return None to indicate not yet implemented
             logger.warning("mADM1 model not yet implemented, returning None")
