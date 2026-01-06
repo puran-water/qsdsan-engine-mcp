@@ -197,9 +197,7 @@ def create_madm1_cmps(set_thermo=True, ASF_L=0.31, ASF_H=1.2):
     X_HFO_LP_old.description = 'Old ' + X_HFO_LP.description
     
     X_CCM = Component.from_chemical('X_CCM', chemical='calcite', description='Calcite', **mineral_properties)
-    # X_ACC is aragonite (CaCO3 polymorph, same formula as calcite)
-    # Use direct Component creation to avoid CAS alias collision (both have CAS 471-34-1)
-    X_ACC = Component('X_ACC', formula='CaCO3', description='Aragonite', **mineral_properties)
+    X_ACC = Component.from_chemical('X_ACC', chemical='aragonite', description='Aragonite', **mineral_properties)
     X_ACP = Component.from_chemical('X_ACP', chemical='Ca3(PO4)2', description='Amorphous calcium phosphate', **mineral_properties)
     X_HAP = Component.from_chemical('X_HAP', chemical='hydroxylapatite', description='Hydroxylapatite', **mineral_properties)
     X_DCPD = Component.from_chemical('X_DCPD', chemical='CaHPO4', description='Dicalcium phosphate', **mineral_properties)
@@ -305,6 +303,9 @@ def create_madm1_cmps(set_thermo=True, ASF_L=0.31, ASF_H=1.2):
 #     }
 # =============================================================================
 
+def calc_pH():
+    pass
+
 def calc_biogas(state_arr, params, pH):
     """
     Calculate dissolved molecular H2S concentration.
@@ -348,7 +349,7 @@ def calc_biogas(state_arr, params, pH):
     # CRITICAL: Must match unit_conversion at line 819 in rhos_madm1
     # The inconsistent i_mass/chem_MW was causing H2S to be on wrong scale
     # FIX: Remove extra 1e3 factor - mass2mol_conversion already converts kg/m³ to mol/L
-    unit_conversion = mass2mol_conversion(cmps)  # kg/m³ -> mol/L (NOT kmol/m³!)
+    unit_conversion = mass2mol_conversion(cmps)  # kg/m³ → mol/L (NOT kmol/m³!)
     S_IS_M = S_IS_kg * unit_conversion[is_idx]
 
     # Codex fix #7: Get temperature-corrected Ka_h2s from params
@@ -496,7 +497,7 @@ def pcm(state_arr, params):
     params['Ka_h2s'] = Ka_h2s
 
     # Unit conversion from kg/m³ to M (mol/L)
-    # FIX: Use mass2mol_conversion which includes the ×1000 factor for m³->L
+    # FIX: Use mass2mol_conversion which includes the ×1000 factor for m³→L
     # The previous calculation was missing this factor, inflating ionic strengths by 1000×
     from qsdsan.processes import mass2mol_conversion
     unit_conversion = mass2mol_conversion(cmps)
@@ -622,6 +623,39 @@ def pcm(state_arr, params):
     activities = np.ones(13)  # Match the 13 minerals in _pKsp_base
 
     return pH, nh3, co2, activities
+
+def saturation_index(acts, Ksp):
+    """
+    Calculate saturation indices for mineral precipitation.
+
+    Computes the ratio of ionic activity product (IAP) to solubility product (Ksp)
+    for each mineral.
+
+    Parameters
+    ----------
+    acts : ndarray
+        Array of ionic activities (placeholder - currently unity)
+    Ksp : ndarray
+        Solubility products for each mineral
+
+    Returns
+    -------
+    ndarray
+        Saturation indices (IAP/Ksp) for each mineral
+
+    Notes
+    -----
+    SI > 1: supersaturated (precipitation likely)
+    SI = 1: at equilibrium
+    SI < 1: undersaturated (no precipitation)
+
+    This is a placeholder implementation that returns unity (no precipitation)
+    Future: implement proper IAP calculation from activities
+    """
+    # Placeholder: return all minerals at equilibrium (SI = 1.0)
+    # Future: compute IAP from activities (e.g., IAP_calcite = a_Ca2+ * a_CO32-)
+    # Then return IAP / Ksp
+    return np.ones_like(Ksp)
 
 
 # H2 tracking for Newton solver - required by AnaerobicCSTR
@@ -839,7 +873,7 @@ def rhos_madm1(state_arr, params, T_op, h=None):
     # ******************
     # Convert kg/m³ (model states) to mol/L
     # FIX: Remove extra 1e3 factor - mass2mol_conversion already converts kg/m³ to mol/L
-    unit_conversion = mass2mol_conversion(cmps)  # kg/m³ -> mol/L (NOT kmol/m³!)
+    unit_conversion = mass2mol_conversion(cmps)  # kg/m³ → mol/L (NOT kmol/m³!)
     if T_op == T_base:
         Ka = Kab
         KH = KHb / unit_conversion[[7,8,9,30]]
@@ -897,7 +931,7 @@ def rhos_madm1(state_arr, params, T_op, h=None):
     SIs = np.array([SI_dict.get(name, 1.0) for name in mineral_names])
 
     # CRITICAL FIX (per Codex review): Do NOT clamp SI at 1.0
-    # That prevents dissolution (SI < 1 -> negative rate)
+    # That prevents dissolution (SI < 1 → negative rate)
     # The kinetic expression must preserve sign for dissolution
     X_minerals = state_arr[47:60]
 
@@ -938,7 +972,7 @@ def rhos_madm1(state_arr, params, T_op, h=None):
     Ka_co2 = Ka[2]  # Ka for CO2/HCO3- equilibrium
     co2_dissolved = state_arr[9] * h_ion / (Ka_co2 + h_ion)  # kg/m³ (dissolved CO2 from TOTAL S_IC)
     biogas_S[2] = co2_dissolved  # Use directly - S_IC already contains supersaturation from biology
-    biogas_S[3] = Z_h2s / unit_conversion[30]  # H2S from calc_biogas: kmol/m³ -> kg/m³
+    biogas_S[3] = Z_h2s / unit_conversion[30]  # H2S from calc_biogas: kmol/m³ → kg/m³
 
     # Partial pressures in bar (R is in bar·m³/(kmol·K), state[gas_slice] is kmol/m³)
     biogas_p = R * T_op * state_arr[gas_slice]  # bar - FIXED to use dynamic slice
@@ -1037,6 +1071,21 @@ def rhos_madm1(state_arr, params, T_op, h=None):
 #%% modified ADM1 class
 _load_components = settings.get_default_chemicals
 
+def fun(q_aging_H=450.0, q_aging_L=0.1, q_Pcoprec=360, q_Pbinding=0.3, q_diss_H=36.0, q_diss_L=36.0,
+        K_Pbind=37.2, K_Pdiss=0.93):
+    '''
+    
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None.
+
+    '''
+    pass    
+    
 @chemicals_user
 class ModifiedADM1(CompiledProcesses):
     """

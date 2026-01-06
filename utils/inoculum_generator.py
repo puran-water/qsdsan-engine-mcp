@@ -4,7 +4,7 @@ Dynamic Inoculum Generator for CSTR Anaerobic Digesters
 This module generates realistic inoculum states by scaling biomass components
 based on feedstock COD. Solves the "pickling" problem where reactors initialized
 with feedstock composition (~1 kg/m³ biomass) experience catastrophic failure due
-to extreme F/M overload (100-500x normal loading).
+to extreme F/M overload (100-500× normal loading).
 
 Theory:
 - Healthy digesters: 10-15 kg/m³ biomass, F/M ratio 0.1-0.5 kg COD/kg biomass/day
@@ -121,7 +121,7 @@ def generate_inoculum_state(
     Algorithm:
     1. Calculate total feedstock COD from organics
     2. Calculate current biomass COD
-    3. Determine target biomass COD = feedstock_COD x target_ratio
+    3. Determine target biomass COD = feedstock_COD × target_ratio
     4. Scale all biomass components proportionally
     5. Apply additional boost to methanogens (X_ac, X_h2)
     6. Boost S_IC (alkalinity) to handle VFA generation
@@ -131,7 +131,7 @@ def generate_inoculum_state(
         feedstock_state: ADM1 state from Codex (feedstock composition, ~1 kg/m³ biomass)
         target_biomass_cod_ratio: Target biomass as fraction of total COD (default: 0.20)
                                   Range: 0.15-0.30 (15-30% of COD as biomass)
-        methanogen_boost_factor: Additional scaling for X_ac and X_h2 (default: 6.0x)
+        methanogen_boost_factor: Additional scaling for X_ac and X_h2 (default: 6.0×)
                                 Prevents immediate VFA accumulation during startup
         target_alkalinity_meq_l: Target alkalinity in meq/L (default: 200)
                                 Provides buffering for VFA generation
@@ -143,14 +143,14 @@ def generate_inoculum_state(
     Example:
         >>> feedstock = load_adm1_state("adm1_state.json")  # 50 kg COD/m³, 1 kg biomass/m³
         >>> inoculum = generate_inoculum_state(feedstock, target_ratio=0.20)
-        >>> # Result: 50 kg COD/m³, 10.6 kg biomass/m³ (10.6x scale-up)
-        >>> # X_ac, X_h2: 63.6x scale-up (6x methanogen boost)
+        >>> # Result: 50 kg COD/m³, 10.6 kg biomass/m³ (10.6× scale-up)
+        >>> # X_ac, X_h2: 63.6× scale-up (6× methanogen boost)
         >>> # S_IC: 2.4 kg/m³ (200 meq/L alkalinity)
 
     Notes:
         - For CSTR systems, no SRT adjustment needed (steady-state determined by HRT)
-        - Typical scale-up: 10-15x increase in biomass concentration
-        - X_ac, X_h2 (methanogens) scaled 6x more to prevent immediate pickling
+        - Typical scale-up: 10-15× increase in biomass concentration
+        - X_ac, X_h2 (methanogens) scaled 6× more to prevent immediate pickling
         - S_IC boosted to provide adequate buffering during startup
         - This matches real-world startup: 30-50% inoculum + 50-70% substrate
     """
@@ -195,7 +195,7 @@ def generate_inoculum_state(
         )
 
     scaling_factor = target_biomass_cod_kg_m3 / current_biomass_cod_kg_m3
-    logger.info(f"Biomass scaling factor: {scaling_factor:.2f}x increase")
+    logger.info(f"Biomass scaling factor: {scaling_factor:.2f}× increase")
 
     # Create inoculum state by scaling biomass
     inoculum_state = feedstock_state.copy()
@@ -211,13 +211,13 @@ def generate_inoculum_state(
             if component in ["X_ac", "X_h2"]:
                 scaled_value *= methanogen_boost_factor
                 logger.debug(
-                    f"  {component}: {original_value:.4f} -> {scaled_value:.4f} kg/m³ "
-                    f"({scaling_factor * methanogen_boost_factor:.2f}x with methanogen boost)"
+                    f"  {component}: {original_value:.4f} → {scaled_value:.4f} kg/m³ "
+                    f"({scaling_factor * methanogen_boost_factor:.2f}× with methanogen boost)"
                 )
             else:
                 logger.debug(
-                    f"  {component}: {original_value:.4f} -> {scaled_value:.4f} kg/m³ "
-                    f"({scaling_factor:.2f}x)"
+                    f"  {component}: {original_value:.4f} → {scaled_value:.4f} kg/m³ "
+                    f"({scaling_factor:.2f}×)"
                 )
 
             inoculum_state[component] = scaled_value
@@ -243,21 +243,21 @@ def generate_inoculum_state(
 
     logger.info("="*80)
     logger.info("ALKALINITY BOOST & ION BALANCE")
-    logger.info(f"  S_IC (inorganic carbon): {original_s_ic:.2f} -> {target_s_ic_kg_m3:.2f} kg/m³")
-    logger.info(f"  Equivalent alkalinity: {original_alkalinity_meq_l:.0f} -> {target_alkalinity_meq_l:.0f} meq/L")
+    logger.info(f"  S_IC (inorganic carbon): {original_s_ic:.2f} → {target_s_ic_kg_m3:.2f} kg/m³")
+    logger.info(f"  Equivalent alkalinity: {original_alkalinity_meq_l:.0f} → {target_alkalinity_meq_l:.0f} meq/L")
     alkalinity_boost_factor = (target_s_ic_kg_m3/original_s_ic) if original_s_ic > 0.01 else float('inf')
-    logger.info(f"  Alkalinity boost: {alkalinity_boost_factor:.1f}x increase" if alkalinity_boost_factor < 1000 else f"  Alkalinity boost: Initial alkalinity near zero, set to {target_s_ic_kg_m3:.2f} kg/m³")
-    logger.info(f"  S_Na (sodium cation): {original_s_na:.3f} -> {inoculum_state['S_Na']:.3f} kg/m³")
+    logger.info(f"  Alkalinity boost: {alkalinity_boost_factor:.1f}× increase" if alkalinity_boost_factor < 1000 else f"  Alkalinity boost: Initial alkalinity near zero, set to {target_s_ic_kg_m3:.2f} kg/m³")
+    logger.info(f"  S_Na (sodium cation): {original_s_na:.3f} → {inoculum_state['S_Na']:.3f} kg/m³")
     logger.info(f"  Na+ added: {na_increase_kg_m3:.3f} kg/m³ ({alkalinity_increase_meq_l:.0f} meq/L)")
     logger.info(f"  Ion balance: HCO3- increase = Na+ increase (electroneutrality maintained)")
     logger.info("="*80)
 
     # Log critical methanogen components
-    logger.info(f"Critical methanogen concentrations (with {methanogen_boost_factor:.1f}x boost):")
+    logger.info(f"Critical methanogen concentrations (with {methanogen_boost_factor:.1f}× boost):")
     logger.info(f"  X_ac (acetoclastic): {inoculum_state.get('X_ac', 0):.2f} kg/m³ "
-                f"(was {feedstock_state.get('X_ac', 0):.2f}, {inoculum_state.get('X_ac', 0)/feedstock_state.get('X_ac', 1):.1f}x)")
+                f"(was {feedstock_state.get('X_ac', 0):.2f}, {inoculum_state.get('X_ac', 0)/feedstock_state.get('X_ac', 1):.1f}×)")
     logger.info(f"  X_h2 (hydrogenotrophic): {inoculum_state.get('X_h2', 0):.2f} kg/m³ "
-                f"(was {feedstock_state.get('X_h2', 0):.2f}, {inoculum_state.get('X_h2', 0)/feedstock_state.get('X_h2', 1):.1f}x)")
+                f"(was {feedstock_state.get('X_h2', 0):.2f}, {inoculum_state.get('X_h2', 0)/feedstock_state.get('X_h2', 1):.1f}×)")
 
     # Calculate total biomass COD for reporting
     # NOTE: In mADM1, biomass components are in COD units, NOT VSS

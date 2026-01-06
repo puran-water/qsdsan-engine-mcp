@@ -1,17 +1,14 @@
 """
-mADM1 (Modified ADM1) component loader for QSDsan Engine.
+Extract sulfur components from QSDsan mADM1.
 
 Based on QSD-Group/QSDsan, adm1 branch, commit b5a0757 (2024-11-22)
 Licensed under NCSA Open Source License
 
-This module loads the full mADM1 component set (63 components):
-- Core ADM1 soluble/particulate components (0-23)
-- EBPR extension: X_PHA, X_PP, X_PAO (24-26)
-- Metal ions: S_K, S_Mg, S_Ca, S_Al, S_Na, S_Cl (27-28, 45-46, 60-61)
-- Sulfur species: S_SO4, S_IS, S_S0 (29-30, 35)
-- Disaggregated SRB biomass: X_hSRB, X_aSRB, X_pSRB, X_c4SRB (31-34)
-- Iron species: S_Fe3, S_Fe2, X_HFO_* (36-44)
-- Mineral precipitates: X_CCM, X_ACC, X_struv, X_FeS, etc. (47-59)
+This module creates an extended component set by:
+1. Starting with standard 24-state ADM1
+2. Extracting S_SO4, S_IS from QSDsan mADM1
+3. Creating lumped X_SRB biomass
+4. Maintaining ADM1 state vector ordering (positions 0-23 unchanged)
 
 Attribution:
 - Component definitions from qsdsan/processes/_madm1.py:88-227

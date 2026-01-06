@@ -32,91 +32,17 @@ from models.reactors import AnaerobicCSTRmADM1
 # Import inoculum generator for CSTR startup
 from utils.inoculum_generator import generate_inoculum_state
 
-# Phase 10: Native pH calculation using our custom pcm() function
-# Replaces external calculate_ph_and_alkalinity_fixed module
-def update_ph_and_alkalinity(stream, T_op=None):
-    """
-    Calculate pH and alkalinity using our custom pcm() function from mADM1.
-
-    This uses the production-grade PCM equilibrium model with:
-    - Temperature-corrected Ka values (Van't Hoff equation)
-    - Full acid-base equilibrium (VFAs, ammonia, carbonate, sulfide)
-    - Charge balance using Brent's method root-finding
-    - Explicit handling of Fe3+/Al3+ for dosing scenarios (custom extension)
-
-    Parameters
-    ----------
-    stream : WasteStream
-        Stream to update pH and alkalinity
-    T_op : float, optional
-        Operating temperature in K. If None, uses stream temperature.
-
-    Returns
-    -------
-    WasteStream
-        Updated stream with _pH and _SAlk properties set
-    """
-    try:
-        from models.madm1 import pcm
-
-        cmps = stream.components
-        n_cmps = len(cmps)
-
-        # Build state array from stream concentrations (kg/m3)
-        # pcm() expects concentrations in kg/m3
-        if stream.F_vol > 0:
-            state_arr = np.array([stream.imass[cmp.ID] / stream.F_vol for cmp in cmps])
-        else:
-            # Zero flow - use fixed defaults
-            if hasattr(stream, '_pH'):
-                stream._pH = 7.0
-            if hasattr(stream, '_SAlk'):
-                stream._SAlk = 2.5
-            return stream
-
-        # Get temperature
-        if T_op is None:
-            T_op = stream.T if hasattr(stream, 'T') else 308.15
-
-        # Build params dict for pcm()
-        # pKa values at 25°C (298.15 K): [Kw, NH4, CO2, HAc, HPro, HBu, HVa]
-        pKa_base = [14.0, 9.25, 6.35, 4.76, 4.88, 4.82, 4.86]
-        Ka_base = np.array([10**(-pKa) for pKa in pKa_base])
-        Ka_dH = np.array([55900, 51965, 7646, 0, 0, 0, 0])  # J/mol
-
-        params = {
-            'Ka_base': Ka_base,
-            'Ka_dH': Ka_dH,
-            'T_base': 298.15,
-            'T_op': T_op,
-            'components': cmps,
-        }
-
-        # Calculate pH using pcm()
-        pH, nh3, co2, activities = pcm(state_arr, params)
-
-        # Set pH
-        if hasattr(stream, '_pH'):
-            stream._pH = float(pH)
-
-        # Calculate alkalinity from carbonate equilibrium
-        # Alkalinity (meq/L) = [HCO3-] + 2*[CO3--] + [OH-] - [H+]
-        # Simplified: SAlk ≈ S_IC * HCO3_fraction * 1000 / 12 (meq/L)
-        S_IC_idx = cmps.index('S_IC') if 'S_IC' in cmps.IDs else None
-        if S_IC_idx is not None and hasattr(stream, '_SAlk'):
-            S_IC = state_arr[S_IC_idx]  # kg/m3
-            Ka_co2 = params['Ka_base'][2] * np.exp((params['Ka_dH'][2] / 8.314) * (1/298.15 - 1/T_op))
-            h = 10**(-pH)
-            HCO3_fraction = Ka_co2 / (h + Ka_co2)
-            # S_IC in kg C/m3, convert to meq/L: kg C/m3 * 1000 g/kg * HCO3_frac / (12 g/mol C) * 1 eq/mol
-            stream._SAlk = S_IC * 1000 * HCO3_fraction / 12.0
-        elif hasattr(stream, '_SAlk'):
-            stream._SAlk = 2.5  # Default meq/L
-
-        return stream
-
-    except Exception as e:
-        logging.warning(f"pH calculation failed: {e}. Using defaults (pH=7.0, SAlk=2.5)")
+# Import pH calculation if available
+try:
+    import sys
+    import os
+    parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    adm1_dir = os.path.join(os.path.dirname(parent_dir), "adm1_mcp_server")
+    sys.path.insert(0, adm1_dir)
+    from calculate_ph_and_alkalinity_fixed import update_ph_and_alkalinity
+except ImportError:
+    logging.warning("pH calculation module not found. Using default pH values.")
+    def update_ph_and_alkalinity(stream):
         if hasattr(stream, '_pH'):
             stream._pH = 7.0
         if hasattr(stream, '_SAlk'):
@@ -129,100 +55,6 @@ C_mw = get_mw({'C': 1})
 N_mw = get_mw({'N': 1})
 
 logger = logging.getLogger(__name__)
-
-# Module-level component set (initialized once)
-_MADM1_CMPS = None
-_THERMO_SET = False
-
-# Expected mADM1 component order (critical for kinetics)
-# Based on qsdsan_madm1.py:212-223 and verified against anaerobic-design-mcp
-EXPECTED_COMPONENT_ORDER = [
-    'S_su', 'S_aa', 'S_fa', 'S_va', 'S_bu', 'S_pro', 'S_ac', 'S_h2', 'S_ch4',
-    'S_IC', 'S_IN', 'S_IP', 'S_I',
-    'X_ch', 'X_pr', 'X_li', 'X_su', 'X_aa', 'X_fa', 'X_c4', 'X_pro', 'X_ac', 'X_h2', 'X_I',
-    'X_PHA', 'X_PP', 'X_PAO',
-    'S_K', 'S_Mg',
-    'S_SO4', 'S_IS', 'X_hSRB', 'X_aSRB', 'X_pSRB', 'X_c4SRB', 'S_S0',
-    'S_Fe3', 'S_Fe2',
-    'X_HFO_H', 'X_HFO_L', 'X_HFO_old', 'X_HFO_HP', 'X_HFO_LP', 'X_HFO_HP_old', 'X_HFO_LP_old',
-    'S_Ca', 'S_Al',
-    'X_CCM', 'X_ACC', 'X_ACP', 'X_HAP', 'X_DCPD', 'X_OCP',
-    'X_struv', 'X_newb', 'X_magn', 'X_kstruv',
-    'X_FeS', 'X_Fe3PO42', 'X_AlPO4',
-    'S_Na', 'S_Cl',
-    'H2O'
-]
-
-
-def verify_component_ordering(cmps):
-    """
-    Verify that mADM1 component ordering is correct.
-
-    CRITICAL: mADM1 kinetics depend on specific state vector positions.
-    If ordering is wrong, the tracked COD proxy (S_ac) can map to the wrong
-    state variable, causing oscillations while biomass appears stable.
-
-    Parameters
-    ----------
-    cmps : CompiledComponents
-        QSDsan component set to verify
-
-    Returns
-    -------
-    bool
-        True if ordering is correct
-
-    Raises
-    ------
-    RuntimeError
-        If component ordering is incorrect
-    """
-    if len(cmps) != 63:
-        raise RuntimeError(f"Expected 63 mADM1 components, got {len(cmps)}")
-
-    # Verify all 63 positions
-    for idx, expected_id in enumerate(EXPECTED_COMPONENT_ORDER):
-        actual_id = cmps.IDs[idx]
-        if actual_id != expected_id:
-            raise RuntimeError(
-                f"mADM1 component ordering broken at position {idx}: "
-                f"found '{actual_id}', expected '{expected_id}'. "
-                f"This will cause state variable misalignment and simulation failures."
-            )
-
-    logger.info("mADM1 component ordering verified: ALL 63 components in correct positions")
-    return True
-
-
-def get_validated_components():
-    """
-    Get validated mADM1 component set (creates once, validates, sets thermo).
-
-    This ensures component ordering is correct before any simulation runs.
-    Component ordering mismatches cause COD tracking to reference wrong state
-    variables, leading to oscillations and convergence failures.
-
-    Returns
-    -------
-    CompiledComponents
-        Validated mADM1 component set
-    """
-    global _MADM1_CMPS, _THERMO_SET
-    import qsdsan as qs
-
-    if _MADM1_CMPS is None:
-        logger.info("Initializing mADM1 component set (first call)...")
-        _MADM1_CMPS = create_madm1_cmps(set_thermo=False)
-
-        # Verify ordering BEFORE setting thermo
-        verify_component_ordering(_MADM1_CMPS)
-
-        # Set thermo once
-        qs.set_thermo(_MADM1_CMPS)
-        _THERMO_SET = True
-        logger.info("mADM1 thermo set successfully")
-
-    return _MADM1_CMPS
 
 
 def create_influent_stream_sulfur(Q, Temp, adm1_state_62):
@@ -252,16 +84,13 @@ def create_influent_stream_sulfur(Q, Temp, adm1_state_62):
     - Codex agent generates disaggregated SRB biomass (X_hSRB, X_aSRB, X_pSRB, X_c4SRB)
     """
     try:
-        # Use validated mADM1 components (62 + H2O = 63 total)
-        # CRITICAL: Use get_validated_components() to ensure ordering is correct
-        # and thermo is set consistently. Component ordering mismatches cause
-        # state variable misalignment and convergence failures.
-        madm1_cmps = get_validated_components()
+        # Use mADM1 components (62 + H2O = 63 total)
+        madm1_cmps = create_madm1_cmps()
 
         inf = WasteStream('Influent', T=Temp)
 
-        # Component system is set via get_validated_components() which calls
-        # qs.set_thermo(madm1_cmps) once on first call
+        # Set component system (must be done before setting flows)
+        # This is handled by QSDsan when ADM1_SULFUR_CMPS is loaded
 
         # Prepare concentrations for set_flow_by_concentration
         concentrations = {}
@@ -366,10 +195,12 @@ def initialize_62_component_state(adm1_state_62):
     2. H2S inhibition can be calculated
     3. Sulfur mass balance is meaningful
     """
-    # CRITICAL: Use get_validated_components() to ensure consistent thermo/ordering
-    # Creating new components with create_madm1_cmps() causes thermo flip-flopping
-    # and state variable misalignment leading to convergence failures
-    madm1_cmps = get_validated_components()
+    # Per Codex: Filter initialization against actual component set to avoid KeyError
+    # Import components here to ensure they're loaded
+    from models.components import ADM1_SULFUR_CMPS
+
+    if ADM1_SULFUR_CMPS is None:
+        raise RuntimeError("ADM1_SULFUR_CMPS not initialized. Call get_qsdsan_components() first.")
 
     def _to_number(val):
         """Coerce input value to float; handle [value, unit, comment] lists."""
@@ -390,9 +221,9 @@ def initialize_62_component_state(adm1_state_62):
         except Exception:
             return None
 
-    # Filter and align initialization against mADM1 component set (63 components)
-    # This prevents KeyError when input state has extra components
-    valid_ids = madm1_cmps.IDs
+    # Filter and align initialization against ADM1_SULFUR_CMPS (30 components)
+    # Per Codex: This prevents KeyError when input state has extra components (e.g., S_IP from mADM1)
+    valid_ids = ADM1_SULFUR_CMPS.IDs
     init_conds = {}
     extras = []
 
@@ -406,7 +237,7 @@ def initialize_62_component_state(adm1_state_62):
         if comp_id not in valid_ids:
             extras.append(comp_id)
     if extras:
-        logger.debug(f"Ignoring components not in mADM1 component set: {extras}")
+        logger.debug(f"Ignoring components not in ADM1_SULFUR_CMPS: {extras}")
 
     # Apply sulfur defaults (ensure SRB processes can activate)
     if init_conds.get('S_SO4', 0) < 1e-6:
@@ -529,8 +360,8 @@ def check_steady_state(eff, gas, window=5, tolerance=1e-3):
             logger.info(f"System converged: max derivatives below {tolerance}")
             return True
 
-        logger.info(f"Not converged yet (COD: {max_dCOD_dt/tolerance:.1f}x tolerance, "
-                   f"Biomass: {max_dBiomass_dt/tolerance:.1f}x tolerance)")
+        logger.info(f"Not converged yet (COD: {max_dCOD_dt/tolerance:.1f}× tolerance, "
+                   f"Biomass: {max_dBiomass_dt/tolerance:.1f}× tolerance)")
         return False
 
     except Exception as e:
@@ -738,8 +569,7 @@ def extract_time_series(eff, gas):
 
 def run_simulation_sulfur(basis, adm1_state_62, HRT, check_interval=2, tolerance=1e-3, pH_ctrl=None,
                           fixed_naoh_dose_m3_d=0.0, fixed_fecl3_dose_m3_d=0.0, fixed_na2co3_dose_m3_d=0.0,
-                          naoh_conc_kg_m3=431.25, fecl3_conc_kg_m3=400.0, na2co3_conc_kg_m3=106.0,
-                          kinetic_params=None):
+                          naoh_conc_kg_m3=431.25, fecl3_conc_kg_m3=400.0, na2co3_conc_kg_m3=106.0):
     """
     Run single ADM1+sulfur simulation at specified HRT until TRUE steady state.
 
@@ -776,13 +606,9 @@ def run_simulation_sulfur(basis, adm1_state_62, HRT, check_interval=2, tolerance
     naoh_conc_kg_m3 : float, optional
         NaOH concentration as kg Na+/m³ (default 431.25 = 50% commercial NaOH)
     fecl3_conc_kg_m3 : float, optional
-        FeCl3 concentration as kg Fe³⁺/m³ (default 400.0, uses S_Fe3 component)
+        FeCl3 concentration as kg Fe³⁺/m³ (default 100.0)
     na2co3_conc_kg_m3 : float, optional
         Na2CO3 concentration as kg Na+/m³ (default 106.0)
-    kinetic_params : dict, optional
-        Kinetic parameter overrides for ModifiedADM1 (Phase 10).
-        See core.kinetic_params.MADM1_KINETIC_SCHEMA for available parameters.
-        Examples: {"k_ac": 8.0, "K_ac": 0.15, "k_hSRB": 41.0}
 
     Returns
     -------
@@ -835,16 +661,8 @@ def run_simulation_sulfur(basis, adm1_state_62, HRT, check_interval=2, tolerance
         logger.info("="*80)
 
         logger.info("Creating mADM1 model (62 components, built-in sulfur biology)")
-        # CRITICAL: Use get_validated_components() to ensure consistent thermo/ordering
-        # Calling create_madm1_cmps() directly causes thermo flip-flopping and convergence failures
-        madm1_cmps = get_validated_components()
-
-        # Phase 10: Pass kinetic parameters to ModifiedADM1
-        if kinetic_params:
-            logger.info(f"Applying {len(kinetic_params)} kinetic parameter overrides")
-            madm1_model = ModifiedADM1(components=madm1_cmps, **kinetic_params)
-        else:
-            madm1_model = ModifiedADM1(components=madm1_cmps)
+        madm1_cmps = create_madm1_cmps()
+        madm1_model = ModifiedADM1(components=madm1_cmps)
         logger.info(f"mADM1 model created with {len(madm1_model)} processes")
 
         # 2. Create streams with 62 mADM1 components (adm1_state_62 actually has 62 components from Codex)
@@ -867,14 +685,13 @@ def run_simulation_sulfur(basis, adm1_state_62, HRT, check_interval=2, tolerance
 
         if fixed_fecl3_dose_m3_d > 0:
             fecl3 = WasteStream('FeCl3_Dosing', T=Temp)
-            # mADM1 uses S_Fe3 for Fe³⁺ (ferric iron), not generic S_Fe
             fecl3.set_flow_by_concentration(
                 flow_tot=fixed_fecl3_dose_m3_d,
-                concentrations={'S_Fe3': fecl3_conc_kg_m3 * 1000},  # kg/m³ to mg/L
+                concentrations={'S_Fe': fecl3_conc_kg_m3 * 1000},  # kg/m³ to mg/L
                 units=('m3/d', 'mg/L')
             )
             dosing_streams.append(fecl3)
-            logger.info(f"Created FeCl3 dosing stream: {fecl3_conc_kg_m3:.2f} kg/m³ S_Fe3, flow = {fixed_fecl3_dose_m3_d:.4f} m³/d")
+            logger.info(f"Created FeCl3 dosing stream: {fecl3_conc_kg_m3:.2f} kg/m³ S_Fe, flow = {fixed_fecl3_dose_m3_d:.4f} m³/d")
 
         if fixed_na2co3_dose_m3_d > 0:
             na2co3 = WasteStream('Na2CO3_Dosing', T=Temp)
@@ -926,8 +743,8 @@ def run_simulation_sulfur(basis, adm1_state_62, HRT, check_interval=2, tolerance
         # CRITICAL FIX: Convert kg/m³ to mg/L for set_init_conc()
         # QSDsan's set_init_conc() expects mg/L, but our state is in kg/m³
         # Without this conversion, initial concentrations are 1000x too low
-        init_conds_mg_L = {k: v * 1000 for k, v in init_conds_kg_m3.items()}  # kg/m³ -> mg/L
-        logger.info(f"Unit conversion applied: X_I = {init_conds_kg_m3.get('X_I', 0):.3f} kg/m³ -> {init_conds_mg_L.get('X_I', 0):.1f} mg/L")
+        init_conds_mg_L = {k: v * 1000 for k, v in init_conds_kg_m3.items()}  # kg/m³ → mg/L
+        logger.info(f"Unit conversion applied: X_I = {init_conds_kg_m3.get('X_I', 0):.3f} kg/m³ → {init_conds_mg_L.get('X_I', 0):.1f} mg/L")
 
         AD.set_init_conc(**init_conds_mg_L)
         logger.info(f"Initial S_SO4={init_conds_kg_m3['S_SO4']:.4f}, S_IS={init_conds_kg_m3['S_IS']:.6f}, X_hSRB={init_conds_kg_m3.get('X_hSRB', 0):.4f} (all kg/m³)")
@@ -1011,7 +828,7 @@ def assess_robustness(results_design, results_check, threshold=10.0):
         if cod_drop > threshold:
             warnings.append(
                 f"COD removal drops {cod_drop:.1f}% at increased HRT "
-                f"({cod_removal_design:.1f}% -> {cod_removal_check:.1f}%). "
+                f"({cod_removal_design:.1f}% → {cod_removal_check:.1f}%). "
                 f"Design may be sensitive to HRT variations."
             )
     else:
@@ -1030,7 +847,7 @@ def assess_robustness(results_design, results_check, threshold=10.0):
         if biogas_change > threshold:
             warnings.append(
                 f"Biogas production changes {biogas_change:.1f}% at increased HRT "
-                f"({biogas_design:.1f} -> {biogas_check:.1f} m3/d)."
+                f"({biogas_design:.1f} → {biogas_check:.1f} m3/d)."
             )
     else:
         warnings.append(
@@ -1051,8 +868,7 @@ def assess_robustness(results_design, results_check, threshold=10.0):
 def run_dual_hrt_simulation(basis, adm1_state_62, heuristic_config, hrt_variation=0.2,
                             check_interval=2, tolerance=1e-3, pH_ctrl=None,
                             fixed_naoh_dose_m3_d=0.0, fixed_fecl3_dose_m3_d=0.0, fixed_na2co3_dose_m3_d=0.0,
-                            naoh_conc_kg_m3=431.25, fecl3_conc_kg_m3=400.0, na2co3_conc_kg_m3=106.0,
-                            kinetic_params=None):
+                            naoh_conc_kg_m3=431.25, fecl3_conc_kg_m3=400.0, na2co3_conc_kg_m3=106.0):
     """
     Run simulation at design SRT and validation SRT.
 
@@ -1124,8 +940,7 @@ def run_dual_hrt_simulation(basis, adm1_state_62, heuristic_config, hrt_variatio
                                           fixed_na2co3_dose_m3_d=fixed_na2co3_dose_m3_d,
                                           naoh_conc_kg_m3=naoh_conc_kg_m3,
                                           fecl3_conc_kg_m3=fecl3_conc_kg_m3,
-                                          na2co3_conc_kg_m3=na2co3_conc_kg_m3,
-                                          kinetic_params=kinetic_params)
+                                          na2co3_conc_kg_m3=na2co3_conc_kg_m3)
 
     # Run at check SRT (runs until convergence, no time limit)
     logger.info("Running simulation at check SRT...")
@@ -1138,8 +953,7 @@ def run_dual_hrt_simulation(basis, adm1_state_62, heuristic_config, hrt_variatio
                                          fixed_na2co3_dose_m3_d=fixed_na2co3_dose_m3_d,
                                          naoh_conc_kg_m3=naoh_conc_kg_m3,
                                          fecl3_conc_kg_m3=fecl3_conc_kg_m3,
-                                         na2co3_conc_kg_m3=na2co3_conc_kg_m3,
-                                         kinetic_params=kinetic_params)
+                                         na2co3_conc_kg_m3=na2co3_conc_kg_m3)
 
     # Assess robustness
     logger.info("Assessing design robustness...")
