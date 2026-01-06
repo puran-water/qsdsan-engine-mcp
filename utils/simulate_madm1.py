@@ -603,7 +603,7 @@ def run_simulation_sulfur(basis, adm1_state_62, HRT, check_interval=2, tolerance
     naoh_conc_kg_m3 : float, optional
         NaOH concentration as kg Na+/m³ (default 431.25 = 50% commercial NaOH)
     fecl3_conc_kg_m3 : float, optional
-        FeCl3 concentration as kg Fe³⁺/m³ (default 100.0)
+        FeCl3 concentration as kg Fe³⁺/m³ (default 400.0, uses S_Fe3 component)
     na2co3_conc_kg_m3 : float, optional
         Na2CO3 concentration as kg Na+/m³ (default 106.0)
 
@@ -682,13 +682,14 @@ def run_simulation_sulfur(basis, adm1_state_62, HRT, check_interval=2, tolerance
 
         if fixed_fecl3_dose_m3_d > 0:
             fecl3 = WasteStream('FeCl3_Dosing', T=Temp)
+            # mADM1 uses S_Fe3 for Fe³⁺ (ferric iron), not generic S_Fe
             fecl3.set_flow_by_concentration(
                 flow_tot=fixed_fecl3_dose_m3_d,
-                concentrations={'S_Fe': fecl3_conc_kg_m3 * 1000},  # kg/m³ to mg/L
+                concentrations={'S_Fe3': fecl3_conc_kg_m3 * 1000},  # kg/m³ to mg/L
                 units=('m3/d', 'mg/L')
             )
             dosing_streams.append(fecl3)
-            logger.info(f"Created FeCl3 dosing stream: {fecl3_conc_kg_m3:.2f} kg/m³ S_Fe, flow = {fixed_fecl3_dose_m3_d:.4f} m³/d")
+            logger.info(f"Created FeCl3 dosing stream: {fecl3_conc_kg_m3:.2f} kg/m³ S_Fe3, flow = {fixed_fecl3_dose_m3_d:.4f} m³/d")
 
         if fixed_na2co3_dose_m3_d > 0:
             na2co3 = WasteStream('Na2CO3_Dosing', T=Temp)

@@ -37,10 +37,13 @@ def build_and_run(
 
     Args:
         influent_state: PlantState dict with mADM1 concentrations
+            - flow_m3_d: Flow rate in m3/d
+            - temperature_K: Temperature in K
+            - concentrations: Dict of component concentrations (kg/m3)
         reactor_config: Reactor configuration (V_liq, V_gas, T, etc.)
-        kinetic_params: Optional kinetic parameter overrides
-        duration_days: Simulation duration in days
-        timestep_hours: Output timestep in hours
+        kinetic_params: Optional kinetic parameter overrides (not used yet)
+        duration_days: Not used - simulation runs to steady state
+        timestep_hours: Not used - simulation runs to steady state
         output_dir: Directory to save results
 
     Returns:
@@ -50,19 +53,16 @@ def build_and_run(
         - biogas: Biogas production analysis
         - performance: Performance metrics
         - inhibition: Inhibition analysis
-        - time_series: Time series data (if requested)
+        - time_series: Time series data
     """
     # Import simulation module (triggers QSDsan load)
-    from utils.simulate_madm1 import (
-        create_influent_stream_sulfur,
-        create_anaerobic_digester_system_sulfur,
-        run_simulation_sulfur,
-    )
+    from utils.simulate_madm1 import run_simulation_sulfur
     from utils.stream_analysis import (
         analyze_liquid_stream,
-        analyze_biogas_stream,
-        calculate_biogas_metrics,
-        calculate_inhibition_metrics,
+        analyze_gas_stream,
+        analyze_inhibition,
+        analyze_biomass_yields,
+        calculate_sulfur_metrics,
     )
 
     # Default reactor config
@@ -74,60 +74,50 @@ def build_and_run(
     temperature_K = influent_state.get("temperature_K", 308.15)
     concentrations = influent_state.get("concentrations", {})
 
-    # Default reactor volume based on HRT
+    # Calculate HRT from reactor config or use default
     V_liq = reactor_config.get("V_liq", flow_m3_d * 20)  # 20-day HRT default
-    V_gas = reactor_config.get("V_gas", V_liq * 0.1)  # 10% headspace
+    HRT_days = V_liq / flow_m3_d
 
     try:
-        logger.info(f"Creating influent stream: Q={flow_m3_d} m3/d, T={temperature_K} K")
+        logger.info(f"Starting anaerobic CSTR simulation with mADM1")
+        logger.info(f"Q={flow_m3_d} m3/d, T={temperature_K} K, HRT={HRT_days:.1f} days")
 
-        # Create influent stream
-        influent = create_influent_stream_sulfur(
-            Q=flow_m3_d,
-            Temp=temperature_K,
+        # Prepare basis dict for run_simulation_sulfur
+        basis = {
+            "Q": flow_m3_d,
+            "Temp": temperature_K,
+        }
+
+        # Run simulation to steady state
+        # Returns: (sys, inf, eff, gas, converged_at, status, time_series)
+        sys, inf, eff, gas, converged_at, status, time_series = run_simulation_sulfur(
+            basis=basis,
             adm1_state_62=concentrations,
+            HRT=HRT_days,
+            check_interval=2,  # Check convergence every 2 days
+            tolerance=1e-3,
         )
 
-        logger.info(f"Building system: V_liq={V_liq} m3, V_gas={V_gas} m3")
+        logger.info(f"Simulation completed: {status} at t={converged_at:.1f} days")
+        logger.info("Analyzing results...")
 
-        # Create system
-        system, ad = create_anaerobic_digester_system_sulfur(
-            influent_stream=influent,
-            V_liq=V_liq,
-            V_gas=V_gas,
-            T=temperature_K,
-        )
+        # Analyze streams using actual API
+        effluent_analysis = analyze_liquid_stream(eff, include_components=False)
+        biogas_analysis = analyze_gas_stream(gas, inf_stream=inf, eff_stream=eff)
 
-        logger.info(f"Running simulation for {duration_days} days")
+        # Calculate performance metrics
+        performance_metrics = _calculate_performance_metrics(inf, eff, gas, V_liq)
 
-        # Run simulation
-        t_end = duration_days * 24  # Convert to hours
-        t_eval_step = timestep_hours
+        # Analyze inhibition
+        # Note: analyze_inhibition expects sim_results tuple, not reactor
+        sim_results = (sys, inf, eff, gas, converged_at, status, time_series)
+        inhibition_analysis = analyze_inhibition(sim_results)
 
-        # Run with convergence checking
-        system, effluent, biogas_stream, time_series = run_simulation_sulfur(
-            system=system,
-            t_end=t_end,
-            t_eval_step=t_eval_step,
-            check_convergence=True,
-            convergence_window_hours=24 * 5,  # 5-day window
-            convergence_threshold=0.01,
-        )
+        # Calculate biomass yields
+        biomass_yields = analyze_biomass_yields(inf, eff, system=sys)
 
-        logger.info("Analyzing results")
-
-        # Analyze streams
-        effluent_analysis = analyze_liquid_stream(effluent, include_sulfur=True)
-        biogas_analysis = analyze_biogas_stream(biogas_stream)
-
-        # Calculate metrics
-        biogas_metrics = calculate_biogas_metrics(
-            influent=influent,
-            effluent=effluent,
-            biogas=biogas_stream,
-            V_liq=V_liq,
-        )
-        inhibition_metrics = calculate_inhibition_metrics(ad)
+        # Calculate sulfur metrics
+        sulfur_metrics = calculate_sulfur_metrics(inf, eff, gas)
 
         # Build result
         result = {
@@ -137,20 +127,23 @@ def build_and_run(
                 "flow_m3_d": flow_m3_d,
                 "temperature_K": temperature_K,
                 "n_components": len(concentrations),
+                "COD_mg_L": float(inf.COD) if hasattr(inf, 'COD') else None,
             },
             "reactor": {
                 "V_liq_m3": V_liq,
-                "V_gas_m3": V_gas,
-                "HRT_days": V_liq / flow_m3_d,
+                "V_gas_m3": V_liq * 0.1,
+                "HRT_days": HRT_days,
             },
             "effluent": effluent_analysis,
             "biogas": biogas_analysis,
-            "performance": biogas_metrics,
-            "inhibition": inhibition_metrics,
+            "performance": performance_metrics,
+            "inhibition": inhibition_analysis,
+            "biomass_yields": biomass_yields,
+            "sulfur": sulfur_metrics,
             "simulation": {
-                "duration_days": duration_days,
-                "timestep_hours": timestep_hours,
-                "converged": time_series.get("converged", False),
+                "converged_at_days": converged_at,
+                "status": status,
+                "converged": status == "converged",
             },
         }
 
@@ -185,6 +178,57 @@ def build_and_run(
             "template": "anaerobic_cstr_madm1",
             "error": str(e),
         }
+
+
+def _calculate_performance_metrics(inf, eff, gas, V_liq: float) -> Dict[str, Any]:
+    """
+    Calculate key performance metrics from simulation results.
+
+    Args:
+        inf: Influent WasteStream
+        eff: Effluent WasteStream
+        gas: Biogas WasteStream
+        V_liq: Reactor liquid volume in m3
+
+    Returns:
+        Dict with performance metrics
+    """
+    try:
+        # COD removal
+        COD_in = float(inf.COD) if hasattr(inf, 'COD') else 0
+        COD_out = float(eff.COD) if hasattr(eff, 'COD') else 0
+        COD_removed = COD_in - COD_out
+        COD_removal_pct = (COD_removed / COD_in * 100) if COD_in > 0 else 0
+
+        # Biogas production
+        biogas_m3_d = float(gas.F_vol * 24) if hasattr(gas, 'F_vol') else 0
+
+        # Get methane content
+        # Try to get CH4 flow from gas stream
+        try:
+            ch4_flow = gas.imass['S_ch4'] * 24 / 0.717 if hasattr(gas, 'imass') else 0  # kg/d to m3/d (0.717 kg/m3 at STP)
+        except:
+            ch4_flow = biogas_m3_d * 0.6  # Assume 60% CH4 if can't calculate
+
+        # Specific methane yield
+        COD_removed_kg_d = COD_removed * inf.F_vol * 24 / 1000 if hasattr(inf, 'F_vol') else 0  # mg/L * m3/h * 24 / 1000 = kg/d
+        specific_ch4_yield = ch4_flow / COD_removed_kg_d if COD_removed_kg_d > 0 else 0
+
+        # Volumetric loading
+        OLR = (COD_in * inf.F_vol * 24 / 1000) / V_liq if V_liq > 0 and hasattr(inf, 'F_vol') else 0  # kg COD/m3/d
+
+        return {
+            "COD_in_mg_L": round(COD_in, 1),
+            "COD_out_mg_L": round(COD_out, 1),
+            "COD_removal_pct": round(COD_removal_pct, 1),
+            "biogas_m3_d": round(biogas_m3_d, 2),
+            "methane_m3_d": round(ch4_flow, 2),
+            "specific_CH4_yield_m3_kg_COD": round(specific_ch4_yield, 3),
+            "OLR_kg_COD_m3_d": round(OLR, 2),
+        }
+    except Exception as e:
+        logger.warning(f"Error calculating performance metrics: {e}")
+        return {"error": str(e)}
 
 
 def get_default_reactor_config(flow_m3_d: float, srt_days: float = 20) -> Dict[str, Any]:

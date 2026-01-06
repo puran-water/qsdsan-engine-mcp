@@ -554,7 +554,18 @@ def calculate_sulfur_metrics(inf, eff, gas):
         S_SO4_out_mg_L = get_component_conc_mg_L(eff, 'S_SO4')
         S_IS_total_mg_L = get_component_conc_mg_L(eff, 'S_IS')
         S_IS_total_kg_m3 = get_component_conc_kg_m3(eff, 'S_IS')  # For inhibition!
-        X_SRB = get_component_conc_mg_L(eff, 'X_SRB')  # mg COD/L
+
+        # mADM1 uses disaggregated SRB biomass (not lumped X_SRB)
+        # Sum all SRB functional groups: X_hSRB, X_aSRB, X_pSRB, X_c4SRB
+        X_SRB_total = 0.0
+        for srb_id in ['X_hSRB', 'X_aSRB', 'X_pSRB', 'X_c4SRB']:
+            srb_conc = get_component_conc_mg_L(eff, srb_id)
+            if srb_conc:
+                X_SRB_total += srb_conc
+        # Fallback to lumped X_SRB if disaggregated not available (e.g., 30-component model)
+        if X_SRB_total < 1e-6:
+            X_SRB_lumped = get_component_conc_mg_L(eff, 'X_SRB')
+            X_SRB_total = X_SRB_lumped if X_SRB_lumped else 0.0
 
         pH = getattr(eff, 'pH', 7.0)
 
@@ -699,7 +710,7 @@ def calculate_sulfur_metrics(inf, eff, gas):
             "h2s_biogas_kg_S_d": h2s_biogas_kg_S_d,
 
             # SRB performance
-            "srb_biomass_mg_COD_L": X_SRB if X_SRB else 0.0,
+            "srb_biomass_mg_COD_L": X_SRB_total,
             "srb_yield_kg_VSS_per_kg_COD": calculate_srb_yield(inf, eff),
 
             # H2S inhibition on methanogens
@@ -1062,16 +1073,24 @@ def calculate_srb_yield(inf, eff):
     Notes
     -----
     SRB yield typically 0.05-0.15 kg VSS/kg COD (lower than aerobic bacteria).
+    mADM1 uses disaggregated SRB biomass (X_hSRB, X_aSRB, X_pSRB, X_c4SRB).
     """
     try:
-        # Get SRB biomass change
-        X_SRB_in = get_component_conc_mg_L(inf, 'X_SRB')
-        X_SRB_out = get_component_conc_mg_L(eff, 'X_SRB')
+        # Get total SRB biomass from disaggregated components (mADM1)
+        def _get_total_srb(stream):
+            total = 0.0
+            for srb_id in ['X_hSRB', 'X_aSRB', 'X_pSRB', 'X_c4SRB']:
+                conc = get_component_conc_mg_L(stream, srb_id)
+                if conc:
+                    total += conc
+            # Fallback to lumped X_SRB if disaggregated not available
+            if total < 1e-6:
+                lumped = get_component_conc_mg_L(stream, 'X_SRB')
+                total = lumped if lumped else 0.0
+            return total
 
-        if not X_SRB_in:
-            X_SRB_in = 0.0
-        if not X_SRB_out:
-            X_SRB_out = 0.0
+        X_SRB_in = _get_total_srb(inf)
+        X_SRB_out = _get_total_srb(eff)
 
         # COD removed
         COD_in = inf.COD
@@ -1123,12 +1142,23 @@ def analyze_liquid_stream(stream, include_components=False):
     try:
         S_SO4 = get_component_conc_mg_L(stream, 'S_SO4')
         S_IS = get_component_conc_mg_L(stream, 'S_IS')
-        X_SRB = get_component_conc_mg_L(stream, 'X_SRB')
+
+        # mADM1 uses disaggregated SRB biomass (not lumped X_SRB)
+        # Sum all SRB functional groups: X_hSRB, X_aSRB, X_pSRB, X_c4SRB
+        X_SRB_total = 0.0
+        for srb_id in ['X_hSRB', 'X_aSRB', 'X_pSRB', 'X_c4SRB']:
+            srb_conc = get_component_conc_mg_L(stream, srb_id)
+            if srb_conc:
+                X_SRB_total += srb_conc
+        # Fallback to lumped X_SRB if disaggregated not available
+        if X_SRB_total < 1e-6:
+            X_SRB_lumped = get_component_conc_mg_L(stream, 'X_SRB')
+            X_SRB_total = X_SRB_lumped if X_SRB_lumped else 0.0
 
         result['sulfur'] = {
             "sulfate": S_SO4 if S_SO4 else 0.0,  # mg S/L
             "total_sulfide": S_IS if S_IS else 0.0,  # mg S/L
-            "srb_biomass": X_SRB if X_SRB else 0.0  # mg COD/L
+            "srb_biomass": X_SRB_total  # mg COD/L (sum of all SRB)
         }
 
     except Exception as e:
