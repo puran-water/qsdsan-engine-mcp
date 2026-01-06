@@ -33,7 +33,7 @@ def ionic_strength(state_arr, cmps, unit_conversion):
     cmps : CompiledComponents
         QSDsan components object
     unit_conversion : array
-        Conversion factors kg/m³ -> mol/L
+        Conversion factors kg/m³ → mol/L
 
     Returns
     -------
@@ -406,7 +406,7 @@ def calc_saturation_indices(state_arr, cmps, pH, T_K, unit_conversion):
     T_K : float
         Temperature [K]
     unit_conversion : array
-        Conversion factors kg/m³ -> mol/L
+        Conversion factors kg/m³ → mol/L
 
     Returns
     -------
