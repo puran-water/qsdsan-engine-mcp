@@ -49,7 +49,7 @@ TEMPLATES: Dict[str, FlowsheetTemplate] = {
         model_type="mADM1",
         reactor_type="AnaerobicCSTRmADM1",
         category="anaerobic",
-        status=TemplateStatus.PENDING,  # Will be "available" after Phase 1B
+        status=TemplateStatus.AVAILABLE,  # Phase 1B complete
         typical_hrt="15-30 days",
         reference="anaerobic-design-mcp",
     ),

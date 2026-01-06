@@ -128,24 +128,26 @@ def _run_anaerobic_cstr_madm1(
     output_dir: Path,
 ) -> dict:
     """Run mADM1 anaerobic CSTR simulation."""
-    # TODO: Import and call actual simulation engine
-    # For now, return placeholder indicating the template is being set up
-    return {
-        "status": "template_pending",
-        "template": "anaerobic_cstr_madm1",
-        "message": "Anaerobic CSTR template will be ported from anaerobic-design-mcp in Phase 1B",
-        "influent": {
-            "model_type": state.model_type.value,
-            "flow_m3_d": state.flow_m3_d,
-            "temperature_K": state.temperature_K,
-            "n_components": len(state.concentrations),
-        },
-        "config": {
-            "duration_days": duration_days,
-            "timestep_hours": timestep_hours,
-            "reactor_config": reactor_config,
-        },
+    from templates.anaerobic.cstr import build_and_run
+
+    # Convert PlantState to dict for template
+    influent_state = {
+        "flow_m3_d": state.flow_m3_d,
+        "temperature_K": state.temperature_K,
+        "concentrations": state.concentrations,
     }
+
+    # Run simulation
+    result = build_and_run(
+        influent_state=influent_state,
+        reactor_config=reactor_config if reactor_config else None,
+        kinetic_params=parameters if parameters else None,
+        duration_days=duration_days,
+        timestep_hours=timestep_hours,
+        output_dir=output_dir,
+    )
+
+    return result
 
 
 # =============================================================================
