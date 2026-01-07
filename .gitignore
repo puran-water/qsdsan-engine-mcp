@@ -42,11 +42,9 @@ htmlcov/
 
 # Output and jobs
 output/
-output_report/
-output_test/
 jobs/
 
-# Claude Code artifacts (CLAUDE.md is tracked - it contains development context)
+# Claude Code artifacts
 .claude/settings.json
 .claude/*.local.md
 .claude/plans/
@@ -59,5 +57,3 @@ tmp_*.py
 # OS files
 .DS_Store
 Thumbs.db
-.codex/
-*.pyc

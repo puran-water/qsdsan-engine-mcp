@@ -155,26 +155,14 @@ def generate_mass_balance_table(
     # Default key components by model type
     if key_components is None:
         if model_type.lower() in ("madm1", "adm1"):
-            # mADM1: 63 components - use correct IDs from model_registry
-            # Note: S_IS is dissolved sulfide (not S_H2S), no X_c exists
             key_components = [
-                # Soluble substrates
                 "S_su", "S_aa", "S_fa", "S_va", "S_bu", "S_pro", "S_ac",
                 "S_h2", "S_ch4", "S_IC", "S_IN", "S_IP", "S_I",
-                # Particulate substrates (X_ch, X_pr, X_li - not X_c)
-                "X_ch", "X_pr", "X_li",
-                # Biomass
-                "X_su", "X_aa", "X_fa", "X_c4", "X_pro", "X_ac", "X_h2", "X_I",
-                # Sulfur (S_IS is dissolved sulfide, not S_H2S)
-                "S_SO4", "S_IS", "X_hSRB", "X_aSRB", "X_pSRB", "X_c4SRB",
+                "X_c", "X_ch", "X_pr", "X_li", "X_su", "X_aa", "X_fa",
+                "X_c4", "X_pro", "X_ac", "X_h2", "X_I",
+                "S_SO4", "S_H2S", "X_hSRB", "X_aSRB", "X_pSRB", "X_c4SRB",
             ]
-        elif model_type.lower() == "asm1":
-            # ASM1: 13 components
-            key_components = [
-                "S_I", "S_S", "X_I", "X_S", "X_BH", "X_BA", "X_P",
-                "S_O", "S_NO", "S_NH", "S_ND", "X_ND", "S_ALK",
-            ]
-        else:  # ASM2d, mASM2d
+        else:  # ASM2d
             key_components = [
                 "S_O2", "S_F", "S_A", "S_I", "S_NH4", "S_N2", "S_NO3",
                 "S_PO4", "S_ALK", "X_I", "X_S", "X_H", "X_PAO", "X_PP",

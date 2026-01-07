@@ -7,7 +7,7 @@ Provides:
 - analyze_inhibition() - Complete inhibition including H2S effects
 - analyze_biomass_yields() - COD removal and biomass production
 - calculate_sulfur_metrics() - Comprehensive sulfur analysis
-- calculate_h2s_speciation() - H2S/HS- equilibrium
+- calculate_h2s_speciation() - H2S/HS⁻ equilibrium
 - calculate_h2s_gas_ppm() - H2S concentration in biogas
 - extract_diagnostics() - Extract mADM1 diagnostic data
 """
@@ -92,9 +92,9 @@ MADM1_PRECIPITATE_IDS = (
 
 def calculate_h2s_speciation(S_IS_total, pH, temperature_K=308.15, input_units='kg/m3'):
     """
-    Calculate H2S/HS- speciation using Henderson-Hasselbalch equation.
+    Calculate H2S/HS⁻ speciation using Henderson-Hasselbalch equation.
 
-    H2S <=> H+ + HS-
+    H2S ⇌ H+ + HS⁻
 
     Parameters
     ----------
@@ -194,7 +194,7 @@ def calculate_sulfur_metrics(inf, eff, gas):
     dict
         Flat dictionary with sulfur metrics including:
         - Sulfate mass balance
-        - H2S/HS- speciation
+        - H2S/HS⁻ speciation
         - Biogas H2S content
         - SRB performance
         - H2S inhibition factors
@@ -475,14 +475,14 @@ def analyze_inhibition(sim_results, speciation=None):
 
         inhibition_factors = [
             {
-                "type": "H2S (Acetoclastic)",
+                "type": "H₂S (Acetoclastic)",
                 "inhibition_pct": inhibition_pct_ac,
                 "activity_factor": I_ac,
                 "concentration_mg_L": H2S_dissolved_mg_L,
                 "KI_kg_m3": KI_h2s_ac,
             },
             {
-                "type": "H2S (Hydrogenotrophic)",
+                "type": "H₂S (Hydrogenotrophic)",
                 "inhibition_pct": inhibition_pct_h2,
                 "activity_factor": I_h2,
                 "concentration_mg_L": H2S_dissolved_mg_L,
@@ -495,10 +495,10 @@ def analyze_inhibition(sim_results, speciation=None):
         recommendations = []
         if inhibition_pct_ac > 10 or inhibition_pct_h2 > 10:
             recommendations = [
-                f"H2S inhibition detected: Acetoclastic {inhibition_pct_ac:.1f}%, Hydrogenotrophic {inhibition_pct_h2:.1f}%",
-                f"H2S concentration: {H2S_dissolved_mg_L:.2f} mg S/L at pH {pH:.2f}",
-                "Consider reducing sulfate loading or enhancing H2S stripping",
-                "Higher pH shifts H2S/HS- equilibrium toward less toxic HS-",
+                f"H₂S inhibition detected: Acetoclastic {inhibition_pct_ac:.1f}%, Hydrogenotrophic {inhibition_pct_h2:.1f}%",
+                f"H₂S concentration: {H2S_dissolved_mg_L:.2f} mg S/L at pH {pH:.2f}",
+                "Consider reducing sulfate loading or enhancing H₂S stripping",
+                "Higher pH shifts H₂S/HS⁻ equilibrium toward less toxic HS⁻",
             ]
 
         return {

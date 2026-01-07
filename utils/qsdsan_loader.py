@@ -13,7 +13,7 @@ Key features:
 - Background warmup can be started after server startup
 - Event loop remains responsive during 18s import
 
-Supports both mADM1 (63 components) and ASM2d (17 components) models.
+Supports both mADM1 (63 components) and ASM2d (19 components) models.
 """
 import asyncio
 import time
@@ -72,7 +72,7 @@ async def _do_load_asm2d():
     Load ASM2d components in a background thread.
 
     Returns:
-        QSDsan Components object for ASM2d (17 components)
+        QSDsan Components object for ASM2d (19 components)
     """
     def _import_asm2d():
         """Synchronous import work (runs in thread pool)."""
@@ -80,10 +80,11 @@ async def _do_load_asm2d():
         import_start = time.time()
 
         try:
+            # Use centralized ASM2d module (wraps QSDsan's pc.create_asm2d_cmps)
             from models.asm2d import create_asm2d_components
-            components = create_asm2d_components()
-        except ImportError:
-            logger.warning("ASM2d model not yet implemented, returning None")
+            components = create_asm2d_components(set_thermo=False)
+        except ImportError as e:
+            logger.warning(f"ASM2d model import failed: {e}")
             return None
 
         import_elapsed = time.time() - import_start

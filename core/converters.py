@@ -3,8 +3,8 @@ State Converters - Junction-based state conversion between biological models.
 
 This module provides state conversion between ASM2d and mADM1 models using
 custom Junction units that work with our 63-component ModifiedADM1. Key use cases:
-- WAS -> digester feed (ASM2d -> mADM1)
-- Digester effluent -> sidestream (mADM1 -> ASM2d)
+- WAS → digester feed (ASM2d → mADM1)
+- Digester effluent → sidestream (mADM1 → ASM2d)
 
 The conversions preserve mass balance for COD, TKN, and TP.
 
@@ -25,190 +25,7 @@ __all__ = [
     'convert_madm1_to_asm2d',
     'convert_state',
     'create_junction_unit',
-    'extract_component_coefficients',
-    'get_coefficients',
-    'validate_mass_balance',
-    'validate_charge_balance',
-    'validate_state_consistency',
 ]
-
-# =============================================================================
-# Dynamic Coefficient Extraction (Phase 2B)
-# =============================================================================
-
-# Module-level cache for extracted coefficients
-_coefficient_cache: Dict[str, Dict[str, Dict[str, float]]] = {}
-
-
-def extract_component_coefficients(
-    model_type: str,
-    use_cache: bool = True,
-) -> Dict[str, Dict[str, float]]:
-    """
-    Extract i_COD, i_N, i_P coefficients from component objects.
-
-    Dynamically reads the stoichiometric coefficients from QSDsan component
-    definitions, with caching for performance.
-
-    Parameters
-    ----------
-    model_type : str
-        Model type ('ASM2d', 'mADM1', 'ADM1', 'ASM1')
-    use_cache : bool
-        Whether to use cached coefficients (default True)
-
-    Returns
-    -------
-    dict
-        Nested dict with keys 'i_COD', 'i_N', 'i_P', each containing
-        {component_id: coefficient_value}
-
-    Examples
-    --------
-    >>> coeffs = extract_component_coefficients('ASM2d')
-    >>> print(coeffs['i_COD']['X_H'])  # 1.42 for heterotrophs
-    """
-    cache_key = f"{model_type}"
-
-    if use_cache and cache_key in _coefficient_cache:
-        return _coefficient_cache[cache_key]
-
-    try:
-        # Get component definitions - use model-specific component sets
-        if model_type in ('mADM1', 'ADM1'):
-            from models.madm1 import create_madm1_cmps
-            cmps = create_madm1_cmps(set_thermo=False)
-        elif model_type == 'ASM1':
-            # ASM1 has 13 components, different from ASM2d's 19
-            from qsdsan import processes as pc
-            cmps = pc.create_asm1_cmps(set_thermo=False)
-        elif model_type in ('ASM2d', 'mASM2d'):
-            from qsdsan import processes as pc
-            cmps = pc.create_asm2d_cmps(set_thermo=False)
-        else:
-            logger.warning(f"Unknown model type '{model_type}', returning empty coefficients")
-            return {'i_COD': {}, 'i_N': {}, 'i_P': {}}
-
-        # Extract coefficients from component objects
-        i_cod = {}
-        i_n = {}
-        i_p = {}
-
-        for cmp in cmps:
-            cmp_id = cmp.ID
-
-            # Extract i_COD (COD per mass)
-            try:
-                val = getattr(cmp, 'i_COD', None)
-                if val is not None and not np.isnan(val):
-                    i_cod[cmp_id] = float(val)
-            except Exception:
-                pass
-
-            # Extract i_N (nitrogen per mass)
-            try:
-                val = getattr(cmp, 'i_N', None)
-                if val is not None and not np.isnan(val):
-                    i_n[cmp_id] = float(val)
-            except Exception:
-                pass
-
-            # Extract i_P (phosphorus per mass)
-            try:
-                val = getattr(cmp, 'i_P', None)
-                if val is not None and not np.isnan(val):
-                    i_p[cmp_id] = float(val)
-            except Exception:
-                pass
-
-        result = {'i_COD': i_cod, 'i_N': i_n, 'i_P': i_p}
-
-        if use_cache:
-            _coefficient_cache[cache_key] = result
-
-        logger.debug(
-            f"Extracted coefficients for {model_type}: "
-            f"{len(i_cod)} i_COD, {len(i_n)} i_N, {len(i_p)} i_P"
-        )
-
-        return result
-
-    except Exception as e:
-        logger.warning(f"Failed to extract coefficients for {model_type}: {e}")
-        return {'i_COD': {}, 'i_N': {}, 'i_P': {}}
-
-
-def get_coefficients(
-    model_type: str,
-    use_component_props: bool = False,
-) -> Tuple[Dict[str, float], Dict[str, float], Dict[str, float]]:
-    """
-    Get stoichiometric coefficients for a model type.
-
-    Can use either dynamic extraction from component properties or
-    fallback to hard-coded default values.
-
-    Parameters
-    ----------
-    model_type : str
-        Model type ('ASM2d', 'mADM1', etc.)
-    use_component_props : bool
-        If True, extract coefficients dynamically from component objects.
-        If False (default), use hard-coded fallback values for reliability.
-
-    Returns
-    -------
-    tuple of (i_cod, i_n, i_p) dicts
-
-    Notes
-    -----
-    The default hard-coded values are from QSDsan literature and provide
-    reliable fallback when component properties are unavailable or incomplete.
-    Use `use_component_props=True` for maximum accuracy with custom components.
-    """
-    if use_component_props:
-        coeffs = extract_component_coefficients(model_type)
-        return coeffs['i_COD'], coeffs['i_N'], coeffs['i_P']
-
-    # Fallback to hard-coded defaults - model-specific coefficients
-    if model_type == 'ASM1':
-        # ASM1 has 13 components, different from ASM2d
-        return (
-            {'X_BH': 1.42, 'X_BA': 1.42, 'X_S': 1.0, 'X_I': 1.5, 'X_P': 1.5,
-             'S_S': 1.0, 'S_I': 1.0},
-            {'X_BH': 0.086, 'X_BA': 0.086, 'X_S': 0.04, 'X_I': 0.03, 'X_P': 0.03,
-             'S_ND': 1.0, 'X_ND': 1.0, 'S_NH': 1.0},
-            {},  # ASM1 does not model phosphorus
-        )
-    elif model_type in ('ASM2d', 'mASM2d'):
-        return (
-            {'X_H': 1.42, 'X_PAO': 1.42, 'X_AUT': 1.42, 'X_S': 1.0, 'X_I': 1.5,
-             'S_F': 1.0, 'S_A': 1.0, 'S_I': 1.0, 'X_PHA': 1.67, 'X_PP': 0.0},
-            {'X_H': 0.07, 'X_PAO': 0.07, 'X_AUT': 0.07, 'X_S': 0.04, 'X_I': 0.03,
-             'S_F': 0.03, 'S_A': 0.0, 'S_I': 0.01, 'S_NH4': 1.0},
-            {'X_H': 0.02, 'X_PAO': 0.02, 'X_AUT': 0.02, 'X_S': 0.01, 'X_I': 0.01,
-             'X_PP': 0.31, 'S_PO4': 1.0},
-        )
-    elif model_type in ('mADM1', 'ADM1'):
-        return (
-            {'X_su': 1.39, 'X_aa': 1.39, 'X_fa': 1.39, 'X_c4': 1.39,
-             'X_pro': 1.39, 'X_ac': 1.39, 'X_h2': 1.39, 'X_PAO': 1.39,
-             'X_pr': 1.35, 'X_li': 2.81, 'X_ch': 1.0,
-             'S_su': 1.0, 'S_aa': 1.35, 'S_fa': 2.5, 'S_ac': 1.07,
-             'S_I': 1.54, 'X_I': 1.54, 'X_PHA': 1.67,
-             'X_hSRB': 1.39, 'X_aSRB': 1.39, 'X_pSRB': 1.39, 'X_c4SRB': 1.39},
-            {'X_su': 0.09, 'X_aa': 0.09, 'X_fa': 0.09, 'X_c4': 0.09,
-             'X_pro': 0.09, 'X_ac': 0.09, 'X_h2': 0.09, 'X_PAO': 0.09,
-             'X_pr': 0.11, 'S_aa': 0.11, 'S_I': 0.06, 'X_I': 0.06, 'S_IN': 1.0,
-             'X_hSRB': 0.09, 'X_aSRB': 0.09, 'X_pSRB': 0.09, 'X_c4SRB': 0.09},
-            {'X_su': 0.02, 'X_aa': 0.02, 'X_fa': 0.02, 'X_c4': 0.02,
-             'X_pro': 0.02, 'X_ac': 0.02, 'X_h2': 0.02, 'X_PAO': 0.02,
-             'X_li': 0.01, 'S_I': 0.01, 'X_I': 0.01, 'S_IP': 1.0, 'X_PP': 0.31,
-             'X_hSRB': 0.02, 'X_aSRB': 0.02, 'X_pSRB': 0.02, 'X_c4SRB': 0.02},
-        )
-    else:
-        logger.warning(f"Unknown model type '{model_type}', returning empty coefficients")
-        return {}, {}, {}
 
 
 def convert_asm2d_to_madm1(
@@ -218,25 +35,14 @@ def convert_asm2d_to_madm1(
     frac_deg: float = 0.68,
     rtol: float = 1e-2,
     atol: float = 1e-3,
-    use_component_props: bool = False,
 ) -> Tuple[PlantState, Dict[str, Any]]:
     """
     Convert ASM2d state to mADM1 state.
 
-    Use case: WAS from aerobic MBR -> anaerobic digester feed
+    Use case: WAS from aerobic MBR → anaerobic digester feed
 
     This performs a stoichiometric mapping from ASM2d components to mADM1
     components while preserving mass balance (COD, TKN, TP).
-
-    WARNING: This uses heuristic component mappings that approximate
-    QSDsan junction unit behavior but may not be stoichiometrically
-    exact. For critical applications, validate mass/charge balance
-    using validate_mass_balance() and validate_charge_balance().
-
-    Key approximations:
-    - X_S split evenly to X_ch, X_pr, X_li
-    - X_H mapped to proportional biomass groups
-    - S_ALK <-> S_IC (bicarbonate assumption)
 
     Parameters
     ----------
@@ -250,9 +56,6 @@ def convert_asm2d_to_madm1(
         Biodegradable fraction of biomass COD (default 0.68)
     rtol, atol : float
         Tolerances for COD/TKN/TP balance checking
-    use_component_props : bool
-        If True, extract i_COD/i_N/i_P from component objects dynamically.
-        If False (default), use reliable hard-coded fallback values.
 
     Returns
     -------
@@ -296,9 +99,27 @@ def convert_asm2d_to_madm1(
     tp_in = 0.0
     tp_out = 0.0
 
-    # Get component property coefficients (dynamic or fallback)
-    asm_i_cod, asm_i_n, asm_i_p = get_coefficients('ASM2d', use_component_props)
-    adm_i_cod, adm_i_n, adm_i_p = get_coefficients('mADM1', use_component_props)
+    # Component property coefficients (typical values)
+    # ASM2d
+    asm_i_cod = {'X_H': 1.42, 'X_PAO': 1.42, 'X_AUT': 1.42, 'X_S': 1.0, 'X_I': 1.5,
+                 'S_F': 1.0, 'S_A': 1.0, 'S_I': 1.0, 'X_PHA': 1.67, 'X_PP': 0.0}
+    asm_i_n = {'X_H': 0.07, 'X_PAO': 0.07, 'X_AUT': 0.07, 'X_S': 0.04, 'X_I': 0.03,
+               'S_F': 0.03, 'S_A': 0.0, 'S_I': 0.01, 'S_NH4': 1.0}
+    asm_i_p = {'X_H': 0.02, 'X_PAO': 0.02, 'X_AUT': 0.02, 'X_S': 0.01, 'X_I': 0.01,
+               'X_PP': 0.31, 'S_PO4': 1.0}
+
+    # mADM1
+    adm_i_cod = {'X_su': 1.39, 'X_aa': 1.39, 'X_fa': 1.39, 'X_c4': 1.39,
+                 'X_pro': 1.39, 'X_ac': 1.39, 'X_h2': 1.39, 'X_PAO': 1.39,
+                 'X_pr': 1.35, 'X_li': 2.81, 'X_ch': 1.0,
+                 'S_su': 1.0, 'S_aa': 1.35, 'S_fa': 2.5, 'S_ac': 1.07,
+                 'S_I': 1.54, 'X_I': 1.54, 'X_PHA': 1.67}
+    adm_i_n = {'X_su': 0.09, 'X_aa': 0.09, 'X_fa': 0.09, 'X_c4': 0.09,
+               'X_pro': 0.09, 'X_ac': 0.09, 'X_h2': 0.09, 'X_PAO': 0.09,
+               'X_pr': 0.11, 'S_aa': 0.11, 'S_I': 0.06, 'X_I': 0.06, 'S_IN': 1.0}
+    adm_i_p = {'X_su': 0.02, 'X_aa': 0.02, 'X_fa': 0.02, 'X_c4': 0.02,
+               'X_pro': 0.02, 'X_ac': 0.02, 'X_h2': 0.02, 'X_PAO': 0.02,
+               'X_li': 0.01, 'S_I': 0.01, 'X_I': 0.01, 'S_IP': 1.0, 'X_PP': 0.31}
 
     # Map components
     for asm_id, asm_val in asm_concs.items():
@@ -376,7 +197,7 @@ def convert_asm2d_to_madm1(
 
     metadata = {
         "success": True,
-        "conversion": "ASM2d -> mADM1",
+        "conversion": "ASM2d → mADM1",
         "balance": {
             "cod_in_kg_m3": cod_in / 1000,
             "cod_out_kg_m3": cod_out / 1000,
@@ -397,7 +218,7 @@ def convert_asm2d_to_madm1(
     }
 
     logger.info(
-        f"Converted ASM2d -> mADM1: {len(asm_concs)} -> {sum(1 for v in adm_concs.values() if v > 0)} components"
+        f"Converted ASM2d → mADM1: {len(asm_concs)} → {sum(1 for v in adm_concs.values() if v > 0)} components"
     )
 
     return output_state, metadata
@@ -408,26 +229,14 @@ def convert_madm1_to_asm2d(
     bio_to_xs: float = 0.7,
     rtol: float = 1e-2,
     atol: float = 1e-3,
-    use_component_props: bool = False,
 ) -> Tuple[PlantState, Dict[str, Any]]:
     """
     Convert mADM1 state to ASM2d state.
 
-    Use case: Digester effluent -> sidestream treatment (returns to mainstream)
+    Use case: Digester effluent → sidestream treatment (returns to mainstream)
 
     This performs a stoichiometric mapping from mADM1 components to ASM2d
     components while preserving mass balance (COD, TKN, TP).
-
-    WARNING: This uses heuristic component mappings that approximate
-    QSDsan junction unit behavior but may not be stoichiometrically
-    exact. For critical applications, validate mass/charge balance
-    using validate_mass_balance() and validate_charge_balance().
-
-    Key approximations:
-    - S_ac/S_va/S_bu/S_pro -> S_A
-    - X_ch/X_pr/X_li -> X_S
-    - All biomass (X_su, X_aa, etc.) -> X_H
-    - S_IC -> S_ALK (bicarbonate assumption)
 
     Parameters
     ----------
@@ -437,9 +246,6 @@ def convert_madm1_to_asm2d(
         Split of total biomass COD to slowly biodegradable substrate (default 0.7)
     rtol, atol : float
         Tolerances for COD/TKN/TP balance checking
-    use_component_props : bool
-        If True, extract i_COD/i_N/i_P from component objects dynamically.
-        If False (default), use reliable hard-coded fallback values.
 
     Returns
     -------
@@ -483,9 +289,30 @@ def convert_madm1_to_asm2d(
     tp_in = 0.0
     tp_out = 0.0
 
-    # Get component property coefficients (dynamic or fallback)
-    adm_i_cod, adm_i_n, adm_i_p = get_coefficients('mADM1', use_component_props)
-    asm_i_cod, asm_i_n, asm_i_p = get_coefficients('ASM2d', use_component_props)
+    # Component property coefficients (typical values)
+    # mADM1 coefficients
+    adm_i_cod = {'X_su': 1.39, 'X_aa': 1.39, 'X_fa': 1.39, 'X_c4': 1.39,
+                 'X_pro': 1.39, 'X_ac': 1.39, 'X_h2': 1.39, 'X_PAO': 1.39,
+                 'X_pr': 1.35, 'X_li': 2.81, 'X_ch': 1.0,
+                 'S_su': 1.0, 'S_aa': 1.35, 'S_fa': 2.5, 'S_ac': 1.07,
+                 'S_I': 1.54, 'X_I': 1.54, 'X_PHA': 1.67,
+                 'X_hSRB': 1.39, 'X_aSRB': 1.39, 'X_pSRB': 1.39, 'X_c4SRB': 1.39}
+    adm_i_n = {'X_su': 0.09, 'X_aa': 0.09, 'X_fa': 0.09, 'X_c4': 0.09,
+               'X_pro': 0.09, 'X_ac': 0.09, 'X_h2': 0.09, 'X_PAO': 0.09,
+               'X_pr': 0.11, 'S_aa': 0.11, 'S_I': 0.06, 'X_I': 0.06, 'S_IN': 1.0,
+               'X_hSRB': 0.09, 'X_aSRB': 0.09, 'X_pSRB': 0.09, 'X_c4SRB': 0.09}
+    adm_i_p = {'X_su': 0.02, 'X_aa': 0.02, 'X_fa': 0.02, 'X_c4': 0.02,
+               'X_pro': 0.02, 'X_ac': 0.02, 'X_h2': 0.02, 'X_PAO': 0.02,
+               'X_li': 0.01, 'S_I': 0.01, 'X_I': 0.01, 'S_IP': 1.0, 'X_PP': 0.31,
+               'X_hSRB': 0.02, 'X_aSRB': 0.02, 'X_pSRB': 0.02, 'X_c4SRB': 0.02}
+
+    # ASM2d coefficients
+    asm_i_cod = {'X_H': 1.42, 'X_PAO': 1.42, 'X_AUT': 1.42, 'X_S': 1.0, 'X_I': 1.5,
+                 'S_F': 1.0, 'S_A': 1.0, 'S_I': 1.0, 'X_PHA': 1.67, 'X_PP': 0.0}
+    asm_i_n = {'X_H': 0.07, 'X_PAO': 0.07, 'X_AUT': 0.07, 'X_S': 0.04, 'X_I': 0.03,
+               'S_F': 0.03, 'S_A': 0.0, 'S_I': 0.01, 'S_NH4': 1.0}
+    asm_i_p = {'X_H': 0.02, 'X_PAO': 0.02, 'X_AUT': 0.02, 'X_S': 0.01, 'X_I': 0.01,
+               'X_PP': 0.31, 'S_PO4': 1.0}
 
     # Map components with mass balance tracking
     for adm_id, adm_val in adm_concs.items():
@@ -534,7 +361,7 @@ def convert_madm1_to_asm2d(
 
     metadata = {
         "success": True,
-        "conversion": "mADM1 -> ASM2d",
+        "conversion": "mADM1 → ASM2d",
         "balance": {
             "cod_in_kg_m3": cod_in / 1000,
             "cod_out_kg_m3": cod_out / 1000,
@@ -553,7 +380,7 @@ def convert_madm1_to_asm2d(
     }
 
     logger.info(
-        f"Converted mADM1 -> ASM2d: {len(adm_concs)} -> {sum(1 for v in asm_concs.values() if v > 0)} components"
+        f"Converted mADM1 → ASM2d: {len(adm_concs)} → {sum(1 for v in asm_concs.values() if v > 0)} components"
     )
 
     return output_state, metadata
@@ -562,7 +389,6 @@ def convert_madm1_to_asm2d(
 def convert_state(
     input_state: PlantState,
     target_model: ModelType,
-    validate: bool = False,
     **kwargs,
 ) -> Tuple[PlantState, Dict[str, Any]]:
     """
@@ -570,20 +396,12 @@ def convert_state(
 
     Dispatcher function that routes to appropriate conversion function.
 
-    WARNING: This uses heuristic component mappings that approximate
-    QSDsan junction unit behavior but may not be stoichiometrically
-    exact. For critical applications, use validate=True to run
-    mass/charge balance validation.
-
     Parameters
     ----------
     input_state : PlantState
         Input state to convert
     target_model : ModelType
         Target model type (ASM2D, MASM2D, MADM1, ADM1)
-    validate : bool
-        If True, run mass and charge balance validation and add results
-        to metadata. Logs warnings if balances exceed tolerances.
     **kwargs
         Conversion parameters passed to specific converter
 
@@ -592,8 +410,7 @@ def convert_state(
     output_state : PlantState
         Converted state
     metadata : dict
-        Conversion metadata. If validate=True, includes 'mass_balance'
-        and 'charge_balance' keys.
+        Conversion metadata
 
     Raises
     ------
@@ -606,47 +423,21 @@ def convert_state(
     if source_model == target_model:
         return input_state, {"success": True, "conversion": "none", "message": "No conversion needed"}
 
-    output_state = None
-    metadata = None
-
-    # ASM2d/mASM2d -> mADM1/ADM1
+    # ASM2d/mASM2d → mADM1/ADM1
     if source_model in (ModelType.ASM2D, ModelType.MASM2D):
         if target_model in (ModelType.MADM1, ModelType.ADM1):
-            output_state, metadata = convert_asm2d_to_madm1(input_state, **kwargs)
+            return convert_asm2d_to_madm1(input_state, **kwargs)
 
-    # mADM1/ADM1 -> ASM2d/mASM2d
+    # mADM1/ADM1 → ASM2d/mASM2d
     if source_model in (ModelType.MADM1, ModelType.ADM1):
         if target_model in (ModelType.ASM2D, ModelType.MASM2D):
-            output_state, metadata = convert_madm1_to_asm2d(input_state, **kwargs)
+            return convert_madm1_to_asm2d(input_state, **kwargs)
 
     # Unsupported conversion
-    if output_state is None:
-        raise ValueError(
-            f"Conversion {source_model.value} -> {target_model.value} is not supported. "
-            f"Supported paths: ASM2d<->mADM1"
-        )
-
-    # Run validation if requested
-    if validate:
-        mass_balance = validate_mass_balance(input_state, output_state)
-        charge_balance = validate_charge_balance(output_state)
-
-        metadata["mass_balance"] = mass_balance
-        metadata["charge_balance"] = charge_balance
-
-        # Log warnings for failed balances
-        if not mass_balance["all_passed"]:
-            logger.warning(
-                f"Mass balance error: COD {mass_balance['cod_balance']['error_pct']:.1f}%, "
-                f"N {mass_balance['nitrogen_balance']['error_pct']:.1f}%, "
-                f"P {mass_balance['phosphorus_balance']['error_pct']:.1f}%"
-            )
-        if not charge_balance["passed"]:
-            logger.warning(
-                f"Charge imbalance: {charge_balance['imbalance_meq_L']:.2f} meq/L"
-            )
-
-    return output_state, metadata
+    raise ValueError(
+        f"Conversion {source_model.value} → {target_model.value} is not supported. "
+        f"Supported paths: ASM2d↔mADM1"
+    )
 
 
 def create_junction_unit(
@@ -686,337 +477,3 @@ def create_junction_unit(
         raise ValueError(
             f"Unknown direction '{direction}'. Use 'asm2d_to_madm1' or 'madm1_to_asm2d'."
         )
-
-
-# =============================================================================
-# Mass and Charge Balance Validation (Phase 4)
-# =============================================================================
-
-# Component charge valences for electroneutrality calculations (meq/mg)
-# Positive = cation, Negative = anion
-_COMPONENT_CHARGES: Dict[str, float] = {
-    # ASM2d ionic species
-    'S_NH4': 1.0 / 14.0,      # NH4+ -> meq/mg-N
-    'S_NO3': -1.0 / 14.0,     # NO3- -> meq/mg-N
-    'S_PO4': -2.0 / 31.0,     # HPO4^2- at neutral pH -> meq/mg-P
-    'S_ALK': 1.0 / 12.0,      # HCO3- approx -> meq/mg-C (alkalinity)
-    # mADM1 ionic species
-    'S_IN': 1.0 / 14.0,       # NH4+ (inorganic N)
-    'S_IP': -2.0 / 31.0,      # HPO4^2- (inorganic P)
-    'S_IC': 1.0 / 12.0,       # Bicarbonate
-    'S_ac': -1.0 / 60.0,      # Acetate
-    'S_pro': -1.0 / 74.0,     # Propionate
-    'S_bu': -1.0 / 88.0,      # Butyrate
-    'S_va': -1.0 / 102.0,     # Valerate
-    'S_SO4': -2.0 / 32.0,     # Sulfate -> meq/mg-S
-    'S_IS': -2.0 / 32.0,      # Sulfide (HS- at neutral pH)
-    # ASM1 ionic species
-    'S_NH': 1.0 / 14.0,       # NH4+ in ASM1
-    'S_NO': -1.0 / 14.0,      # NO3- in ASM1
-}
-
-
-def validate_mass_balance(
-    input_state: PlantState,
-    output_state: PlantState,
-    rtol: float = 0.01,
-    use_component_props: bool = False,
-) -> Dict[str, Any]:
-    """
-    Validate mass balance between input and output states.
-
-    Checks conservation of COD, total nitrogen, and total phosphorus
-    between two states, typically before and after conversion.
-
-    Parameters
-    ----------
-    input_state : PlantState
-        Input state (e.g., before conversion)
-    output_state : PlantState
-        Output state (e.g., after conversion)
-    rtol : float
-        Relative tolerance for balance check (default 1%)
-    use_component_props : bool
-        If True, extract coefficients dynamically from component objects
-
-    Returns
-    -------
-    dict
-        Validation result with:
-        - cod_balance: COD balance details and pass/fail
-        - nitrogen_balance: TKN balance details and pass/fail
-        - phosphorus_balance: TP balance details and pass/fail
-        - all_passed: True if all balances within tolerance
-
-    Examples
-    --------
-    >>> input_state = PlantState(model_type=ModelType.ASM2D, concentrations={...})
-    >>> output_state, _ = convert_asm2d_to_madm1(input_state)
-    >>> result = validate_mass_balance(input_state, output_state)
-    >>> print(f"COD balanced: {result['cod_balance']['passed']}")
-
-    Notes
-    -----
-    This function uses heuristic component mappings that approximate
-    mass balance. For critical applications, verify results against
-    QSDsan junction unit calculations.
-    """
-    # Get model types as strings
-    input_model = getattr(input_state.model_type, 'value', str(input_state.model_type))
-    output_model = getattr(output_state.model_type, 'value', str(output_state.model_type))
-
-    # Get coefficients for both models
-    in_i_cod, in_i_n, in_i_p = get_coefficients(input_model, use_component_props)
-    out_i_cod, out_i_n, out_i_p = get_coefficients(output_model, use_component_props)
-
-    # Calculate input totals
-    cod_in = sum(
-        conc * in_i_cod.get(comp_id, 0.0)
-        for comp_id, conc in input_state.concentrations.items()
-        if conc > 0
-    )
-    tkn_in = sum(
-        conc * in_i_n.get(comp_id, 0.0)
-        for comp_id, conc in input_state.concentrations.items()
-        if conc > 0
-    )
-    tp_in = sum(
-        conc * in_i_p.get(comp_id, 0.0)
-        for comp_id, conc in input_state.concentrations.items()
-        if conc > 0
-    )
-
-    # Calculate output totals
-    cod_out = sum(
-        conc * out_i_cod.get(comp_id, 0.0)
-        for comp_id, conc in output_state.concentrations.items()
-        if conc > 0
-    )
-    tkn_out = sum(
-        conc * out_i_n.get(comp_id, 0.0)
-        for comp_id, conc in output_state.concentrations.items()
-        if conc > 0
-    )
-    tp_out = sum(
-        conc * out_i_p.get(comp_id, 0.0)
-        for comp_id, conc in output_state.concentrations.items()
-        if conc > 0
-    )
-
-    # Calculate relative errors (avoid division by zero)
-    cod_error = abs(cod_out - cod_in) / max(cod_in, 1e-6) if cod_in > 1e-6 else 0.0
-    tkn_error = abs(tkn_out - tkn_in) / max(tkn_in, 1e-6) if tkn_in > 1e-6 else 0.0
-    tp_error = abs(tp_out - tp_in) / max(tp_in, 1e-6) if tp_in > 1e-6 else 0.0
-
-    cod_passed = cod_error <= rtol
-    tkn_passed = tkn_error <= rtol
-    tp_passed = tp_error <= rtol
-
-    result = {
-        "cod_balance": {
-            "input_mg_L": cod_in,
-            "output_mg_L": cod_out,
-            "error_pct": cod_error * 100,
-            "passed": cod_passed,
-        },
-        "nitrogen_balance": {
-            "input_mg_L": tkn_in,
-            "output_mg_L": tkn_out,
-            "error_pct": tkn_error * 100,
-            "passed": tkn_passed,
-        },
-        "phosphorus_balance": {
-            "input_mg_L": tp_in,
-            "output_mg_L": tp_out,
-            "error_pct": tp_error * 100,
-            "passed": tp_passed,
-        },
-        "all_passed": cod_passed and tkn_passed and tp_passed,
-        "tolerance_pct": rtol * 100,
-    }
-
-    if not result["all_passed"]:
-        logger.warning(
-            f"Mass balance validation failed: "
-            f"COD {cod_error*100:.1f}%, TKN {tkn_error*100:.1f}%, TP {tp_error*100:.1f}%"
-        )
-
-    return result
-
-
-def validate_charge_balance(
-    state: PlantState,
-    atol: float = 0.1,
-) -> Dict[str, Any]:
-    """
-    Validate electroneutrality of a state.
-
-    Checks that the sum of cation charges equals the sum of anion charges.
-    This is important for ensuring chemical consistency of converted states.
-
-    Parameters
-    ----------
-    state : PlantState
-        State to validate
-    atol : float
-        Absolute tolerance in meq/L (default 0.1 meq/L)
-
-    Returns
-    -------
-    dict
-        Validation result with:
-        - cation_meq_L: Total positive charges
-        - anion_meq_L: Total negative charges (absolute value)
-        - imbalance_meq_L: Absolute difference
-        - passed: True if imbalance <= atol
-        - ionic_species: Dict of species contributing to charge
-
-    Examples
-    --------
-    >>> state = PlantState(model_type=ModelType.ASM2D, concentrations={...})
-    >>> result = validate_charge_balance(state)
-    >>> if not result['passed']:
-    ...     print(f"Charge imbalance: {result['imbalance_meq_L']:.2f} meq/L")
-
-    Notes
-    -----
-    Charge balance calculations assume typical pH (6.5-8.0) speciation.
-    Actual speciation depends on pH and may differ from these assumptions.
-    """
-    cation_charge = 0.0
-    anion_charge = 0.0
-    ionic_species = {}
-
-    for comp_id, conc in state.concentrations.items():
-        if conc <= 0:
-            continue
-
-        charge_factor = _COMPONENT_CHARGES.get(comp_id)
-        if charge_factor is None:
-            continue
-
-        charge_meq = conc * charge_factor
-        ionic_species[comp_id] = {
-            "concentration_mg_L": conc,
-            "charge_meq_L": charge_meq,
-        }
-
-        if charge_factor > 0:
-            cation_charge += charge_meq
-        else:
-            anion_charge += abs(charge_meq)
-
-    imbalance = abs(cation_charge - anion_charge)
-    passed = imbalance <= atol
-
-    result = {
-        "cation_meq_L": cation_charge,
-        "anion_meq_L": anion_charge,
-        "imbalance_meq_L": imbalance,
-        "passed": passed,
-        "tolerance_meq_L": atol,
-        "ionic_species": ionic_species,
-    }
-
-    if not passed:
-        logger.warning(
-            f"Charge balance validation failed: "
-            f"cations {cation_charge:.2f} meq/L, anions {anion_charge:.2f} meq/L, "
-            f"imbalance {imbalance:.2f} meq/L"
-        )
-
-    return result
-
-
-def validate_state_consistency(
-    state: PlantState,
-    use_component_props: bool = False,
-) -> Dict[str, Any]:
-    """
-    Validate internal consistency of a single PlantState.
-
-    Computes COD, TKN, and TP totals and checks for implausible values.
-    This is a single-state sanity check, unlike validate_mass_balance()
-    which compares input vs output states.
-
-    Parameters
-    ----------
-    state : PlantState
-        State to validate
-    use_component_props : bool
-        If True, extract coefficients dynamically from component objects
-
-    Returns
-    -------
-    dict
-        Validation result with:
-        - cod_mg_L: Total COD
-        - tkn_mg_L: Total Kjeldahl Nitrogen
-        - tp_mg_L: Total Phosphorus
-        - passed: True if all values are reasonable
-        - warnings: List of warning messages
-
-    Notes
-    -----
-    Reasonableness thresholds:
-    - COD: 0 to 100,000 mg/L
-    - TKN: 0 to 10,000 mg/L
-    - TP: 0 to 5,000 mg/L
-
-    These are generous bounds that should catch data entry errors
-    without rejecting unusual but valid industrial wastewaters.
-    """
-    # Get model type as string
-    model_type_str = getattr(state.model_type, 'value', str(state.model_type))
-
-    # Get coefficients for this model
-    i_cod, i_n, i_p = get_coefficients(model_type_str, use_component_props)
-
-    # Calculate totals
-    cod_total = sum(
-        conc * i_cod.get(comp_id, 0.0)
-        for comp_id, conc in state.concentrations.items()
-    )
-    tkn_total = sum(
-        conc * i_n.get(comp_id, 0.0)
-        for comp_id, conc in state.concentrations.items()
-    )
-    tp_total = sum(
-        conc * i_p.get(comp_id, 0.0)
-        for comp_id, conc in state.concentrations.items()
-    )
-
-    warnings = []
-
-    # Check COD bounds
-    if cod_total < 0:
-        warnings.append(f"Negative COD total: {cod_total:.1f} mg/L")
-    elif cod_total > 100000:
-        warnings.append(f"Implausibly high COD: {cod_total:.1f} mg/L (> 100,000)")
-
-    # Check TKN bounds
-    if tkn_total < 0:
-        warnings.append(f"Negative TKN total: {tkn_total:.1f} mg/L")
-    elif tkn_total > 10000:
-        warnings.append(f"Implausibly high TKN: {tkn_total:.1f} mg/L (> 10,000)")
-
-    # Check TP bounds
-    if tp_total < 0:
-        warnings.append(f"Negative TP total: {tp_total:.1f} mg/L")
-    elif tp_total > 5000:
-        warnings.append(f"Implausibly high TP: {tp_total:.1f} mg/L (> 5,000)")
-
-    result = {
-        "cod_mg_L": cod_total,
-        "tkn_mg_L": tkn_total,
-        "tp_mg_L": tp_total,
-        "passed": len(warnings) == 0,
-        "warnings": warnings,
-    }
-
-    if not result["passed"]:
-        logger.warning(
-            f"State consistency validation failed: {'; '.join(warnings)}"
-        )
-
-    return result

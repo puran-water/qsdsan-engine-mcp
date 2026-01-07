@@ -3,8 +3,8 @@ A/O-MBR (Anoxic-Oxic with Membrane Bioreactor) Template.
 
 Simplified configuration for basic nitrogen removal.
 
-Flowsheet: Influent -> A1 -> O1 -> MBR -> Effluent + WAS
-                      ^_____RAS_____v
+Flowsheet: Influent → A1 → O1 → MBR → Effluent + WAS
+                      ↑_____RAS_____↓
 
 Usage:
     from templates.aerobic.ao_mbr import build_and_run
@@ -21,7 +21,6 @@ import logging
 from pathlib import Path
 from typing import Dict, Any, Optional
 
-import numpy as np
 import qsdsan as qs
 from qsdsan import processes as pc, sanunits as su
 
@@ -73,20 +72,12 @@ def build_and_run(
     reactor_config: Optional[Dict[str, Any]] = None,
     kinetic_params: Optional[Dict[str, Any]] = None,
     duration_days: float = 15.0,
-    timestep_hours: Optional[float] = None,
     output_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """
     Build and run A/O-MBR simulation with ASM2d.
 
     Simplified 2-stage process for basic nitrification/denitrification.
-
-    Parameters
-    ----------
-    kinetic_params : dict, optional
-        ASM2d kinetic parameter overrides (e.g., {"mu_H": 6.0, "K_F": 10.0})
-    timestep_hours : float, optional
-        Output timestep in hours. If provided, generates t_eval array for simulation.
     """
     try:
         Q = influent_state.get('flow_m3_d', 4000)
@@ -112,21 +103,6 @@ def build_and_run(
         WAS = qs.WasteStream('WAS', T=T)
 
         asm2d = pc.ASM2d(**asm_kwargs)
-
-        # Apply kinetic parameter overrides after creation
-        applied_params = {}
-        if kinetic_params:
-            asm2d.set_parameters(**kinetic_params)
-            stoichio_params = getattr(asm2d, '_parameters', {})
-            kinetic_rate_params = getattr(asm2d.rate_function, 'params', {}) if hasattr(asm2d, 'rate_function') else {}
-            for k in kinetic_params:
-                if k in stoichio_params:
-                    applied_params[k] = stoichio_params[k]
-                elif k in kinetic_rate_params:
-                    applied_params[k] = kinetic_rate_params[k]
-                else:
-                    applied_params[k] = None
-            logger.info(f"Applied kinetic params: {applied_params}")
 
         V_an = config['V_anoxic_m3']
         V_ae = config['V_aerobic_m3']
@@ -184,24 +160,11 @@ def build_and_run(
 
         logger.info(f"Simulating for {duration_days} days...")
 
-        # Build simulation kwargs
-        sim_kwargs = {
-            'state_reset_hook': 'reset_cache',
-            't_span': (0, duration_days),
-            'method': 'RK23',
-        }
-
-        # Add t_eval if timestep_hours is specified
-        if timestep_hours is not None and timestep_hours > 0:
-            dt = timestep_hours / 24
-            t_eval = np.arange(0, duration_days + 1e-9, dt)
-            t_eval = t_eval[t_eval <= duration_days + 1e-9]
-            if len(t_eval) == 0 or t_eval[-1] < duration_days - 1e-9:
-                t_eval = np.append(t_eval, duration_days)
-            sim_kwargs['t_eval'] = t_eval
-            logger.info(f"Using timestep {timestep_hours}h -> {len(t_eval)} evaluation points")
-
-        sys.simulate(**sim_kwargs)
+        sys.simulate(
+            state_reset_hook='reset_cache',
+            t_span=(0, duration_days),
+            method='RK23',
+        )
 
         logger.info("Simulation completed, analyzing results...")
 
@@ -254,76 +217,9 @@ def build_and_run(
             },
         }
 
-        # Add deterministic metadata (Phase 3C)
-        import datetime
-        try:
-            qsdsan_version = getattr(qs, "__version__", "unknown")
-        except Exception:
-            qsdsan_version = "unknown"
-
-        try:
-            import biosteam as bst
-            biosteam_version = getattr(bst, "__version__", "unknown")
-        except Exception:
-            biosteam_version = "unknown"
-
-        result["metadata"] = {
-            "qsdsan_version": qsdsan_version,
-            "biosteam_version": biosteam_version,
-            "engine_version": "3.0.0",
-            "template": "ao_mbr_asm2d",
-            "solver": {
-                "method": "RK23",
-                "duration_days": duration_days,
-                "timestep_hours": timestep_hours,
-                "rtol": 1e-3,
-                "atol": 1e-6,
-            },
-            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
-            "model_type": "ASM2d",
-            "applied_kinetic_params": applied_params if applied_params else None,
-        }
-
-        # Generate diagram and mass balance data
-        try:
-            from utils.diagram import (
-                save_system_diagram,
-                generate_mass_balance_table,
-                generate_unit_summary,
-            )
-
-            # Generate mass balance data (always, for report)
-            streams_data = generate_mass_balance_table(sys, model_type="ASM2d")
-            units_data = generate_unit_summary(sys)
-
-            result["flowsheet"] = {
-                "streams": streams_data,
-                "units": units_data,
-            }
-        except Exception as e:
-            logger.warning(f"Could not generate flowsheet data: {e}")
-            result["flowsheet"] = None
-
         if output_dir:
             output_dir = Path(output_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
-
-            # Generate and save diagram
-            if result.get("flowsheet") is not None:
-                try:
-                    diagram_path = save_system_diagram(
-                        sys,
-                        output_path=output_dir / "flowsheet",
-                        kind="thorough",
-                        format="svg",
-                        title=f"A/O-MBR - {Q:.0f} m3/d",
-                    )
-                    if diagram_path:
-                        result["flowsheet"]["diagram_path"] = str(diagram_path)
-                        logger.info(f"Diagram saved to: {diagram_path}")
-                except Exception as e:
-                    logger.warning(f"Could not generate diagram: {e}")
-
             with open(output_dir / "simulation_results.json", "w") as f:
                 json.dump(result, f, indent=2, default=str)
             logger.info(f"Results saved to {output_dir}")
