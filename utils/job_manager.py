@@ -48,9 +48,9 @@ class JobManager:
     Usage:
         manager = JobManager()
 
-        # Start job
+        # Start job (e.g., via CLI adapter)
         job = await manager.execute(
-            cmd=["python", "utils/simulate_cli.py", "--output-dir", "jobs/abc123"],
+            cmd=["python", "cli.py", "simulate", "-t", "anaerobic_cstr_madm1", "-i", "state.json"],
             cwd="/path/to/project"
         )
 

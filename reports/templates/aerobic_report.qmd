@@ -1,0 +1,272 @@
+---
+title: "Aerobic MBR Process Report"
+subtitle: "ASM2d Simulation Results"
+date: "{{ meta.report_date }}"
+template: "{{ meta.template_name }}"
+model: "ASM2d"
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    css: report.css
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+---
+
+<div class="report-header">
+<div>
+
+# Aerobic MBR Process Report
+
+**Model:** ASM2d (19 components) | **Template:** {{ meta.template_name }}
+
+</div>
+<div class="report-meta">
+<span class="label">Report Date</span>
+<span>{{ meta.report_date }}</span>
+<span class="label">Simulation ID</span>
+<span>{{ meta.simulation_id }}</span>
+</div>
+</div>
+
+## Process Performance
+
+<div class="kpi-grid">
+  <div class="kpi-card {{ data.diagnostics.cod_class }}">
+    <div class="kpi-label">COD Removal</div>
+    <div class="kpi-value">{{ data.performance.cod.removal_pct | round(1) }}</div>
+    <div class="kpi-unit">%</div>
+  </div>
+  <div class="kpi-card {{ data.diagnostics.tn_class }}">
+    <div class="kpi-label">TN Removal</div>
+    <div class="kpi-value">{{ data.performance.nitrogen.tn_removal_pct | round(1) }}</div>
+    <div class="kpi-unit">%</div>
+  </div>
+  <div class="kpi-card {{ data.diagnostics.tp_class }}">
+    <div class="kpi-label">TP Removal</div>
+    <div class="kpi-value">{{ data.performance.phosphorus.tp_removal_pct | round(1) }}</div>
+    <div class="kpi-unit">%</div>
+  </div>
+  <div class="kpi-card kpi-ok">
+    <div class="kpi-label">SRT</div>
+    <div class="kpi-value">{{ data.performance.srt.SRT_days | round(1) }}</div>
+    <div class="kpi-unit">days</div>
+  </div>
+</div>
+
+## Diagnostic Summary
+
+<div class="diag-panel">
+  <p><span class="status-dot status-{{ data.diagnostics.cod_status }}"></span><strong>COD Removal</strong> {{ data.performance.cod.removal_pct | round(1) }}%</p>
+  <p><span class="status-dot status-{{ data.diagnostics.nh4_status }}"></span><strong>NH4-N Effluent</strong> {{ data.effluent.NH4_mg_N_L | round(2) }} mg/L</p>
+  <p><span class="status-dot status-{{ data.diagnostics.no3_status }}"></span><strong>NO3-N Effluent</strong> {{ data.effluent.NO3_mg_N_L | round(2) }} mg/L</p>
+  <p><span class="status-dot status-{{ data.diagnostics.po4_status }}"></span><strong>PO4-P Effluent</strong> {{ data.effluent.PO4_mg_P_L | round(2) }} mg/L</p>
+</div>
+
+{% if data.thresholds.nh4_mg_L and data.effluent.NH4_mg_N_L > data.thresholds.nh4_mg_L %}
+::: {.callout-warning}
+NH4-N effluent ({{ data.effluent.NH4_mg_N_L | round(2) }} mg/L) exceeds threshold ({{ data.thresholds.nh4_mg_L }} mg/L).
+:::
+{% endif %}
+
+{% if data.thresholds.no3_mg_L and data.effluent.NO3_mg_N_L > data.thresholds.no3_mg_L %}
+::: {.callout-warning}
+NO3-N effluent ({{ data.effluent.NO3_mg_N_L | round(2) }} mg/L) exceeds threshold ({{ data.thresholds.no3_mg_L }} mg/L).
+:::
+{% endif %}
+
+{% if data.thresholds.po4_mg_L and data.effluent.PO4_mg_P_L > data.thresholds.po4_mg_L %}
+::: {.callout-warning}
+PO4-P effluent ({{ data.effluent.PO4_mg_P_L | round(2) }} mg/L) exceeds threshold ({{ data.thresholds.po4_mg_L }} mg/L).
+:::
+{% endif %}
+
+## Influent/Effluent Comparison
+
+| Parameter | Influent | Effluent | Removal |
+|:----------|----------:|---------:|--------:|
+{% for row in data.stream_comparison %}
+| {{ row.parameter }} | {{ row.influent }} {{ row.unit }} | {{ row.effluent }} {{ row.unit }} | {{ row.removal_pct }}% |
+{% endfor %}
+
+## Flowsheet Diagram
+
+{% if data.flowsheet.has_diagram %}
+![System Flowsheet](flowsheet.svg){.flowsheet-diagram}
+{% else %}
+<div class="ts-placeholder">
+[Flowsheet diagram not generated - run with output directory to generate]
+</div>
+{% endif %}
+
+{% if data.flowsheet.units %}
+### Unit Operations
+
+| # | Unit ID | Type | Inlets | Outlets |
+|--:|:--------|:-----|:-------|:--------|
+{% for u in data.flowsheet.units %}
+| {{ u.number }} | {{ u.id }} | {{ u.type }} | {{ u.inlet_ids | join(', ') }} | {{ u.outlet_ids | join(', ') }} |
+{% endfor %}
+{% endif %}
+
+{% if data.flowsheet.streams %}
+### Stream Mass Balance
+
+| Stream | Flow (m³/d) | COD (mg/L) | TN (mg/L) | TP (mg/L) |
+|:-------|------------:|-----------:|----------:|----------:|
+{% for s in data.flowsheet.streams %}
+| {{ s.id }} | {{ s.flow_m3_d | round(1) }} | {{ s.COD_mg_L | round(1) if s.COD_mg_L else 'N/A' }} | {{ s.TN_mg_L | round(1) if s.TN_mg_L else 'N/A' }} | {{ s.TP_mg_L | round(1) if s.TP_mg_L else 'N/A' }} |
+{% endfor %}
+{% endif %}
+
+## Nitrogen Removal
+
+<div class="two-col">
+<div>
+
+### Mass Balance
+
+| Metric | Influent | Effluent | Removal |
+|:-------|----------:|---------:|--------:|
+| TN | {{ data.performance.nitrogen.tn_in_mg_L | round(1) }} | {{ data.performance.nitrogen.tn_out_mg_L | round(1) }} | {{ data.performance.nitrogen.tn_removal_pct | round(1) }}% |
+| NH4-N | {{ data.performance.nitrogen.nh4_in_mg_L | round(1) }} | {{ data.performance.nitrogen.nh4_out_mg_L | round(2) }} | {{ data.performance.nitrogen.nh4_removal_pct | round(1) }}% |
+| NO3-N | {{ data.performance.nitrogen.no3_in_mg_L | round(2) }} | {{ data.performance.nitrogen.no3_out_mg_L | round(2) }} | {{ data.performance.nitrogen.no3_removal_pct | round(1) }}% |
+
+</div>
+<div>
+
+### Process Rates
+
+| Metric | Value | Unit |
+|:-------|------:|:-----|
+| Nitrification | {{ data.performance.nitrogen.nitrification_rate | round(2) }} | mg N/L/h |
+| Denitrification | {{ data.performance.nitrogen.denitrification_rate | round(2) }} | mg N/L/h |
+| N2 Production | {{ data.effluent.N2_mg_N_L | round(2) }} | mg N/L |
+
+</div>
+</div>
+
+## Phosphorus Removal
+
+<div class="two-col">
+<div>
+
+### Mass Balance
+
+| Metric | Influent | Effluent | Removal |
+|:-------|----------:|---------:|--------:|
+| TP | {{ data.performance.phosphorus.tp_in_mg_L | round(2) }} | {{ data.performance.phosphorus.tp_out_mg_L | round(2) }} | {{ data.performance.phosphorus.tp_removal_pct | round(1) }}% |
+| PO4-P | {{ data.performance.phosphorus.po4_in_mg_L | round(2) }} | {{ data.performance.phosphorus.po4_out_mg_L | round(2) }} | {{ data.performance.phosphorus.po4_removal_pct | round(1) }}% |
+
+</div>
+<div>
+
+### EBPR Activity
+
+| Metric | Value | Unit |
+|:-------|------:|:-----|
+| PAO Biomass | {{ data.biomass.X_PAO_mg_COD_L | round(1) }} | mg COD/L |
+| Polyphosphate | {{ data.biomass.X_PP_mg_P_L | round(2) }} | mg P/L |
+| PHA Storage | {{ data.biomass.X_PHA_mg_COD_L | round(1) }} | mg COD/L |
+
+</div>
+</div>
+
+## Biomass Inventory
+
+### Active Biomass
+
+| Component | Concentration (mg COD/L) | Description |
+|:----------|-------------------------:|:------------|
+| X_H | {{ data.biomass.X_H_mg_COD_L | round(1) }} | Heterotrophs |
+| X_AUT | {{ data.biomass.X_AUT_mg_COD_L | round(1) }} | Autotrophs (nitrifiers) |
+| X_PAO | {{ data.biomass.X_PAO_mg_COD_L | round(1) }} | Phosphorus accumulators |
+| X_S | {{ data.biomass.X_S_mg_COD_L | round(1) }} | Slowly biodegradable |
+| X_I | {{ data.biomass.X_I_mg_COD_L | round(1) }} | Inert particulates |
+
+### Sludge Characteristics
+
+| Metric | Value | Unit |
+|:-------|------:|:-----|
+| MLSS | {{ data.biomass.MLSS_mg_L | round(0) }} | mg/L |
+| MLVSS | {{ data.biomass.MLVSS_mg_L | round(0) }} | mg/L |
+| VSS/TSS | {{ data.biomass.VSS_TSS_ratio | round(2) }} | - |
+| SVI | {{ data.biomass.SVI_mL_g | round(0) }} | mL/g |
+
+## Reactor Configuration
+
+<div class="two-col">
+<div>
+
+### Zone Volumes
+
+| Zone | Volume (m3) | DO (mg/L) |
+|:-----|------------:|----------:|
+| Anoxic | {{ data.reactor.V_anoxic_m3 | round(0) }} | 0 |
+| Aerobic | {{ data.reactor.V_aerobic_m3 | round(0) }} | {{ data.reactor.DO_aerobic_mg_L | round(1) }} |
+| MBR | {{ data.reactor.V_mbr_m3 | round(0) }} | {{ data.reactor.DO_mbr_mg_L | round(1) }} |
+| **Total** | **{{ data.reactor.V_total_m3 | round(0) }}** | - |
+
+</div>
+<div>
+
+### Recycle Flows
+
+| Stream | Flow (m3/d) | Ratio |
+|:-------|------------:|------:|
+| RAS | {{ data.reactor.Q_ras_m3_d | round(0) }} | {{ data.reactor.RAS_ratio | round(1) }}x |
+| IR | {{ data.reactor.Q_ir_m3_d | round(0) }} | {{ data.reactor.IR_ratio | round(1) }}x |
+| WAS | {{ data.reactor.Q_was_m3_d | round(0) }} | - |
+
+</div>
+</div>
+
+## Process Parameters
+
+<dl class="spec-block">
+<dt>Influent Flow</dt>
+<dd>{{ data.influent.flow_m3_d | round(0) }} m3/d</dd>
+<dt>HRT (Total)</dt>
+<dd>{{ data.performance.HRT_hours | round(1) }} hours</dd>
+<dt>SRT</dt>
+<dd>{{ data.performance.srt.SRT_days | round(1) }} days</dd>
+<dt>F/M Ratio</dt>
+<dd>{{ data.performance.FM_ratio | round(3) }} kg COD/kg VSS/d</dd>
+<dt>Oxygen Transfer</dt>
+<dd>{{ data.performance.OTR_kg_O2_d | round(1) }} kg O2/d</dd>
+</dl>
+
+## Simulation Status
+
+<dl class="spec-block">
+<dt>Status</dt>
+<dd>{{ data.simulation.status }}</dd>
+<dt>Converged At</dt>
+<dd>{{ data.simulation.converged_at_days | round(1) }} days</dd>
+<dt>Duration</dt>
+<dd>{{ data.simulation.duration_days | round(1) }} days</dd>
+<dt>Method</dt>
+<dd>{{ data.simulation.method }}</dd>
+</dl>
+
+## Time Series
+
+### Effluent Nutrients
+
+<div class="ts-placeholder">
+{{ data.time_series.nutrient_plot }}
+</div>
+
+### Reactor DO and MLSS
+
+<div class="ts-placeholder">
+{{ data.time_series.reactor_state_plot }}
+</div>
+
+---
+
+<div class="footnote">
+Generated by QSDsan Engine MCP | ASM2d Process Model | {{ meta.report_date }}
+</div>

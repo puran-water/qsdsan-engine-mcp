@@ -1,0 +1,250 @@
+---
+title: "Anaerobic Digestion Process Report"
+subtitle: "mADM1 Simulation Results"
+date: "{{ meta.report_date }}"
+template: "anaerobic_cstr_madm1"
+model: "mADM1"
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    css: report.css
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+---
+
+<div class="report-header">
+<div>
+
+# Anaerobic Digestion Process Report
+
+**Model:** mADM1 (63 components) | **Template:** {{ meta.template_name }}
+
+</div>
+<div class="report-meta">
+<span class="label">Report Date</span>
+<span>{{ meta.report_date }}</span>
+<span class="label">Simulation ID</span>
+<span>{{ meta.simulation_id }}</span>
+</div>
+</div>
+
+## Process Performance
+
+<div class="kpi-grid">
+  <div class="kpi-card {{ data.diagnostics.cod_class }}">
+    <div class="kpi-label">COD Removal</div>
+    <div class="kpi-value">{{ data.performance.COD_removal_pct | round(1) }}</div>
+    <div class="kpi-unit">%</div>
+  </div>
+  <div class="kpi-card {{ data.diagnostics.ch4_class }}">
+    <div class="kpi-label">CH4 Yield</div>
+    <div class="kpi-value">{{ data.performance.specific_CH4_yield_m3_kg_COD | round(3) }}</div>
+    <div class="kpi-unit">Nm3/kg COD</div>
+  </div>
+  <div class="kpi-card kpi-ok">
+    <div class="kpi-label">OLR</div>
+    <div class="kpi-value">{{ data.performance.OLR_kg_COD_m3_d | round(2) }}</div>
+    <div class="kpi-unit">kg COD/m3/d</div>
+  </div>
+  <div class="kpi-card kpi-ok">
+    <div class="kpi-label">HRT</div>
+    <div class="kpi-value">{{ data.reactor.HRT_days | round(1) }}</div>
+    <div class="kpi-unit">days</div>
+  </div>
+</div>
+
+## Diagnostic Summary
+
+<div class="diag-panel">
+  <p><span class="status-dot status-{{ data.diagnostics.cod_status }}"></span><strong>COD Removal</strong> {{ data.performance.COD_removal_pct | round(1) }}%</p>
+  <p><span class="status-dot status-{{ data.diagnostics.h2s_status }}"></span><strong>H2S (biogas)</strong> {{ data.biogas.h2s_ppm | round(0) }} ppm</p>
+  <p><span class="status-dot status-{{ data.diagnostics.inhibition_status }}"></span><strong>Max Inhibition</strong> {{ data.diagnostics.max_inhibition_pct | round(1) }}%</p>
+  <p><span class="status-dot status-{{ data.diagnostics.vfa_status }}"></span><strong>VFA/Alkalinity</strong> {{ data.inhibition.VFA.VFA_ALK_ratio | round(3) }}</p>
+</div>
+
+{% if data.thresholds.h2s_ppm and data.biogas.h2s_ppm > data.thresholds.h2s_ppm %}
+::: {.callout-warning}
+H2S concentration ({{ data.biogas.h2s_ppm | round(0) }} ppm) exceeds threshold ({{ data.thresholds.h2s_ppm }} ppm).
+:::
+{% endif %}
+
+{% if data.diagnostics.max_inhibition_pct > data.thresholds.inhibition_pct %}
+::: {.callout-warning}
+Maximum inhibition ({{ data.diagnostics.max_inhibition_pct | round(1) }}%) exceeds threshold ({{ data.thresholds.inhibition_pct }}%).
+:::
+{% endif %}
+
+## Influent/Effluent Comparison
+
+| Parameter | Influent | Effluent | Removal |
+|:----------|----------:|---------:|--------:|
+{% for row in data.stream_comparison %}
+| {{ row.parameter }} | {{ row.influent }} {{ row.unit }} | {{ row.effluent }} {{ row.unit }} | {{ row.removal_pct }}% |
+{% endfor %}
+
+## Flowsheet Diagram
+
+{% if data.flowsheet.has_diagram %}
+![System Flowsheet](flowsheet.svg){.flowsheet-diagram}
+{% else %}
+<div class="ts-placeholder">
+[Flowsheet diagram not generated - run with output directory to generate]
+</div>
+{% endif %}
+
+{% if data.flowsheet.units %}
+### Unit Operations
+
+| # | Unit ID | Type | Inlets | Outlets |
+|--:|:--------|:-----|:-------|:--------|
+{% for u in data.flowsheet.units %}
+| {{ u.number }} | {{ u.id }} | {{ u.type }} | {{ u.inlet_ids | join(', ') }} | {{ u.outlet_ids | join(', ') }} |
+{% endfor %}
+{% endif %}
+
+{% if data.flowsheet.streams %}
+### Stream Mass Balance
+
+| Stream | Flow (m³/d) | COD (mg/L) | TN (mg/L) | TP (mg/L) |
+|:-------|------------:|-----------:|----------:|----------:|
+{% for s in data.flowsheet.streams %}
+| {{ s.id }} | {{ s.flow_m3_d | round(1) }} | {{ s.COD_mg_L | round(1) if s.COD_mg_L else 'N/A' }} | {{ s.TN_mg_L | round(1) if s.TN_mg_L else 'N/A' }} | {{ s.TP_mg_L | round(1) if s.TP_mg_L else 'N/A' }} |
+{% endfor %}
+{% endif %}
+
+## Biogas Production
+
+<div class="two-col">
+<div>
+
+### Flow Rates
+
+| Metric | Value | Unit |
+|:-------|------:|:-----|
+| Total Biogas | {{ data.biogas.flow_total_Nm3_d | round(1) }} | Nm3/d |
+| Methane Flow | {{ data.biogas.methane_flow_Nm3_d | round(1) }} | Nm3/d |
+| Specific Yield | {{ data.performance.specific_CH4_yield_m3_kg_COD | round(3) }} | Nm3/kg COD |
+
+</div>
+<div>
+
+### Composition
+
+| Component | Concentration |
+|:----------|-------------:|
+| CH4 | {{ data.biogas.methane_percent | round(1) }}% |
+| CO2 | {{ data.biogas.co2_percent | round(1) }}% |
+| H2 | {{ data.biogas.h2_percent | round(2) }}% |
+| H2S | {{ data.biogas.h2s_ppm | round(0) }} ppm |
+
+</div>
+</div>
+
+## Inhibition Analysis
+
+### Inhibition Factors
+
+| Factor | Inhibition | Activity | Concentration | K_I |
+|:-------|----------:|----------:|--------------:|----:|
+{% for f in data.inhibition.inhibition_factors %}
+| {{ f.type }} | {{ f.inhibition_pct | round(1) }}% | {{ f.activity_factor | round(3) }} | {{ f.concentration_mg_L | round(1) }} mg/L | {{ f.KI_kg_m3 | round(4) }} kg/m3 |
+{% endfor %}
+
+### VFA Speciation
+
+| VFA | Concentration (mg COD/L) |
+|:----|-------------------------:|
+| Acetate | {{ data.inhibition.VFA.acetate_mg_COD_L | round(1) }} |
+| Propionate | {{ data.inhibition.VFA.propionate_mg_COD_L | round(1) }} |
+| Butyrate | {{ data.inhibition.VFA.butyrate_mg_COD_L | round(1) }} |
+| Valerate | {{ data.inhibition.VFA.valerate_mg_COD_L | round(1) }} |
+| **Total VFA** | **{{ data.inhibition.VFA.total_VFA_mg_COD_L | round(1) }}** |
+
+## Sulfur Cycle
+
+<div class="two-col">
+<div>
+
+### Mass Balance
+
+| Metric | Value | Unit |
+|:-------|------:|:-----|
+| Sulfate In | {{ data.sulfur.sulfate_in_mg_L | round(1) }} | mg S/L |
+| Sulfate Out | {{ data.sulfur.sulfate_out_mg_L | round(1) }} | mg S/L |
+| Removal | {{ data.sulfur.sulfate_removal_pct | round(1) }} | % |
+
+</div>
+<div>
+
+### Sulfide Speciation
+
+| Species | Concentration |
+|:--------|-------------:|
+| Total Sulfide | {{ data.sulfur.sulfide_total_mg_L | round(1) }} mg S/L |
+| H2S (dissolved) | {{ data.sulfur.H2S_dissolved_mg_L | round(2) }} mg S/L |
+| HS- (dissolved) | {{ data.sulfur.HS_dissolved_mg_L | round(2) }} mg S/L |
+| H2S (biogas) | {{ data.sulfur.h2s_biogas_ppm | round(0) }} ppm |
+
+</div>
+</div>
+
+### SRB Biomass
+
+| SRB Guild | Biomass (mg COD/L) |
+|:----------|-------------------:|
+| X_hSRB (H2-oxidizing) | {{ data.sulfur.X_hSRB_mg_COD_L | round(2) }} |
+| X_aSRB (Acetate) | {{ data.sulfur.X_aSRB_mg_COD_L | round(2) }} |
+| X_pSRB (Propionate) | {{ data.sulfur.X_pSRB_mg_COD_L | round(2) }} |
+| X_c4SRB (Butyrate/Valerate) | {{ data.sulfur.X_c4SRB_mg_COD_L | round(2) }} |
+| **Total SRB** | **{{ data.sulfur.srb_biomass_mg_COD_L | round(2) }}** |
+
+## Reactor Configuration
+
+<dl class="spec-block">
+<dt>Liquid Volume</dt>
+<dd>{{ data.reactor.V_liq_m3 | round(0) }} m3</dd>
+<dt>Headspace Volume</dt>
+<dd>{{ data.reactor.V_gas_m3 | round(0) }} m3</dd>
+<dt>Temperature</dt>
+<dd>{{ data.reactor.temperature_C | round(1) }} C</dd>
+<dt>HRT</dt>
+<dd>{{ data.reactor.HRT_days | round(1) }} days</dd>
+<dt>Influent Flow</dt>
+<dd>{{ data.influent.flow_m3_d | round(0) }} m3/d</dd>
+</dl>
+
+## Simulation Status
+
+<dl class="spec-block">
+<dt>Status</dt>
+<dd>{{ data.simulation.status }}</dd>
+<dt>Converged At</dt>
+<dd>{{ data.simulation.converged_at_days | round(1) }} days</dd>
+<dt>Duration</dt>
+<dd>{{ data.simulation.duration_days | round(1) }} days</dd>
+<dt>Convergence Tolerance</dt>
+<dd>{{ data.simulation.tolerance }}</dd>
+</dl>
+
+## Time Series
+
+### COD & Biogas Convergence
+
+<div class="ts-placeholder">
+{{ data.time_series.convergence_plot }}
+</div>
+
+### Key State Variables
+
+<div class="ts-placeholder">
+{{ data.time_series.state_variables_plot }}
+</div>
+
+---
+
+<div class="footnote">
+Generated by QSDsan Engine MCP | mADM1 Process Model | {{ meta.report_date }}
+</div>

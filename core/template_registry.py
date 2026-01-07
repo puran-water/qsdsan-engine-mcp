@@ -61,7 +61,7 @@ TEMPLATES: Dict[str, FlowsheetTemplate] = {
         model_type="ASM2d",
         reactor_type="CSTR + CompletelyMixedMBR",
         category="aerobic",
-        status=TemplateStatus.PLANNED,
+        status=TemplateStatus.AVAILABLE,  # Phase 1C complete
         typical_hrt="5-24 hours",
         reference="Pune_Nanded_WWTP",
     ),
@@ -71,7 +71,7 @@ TEMPLATES: Dict[str, FlowsheetTemplate] = {
         model_type="ASM2d",
         reactor_type="CSTR + CompletelyMixedMBR",
         category="aerobic",
-        status=TemplateStatus.PLANNED,
+        status=TemplateStatus.AVAILABLE,  # Phase 1C complete
         typical_hrt="6-24 hours",
         reference="Pune_Nanded_WWTP",
     ),
@@ -81,7 +81,7 @@ TEMPLATES: Dict[str, FlowsheetTemplate] = {
         model_type="ASM2d",
         reactor_type="CSTR + CompletelyMixedMBR",
         category="aerobic",
-        status=TemplateStatus.PLANNED,
+        status=TemplateStatus.AVAILABLE,  # Phase 1C complete
         typical_hrt="5-12 hours",
         reference="Pune_Nanded_WWTP",
     ),

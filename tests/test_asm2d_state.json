@@ -1,0 +1,31 @@
+{
+  "model_type": "ASM2d",
+  "flow_m3_d": 4000,
+  "temperature_K": 293.15,
+  "concentrations": {
+    "S_O2": 0,
+    "S_F": 75,
+    "S_A": 20,
+    "S_I": 10,
+    "S_NH4": 17,
+    "S_N2": 0,
+    "S_NO3": 0,
+    "S_PO4": 9,
+    "S_ALK": 36,
+    "X_I": 120,
+    "X_S": 100,
+    "X_H": 5,
+    "X_PAO": 5,
+    "X_PP": 0,
+    "X_PHA": 10,
+    "X_AUT": 5,
+    "X_MeOH": 32,
+    "X_MeP": 0,
+    "H2O": 1000
+  },
+  "reactor_config": {
+    "V_anoxic_m3": 156,
+    "V_aerobic_m3": 252,
+    "V_mbr_m3": 382
+  }
+}

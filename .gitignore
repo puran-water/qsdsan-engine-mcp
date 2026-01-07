@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Output and jobs
+output/
+jobs/
+
+# Claude Code artifacts
+.claude/settings.json
+.claude/*.local.md
+.claude/plans/
+
+# Temporary files
+tmp_*.py
+*.tmp
+*.bak
+
+# OS files
+.DS_Store
+Thumbs.db

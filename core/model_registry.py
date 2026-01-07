@@ -108,7 +108,7 @@ MADM1_BIOMASS_IDS: Tuple[str, ...] = (
 )
 
 # =============================================================================
-# ASM2d - Activated Sludge Model 2d
+# ASM2d - Activated Sludge Model 2d (with mASM2d extensions per Pune_Nanded)
 # =============================================================================
 ASM2D_COMPONENTS: Tuple[str, ...] = (
     # Soluble (0-12)
@@ -130,12 +130,14 @@ ASM2D_COMPONENTS: Tuple[str, ...] = (
     'X_PP',    # Poly-phosphate
     'X_PHA',   # Poly-hydroxy-alkanoates
     'X_AUT',   # Autotrophic biomass
+    'X_MeOH',  # Metal-hydroxides (chemical P removal precipitates)
+    'X_MeP',   # Metal-phosphates (chemical P removal precipitates)
 
     # Water
     'H2O',
 )
 
-ASM2D_BIOMASS_IDS: Tuple[str, ...] = ('X_H', 'X_PAO', 'X_AUT')
+ASM2D_BIOMASS_IDS: Tuple[str, ...] = ('X_H', 'X_PAO', 'X_AUT', 'X_MeOH')
 
 # =============================================================================
 # Model Registry

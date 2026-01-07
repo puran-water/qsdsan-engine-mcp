@@ -1,10 +1,10 @@
 """
 QSDsan Engine MCP Server - Universal Biological Wastewater Treatment Simulation
 
-This is the MCP adapter for the QSDsan simulation engine. It provides 9 tools
+This is the MCP adapter for the QSDsan simulation engine. It provides 16 tools
 for stateless simulation with explicit state passing.
 
-Core Tools:
+Core Tools (Phase 1):
     - simulate_system: Run QSDsan simulation to steady state (background job)
     - get_job_status: Check job progress
     - get_job_results: Retrieve simulation results
@@ -16,6 +16,15 @@ Utility Tools:
     - list_jobs: List all background jobs
     - terminate_job: Terminate a running job
     - get_timeseries_data: Retrieve time series from completed simulation
+
+Flowsheet Construction Tools (Phase 2):
+    - create_flowsheet_session: Create a new flowsheet construction session
+    - create_stream: Create a WasteStream in the session
+    - create_unit: Create a SanUnit in the session
+    - connect_units: Add deferred connections (for recycles)
+    - build_system: Compile flowsheet into QSDsan System
+    - list_units: List available SanUnit types
+    - simulate_built_system: Simulate compiled flowsheet with reporting
 
 Architecture:
     This server exposes the same engine core as the CLI adapter (cli.py).
@@ -39,8 +48,21 @@ from core.model_registry import (
     MODEL_REGISTRY,
 )
 from core.template_registry import list_templates as get_all_templates
+from core.unit_registry import (
+    list_available_units as get_all_units,
+    get_unit_spec,
+    validate_unit_params,
+    validate_model_compatibility,
+    get_units_by_category,
+)
 from utils.job_manager import JobManager
 from utils.path_utils import normalize_path_for_wsl, get_python_executable
+from utils.flowsheet_session import (
+    FlowsheetSessionManager,
+    StreamConfig,
+    UnitConfig,
+    ConnectionConfig,
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -51,6 +73,9 @@ mcp = FastMCP("qsdsan-engine")
 
 # Initialize job manager (singleton)
 job_manager = JobManager(max_concurrent_jobs=3, jobs_base_dir="jobs")
+
+# Initialize flowsheet session manager (singleton)
+session_manager = FlowsheetSessionManager(sessions_dir=Path("jobs"))
 
 
 # =============================================================================
@@ -450,6 +475,625 @@ async def get_timeseries_data(job_id: str) -> Dict[str, Any]:
         Dict with time series data or error
     """
     return await job_manager.get_timeseries_data(job_id)
+
+
+# =============================================================================
+# Phase 2: Flowsheet Construction Tools
+# =============================================================================
+
+@mcp.tool()
+async def create_flowsheet_session(
+    model_type: str,
+    session_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Create a new flowsheet construction session.
+
+    Sessions persist to disk in jobs/flowsheets/{session_id}/ and survive
+    MCP reconnections. Use this to start building a custom flowsheet.
+
+    Args:
+        model_type: Primary process model (e.g., "ASM2d", "mADM1")
+        session_id: Optional custom session ID. Auto-generates if not provided.
+
+    Returns:
+        Dict with session_id, model_type, and available units for that model
+
+    Example:
+        >>> result = await create_flowsheet_session(model_type="ASM2d")
+        >>> session_id = result["session_id"]
+        >>> # Now use create_stream(), create_unit(), etc.
+    """
+    try:
+        session = session_manager.create_session(
+            model_type=model_type,
+            session_id=session_id,
+        )
+
+        # Get units compatible with this model
+        compatible_units = get_all_units(model_type=model_type)
+
+        return {
+            "session_id": session.session_id,
+            "model_type": model_type,
+            "status": "created",
+            "compatible_units": [u["unit_type"] for u in compatible_units],
+            "message": f"Session created. Add streams with create_stream('{session.session_id}', ...)",
+        }
+
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        logger.error(f"create_flowsheet_session failed: {e}", exc_info=True)
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def create_stream(
+    session_id: str,
+    stream_id: str,
+    flow_m3_d: float,
+    concentrations: str,
+    temperature_K: float = 293.15,
+    stream_type: str = "influent",
+    model_type: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Create a WasteStream in the flowsheet session.
+
+    Args:
+        session_id: Session identifier from create_flowsheet_session
+        stream_id: Unique stream identifier (e.g., "influent", "RAS")
+        flow_m3_d: Flow rate in m³/day
+        concentrations: JSON dict of component ID → concentration (mg/L)
+        temperature_K: Temperature in Kelvin (default 293.15 = 20°C)
+        stream_type: One of "influent", "recycle", "intermediate"
+        model_type: Process model override (defaults to session's primary model)
+
+    Returns:
+        Dict with stream_id and validation status
+
+    Example:
+        >>> await create_stream(
+        ...     session_id="abc123",
+        ...     stream_id="influent",
+        ...     flow_m3_d=4000,
+        ...     concentrations='{"S_F": 75, "S_A": 20, "S_NH4": 17}',
+        ... )
+    """
+    try:
+        # Parse concentrations
+        conc_data = json.loads(concentrations)
+
+        config = StreamConfig(
+            stream_id=stream_id,
+            flow_m3_d=flow_m3_d,
+            temperature_K=temperature_K,
+            concentrations=conc_data,
+            stream_type=stream_type,
+            model_type=model_type,
+        )
+
+        result = session_manager.add_stream(session_id, config)
+        return result
+
+    except json.JSONDecodeError as e:
+        return {"error": f"Invalid concentrations JSON: {e}"}
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        logger.error(f"create_stream failed: {e}", exc_info=True)
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def create_unit(
+    session_id: str,
+    unit_type: str,
+    unit_id: str,
+    params: str,
+    inputs: str,
+    outputs: Optional[str] = None,
+    model_type: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Create a SanUnit in the flowsheet session.
+
+    Args:
+        session_id: Session identifier from create_flowsheet_session
+        unit_type: Unit type from registry (e.g., "CSTR", "Splitter", "CompletelyMixedMBR")
+        unit_id: Unique unit identifier (e.g., "A1", "O1", "MBR")
+        params: JSON dict of unit-specific parameters
+        inputs: JSON list of input sources (stream IDs or pipe notation like "A1-0")
+        outputs: Optional JSON list of output stream names
+        model_type: Process model override (defaults to session's primary model)
+
+    Returns:
+        Dict with unit_id, validation status, and port info
+
+    Example:
+        >>> await create_unit(
+        ...     session_id="abc123",
+        ...     unit_type="CSTR",
+        ...     unit_id="A1",
+        ...     params='{"V_max": 1000, "aeration": null}',
+        ...     inputs='["influent", "RAS"]',
+        ... )
+    """
+    try:
+        # Parse JSON inputs
+        params_data = json.loads(params)
+        inputs_data = json.loads(inputs)
+        outputs_data = json.loads(outputs) if outputs else None
+
+        # Validate unit type exists
+        try:
+            spec = get_unit_spec(unit_type)
+        except ValueError as e:
+            return {"error": str(e)}
+
+        # Validate parameters
+        param_errors, param_warnings = validate_unit_params(unit_type, params_data)
+        if param_errors:
+            return {"error": f"Parameter validation failed: {param_errors}"}
+
+        # Load session to check model compatibility
+        session = session_manager.get_session(session_id)
+        effective_model = model_type or session.primary_model_type
+
+        # Validate model compatibility
+        is_compatible, compat_error = validate_model_compatibility(unit_type, effective_model)
+        if not is_compatible:
+            return {"error": compat_error}
+
+        # Junction units now supported via core/junction_units.py custom classes
+        # which work with our 63-component ModifiedADM1 model
+
+        config = UnitConfig(
+            unit_id=unit_id,
+            unit_type=unit_type,
+            params=params_data,
+            inputs=inputs_data,
+            outputs=outputs_data,
+            model_type=model_type,
+        )
+
+        result = session_manager.add_unit(session_id, config)
+
+        # Add warnings to result
+        if param_warnings:
+            result["warnings"] = param_warnings
+
+        # Add port info
+        result["n_ins"] = spec.n_ins
+        result["n_outs"] = spec.n_outs
+
+        return result
+
+    except json.JSONDecodeError as e:
+        return {"error": f"Invalid JSON: {e}"}
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        logger.error(f"create_unit failed: {e}", exc_info=True)
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def connect_units(
+    session_id: str,
+    connections: str,
+) -> Dict[str, Any]:
+    """
+    Add deferred connections between units (for recycles).
+
+    Use this after creating units to wire recycle streams that
+    couldn't be specified during unit creation.
+
+    Args:
+        session_id: Session identifier
+        connections: JSON list of {"from": "C1-1", "to": "A1-1"} objects
+
+    Returns:
+        Dict with connections added and validation status
+
+    Example:
+        >>> await connect_units(
+        ...     session_id="abc123",
+        ...     connections='[{"from": "SP-0", "to": "A1-1"}]',
+        ... )
+    """
+    try:
+        # Parse connections
+        conn_data = json.loads(connections)
+
+        if not isinstance(conn_data, list):
+            return {"error": "connections must be a JSON list"}
+
+        results = []
+        for conn in conn_data:
+            if not isinstance(conn, dict) or "from" not in conn or "to" not in conn:
+                results.append({"error": f"Invalid connection format: {conn}"})
+                continue
+
+            config = ConnectionConfig(
+                from_port=conn["from"],
+                to_port=conn["to"],
+                stream_id=conn.get("stream_id"),
+            )
+
+            result = session_manager.add_connection(session_id, config)
+            results.append(result)
+
+        return {
+            "session_id": session_id,
+            "connections_added": len([r for r in results if "error" not in r]),
+            "results": results,
+        }
+
+    except json.JSONDecodeError as e:
+        return {"error": f"Invalid connections JSON: {e}"}
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        logger.error(f"connect_units failed: {e}", exc_info=True)
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def build_system(
+    session_id: str,
+    system_id: str,
+    unit_order: Optional[str] = None,
+    recycle_streams: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Compile flowsheet session into a QSDsan System.
+
+    This validates the flowsheet and compiles it into QSDsan objects.
+    Use simulate_built_system() after this to run the simulation.
+
+    Args:
+        session_id: Session identifier
+        system_id: Name for the compiled system
+        unit_order: Optional JSON list of unit IDs for execution order.
+                    If not provided, topological sort is used.
+        recycle_streams: Optional JSON list of recycle stream IDs
+
+    Returns:
+        Dict with system_id, validation status, unit execution order, and build info
+
+    Example:
+        >>> await build_system(
+        ...     session_id="abc123",
+        ...     system_id="custom_mle",
+        ...     recycle_streams='["RAS"]',
+        ... )
+    """
+    try:
+        from utils.topo_sort import validate_flowsheet_connectivity
+        from utils.flowsheet_builder import compile_system
+        from dataclasses import asdict
+
+        # Load session
+        session = session_manager.get_session(session_id)
+
+        # Parse optional inputs
+        manual_order = json.loads(unit_order) if unit_order else None
+        recycles = set(json.loads(recycle_streams)) if recycle_streams else set()
+
+        # Validate connectivity first
+        errors, warnings = validate_flowsheet_connectivity(
+            session.units,
+            session.streams,
+            session.connections,
+        )
+
+        if errors:
+            session_manager.update_session_status(session_id, "failed")
+            return {
+                "error": "Flowsheet validation failed",
+                "errors": errors,
+                "warnings": warnings,
+            }
+
+        # Actually compile the QSDsan System
+        try:
+            system, build_info = compile_system(
+                session=session,
+                system_id=system_id,
+                unit_order=manual_order,
+                recycle_stream_ids=recycles,
+            )
+        except Exception as compile_error:
+            session_manager.update_session_status(session_id, "failed")
+            return {
+                "error": f"System compilation failed: {compile_error}",
+                "warnings": warnings,
+            }
+
+        # Update session status
+        session_manager.update_session_status(session_id, "compiled")
+
+        # Save build config and result
+        session_dir = session_manager._get_session_dir(session_id)
+
+        # Save build_config.json (used by simulate to restore build parameters)
+        build_config = {
+            "system_id": system_id,
+            "unit_order": build_info.unit_order,
+            "recycle_streams": list(recycles),
+        }
+        with open(session_dir / "build_config.json", "w") as f:
+            json.dump(build_config, f, indent=2)
+
+        # Save system_result.json (detailed build info)
+        build_result = {
+            "system_id": build_info.system_id,
+            "unit_order": build_info.unit_order,
+            "recycle_streams": list(recycles),
+            "recycle_edges": build_info.recycle_edges,
+            "streams_created": build_info.streams_created,
+            "units_created": build_info.units_created,
+            "build_warnings": build_info.warnings,
+        }
+        with open(session_dir / "system_result.json", "w") as f:
+            json.dump(build_result, f, indent=2)
+
+        return {
+            "session_id": session_id,
+            "system_id": system_id,
+            "status": "compiled",
+            "unit_order": build_info.unit_order,
+            "recycle_edges": build_info.recycle_edges,
+            "streams_created": build_info.streams_created,
+            "units_created": build_info.units_created,
+            "warnings": warnings + build_info.warnings,
+            "message": f"System compiled successfully. Use simulate_built_system(session_id='{session_id}', ...) to simulate.",
+        }
+
+    except json.JSONDecodeError as e:
+        return {"error": f"Invalid JSON: {e}"}
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        logger.error(f"build_system failed: {e}", exc_info=True)
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def list_units(
+    model_type: Optional[str] = None,
+    category: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    List available SanUnit types with their parameters.
+
+    Args:
+        model_type: Filter by compatible process model (e.g., "ASM2d", "mADM1")
+        category: Filter by unit category (e.g., "reactor", "separator", "junction")
+
+    Returns:
+        Dict with units list and categories
+
+    Example:
+        >>> result = await list_units(model_type="ASM2d")
+        >>> print(result["units"])  # List of ASM2d-compatible units
+    """
+    try:
+        units = get_all_units(model_type=model_type, category=category)
+        categories = get_units_by_category()
+
+        return {
+            "units": units,
+            "categories": categories,
+            "total": len(units),
+            "filter": {
+                "model_type": model_type,
+                "category": category,
+            },
+        }
+
+    except Exception as e:
+        logger.error(f"list_units failed: {e}", exc_info=True)
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def simulate_built_system(
+    session_id: str,
+    duration_days: float = 1.0,
+    timestep_hours: float = 1.0,
+    method: str = "RK23",
+    t_eval: Optional[str] = None,
+    track: Optional[str] = None,
+    effluent_stream_ids: Optional[str] = None,
+    biogas_stream_ids: Optional[str] = None,
+    report: bool = True,
+    diagram: bool = True,
+    include_components: bool = False,
+    export_state_to: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Simulate a compiled flowsheet with comprehensive reporting.
+
+    This is a background job that uses JobManager (like simulate_system).
+    The session must be compiled first with build_system().
+
+    Args:
+        session_id: Flowsheet session ID (must be compiled)
+        duration_days: Simulation duration in days
+        timestep_hours: Output timestep in hours
+        method: ODE solver method ("RK23", "RK45", "BDF")
+        t_eval: Custom evaluation times as JSON list (days). If not provided, uses timestep.
+        track: JSON list of stream IDs to track dynamically during simulation
+        effluent_stream_ids: JSON list of stream IDs for effluent quality analysis
+        biogas_stream_ids: JSON list of stream IDs for biogas analysis (mADM1 only)
+        report: Generate Quarto report
+        diagram: Generate flowsheet diagram
+        include_components: Include full component breakdown in results
+        export_state_to: Path to export final effluent state as PlantState JSON
+
+    Returns:
+        Dict with job_id for tracking via get_job_status/get_job_results
+
+    Reporting Features:
+        - Effluent quality: COD, TSS, NH4-N, NO3-N, TN, PO4-P, TP
+        - Removal efficiencies: % removal for key parameters
+        - Biogas (mADM1 only): CH4/CO2/H2S/H2 yields, production rate
+        - Flowsheet diagram (SVG)
+        - Quarto report with mass balance tables
+
+    Example:
+        >>> result = await simulate_built_system(
+        ...     session_id="abc123",
+        ...     duration_days=15,
+        ...     report=True,
+        ...     effluent_stream_ids='["effluent"]',
+        ...     track='["influent", "effluent"]',
+        ...     export_state_to="output/final_state.json",
+        ... )
+        >>> job_id = result["job_id"]
+        >>> # Use get_job_status(job_id) and get_job_results(job_id)
+    """
+    try:
+        import uuid
+
+        # Load and validate session
+        session = session_manager.get_session(session_id)
+
+        if session.status != "compiled":
+            return {
+                "error": f"Session status is '{session.status}', must be 'compiled'. "
+                f"Run build_system(session_id='{session_id}', ...) first."
+            }
+
+        # Create job directory
+        job_id = str(uuid.uuid4())[:8]
+        job_dir = Path("jobs") / job_id
+        job_dir.mkdir(parents=True, exist_ok=True)
+
+        # Copy session info to job dir
+        session_dir = session_manager._get_session_dir(session_id)
+        import shutil
+        shutil.copy(session_dir / "session.json", job_dir / "session.json")
+        if (session_dir / "build_config.json").exists():
+            shutil.copy(session_dir / "build_config.json", job_dir / "build_config.json")
+
+        # Save simulation config
+        sim_config = {
+            "session_id": session_id,
+            "duration_days": duration_days,
+            "timestep_hours": timestep_hours,
+            "method": method,
+            "t_eval": t_eval,
+            "track": track,
+            "effluent_stream_ids": effluent_stream_ids,
+            "biogas_stream_ids": biogas_stream_ids,
+            "report": report,
+            "diagram": diagram,
+            "include_components": include_components,
+            "export_state_to": export_state_to,
+        }
+        with open(job_dir / "sim_config.json", "w") as f:
+            json.dump(sim_config, f, indent=2)
+
+        # Build CLI command
+        python_exe = get_python_executable()
+        cmd = [
+            python_exe,
+            "cli.py",
+            "flowsheet", "simulate",
+            "--session", session_id,
+            "--output-dir", str(job_dir),
+            "--duration-days", str(duration_days),
+            "--timestep-hours", str(timestep_hours),
+            "--method", method,
+        ]
+
+        if t_eval:
+            cmd.extend(["--t-eval", t_eval])
+        if track:
+            cmd.extend(["--track", track])
+        if effluent_stream_ids:
+            cmd.extend(["--effluent-streams", effluent_stream_ids])
+        if biogas_stream_ids:
+            cmd.extend(["--biogas-streams", biogas_stream_ids])
+        if report:
+            cmd.append("--report")
+        if diagram:
+            cmd.append("--diagram")
+        if include_components:
+            cmd.append("--include-components")
+        if export_state_to:
+            cmd.extend(["--export-state-to", export_state_to])
+
+        # Execute as background job
+        cwd = str(Path(__file__).parent.absolute())
+        job = await job_manager.execute(cmd=cmd, cwd=cwd, job_id=job_id)
+
+        return {
+            "job_id": job["id"],
+            "status": job["status"],
+            "session_id": session_id,
+            "duration_days": duration_days,
+            "message": f"Simulation started. Use get_job_status('{job['id']}') to monitor progress.",
+        }
+
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        logger.error(f"simulate_built_system failed: {e}", exc_info=True)
+        return {"error": str(e)}
+
+
+# =============================================================================
+# Session Management Utilities
+# =============================================================================
+
+@mcp.tool()
+async def get_flowsheet_session(session_id: str) -> Dict[str, Any]:
+    """
+    Get details of a flowsheet session.
+
+    Args:
+        session_id: Session identifier
+
+    Returns:
+        Dict with session summary including streams, units, and connections
+    """
+    try:
+        return session_manager.get_session_summary(session_id)
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        logger.error(f"get_flowsheet_session failed: {e}", exc_info=True)
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def list_flowsheet_sessions(
+    status_filter: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    List all flowsheet sessions.
+
+    Args:
+        status_filter: Optional filter by status ("building", "compiled", "failed")
+
+    Returns:
+        Dict with sessions list
+    """
+    try:
+        sessions = session_manager.list_sessions(status_filter=status_filter)
+        return {
+            "sessions": sessions,
+            "total": len(sessions),
+            "filter": status_filter,
+        }
+    except Exception as e:
+        logger.error(f"list_flowsheet_sessions failed: {e}", exc_info=True)
+        return {"error": str(e)}
 
 
 # =============================================================================

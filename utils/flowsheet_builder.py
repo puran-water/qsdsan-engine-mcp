@@ -1,0 +1,801 @@
+"""
+Flowsheet Builder - Compile and simulate QSDsan systems from session configurations.
+
+This module provides the actual QSDsan system compilation and simulation logic
+that builds WasteStream/SanUnit objects from session configurations.
+
+Usage:
+    from utils.flowsheet_builder import (
+        compile_system,
+        simulate_compiled_system,
+    )
+
+    # Compile session into QSDsan System
+    system, build_info = compile_system(session)
+
+    # Simulate the system
+    results = simulate_compiled_system(system, duration_days=15, ...)
+"""
+
+from typing import Dict, List, Any, Optional, Tuple, Set
+from pathlib import Path
+from dataclasses import dataclass
+import json
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class BuildInfo:
+    """Information about a compiled system."""
+    system_id: str
+    unit_order: List[str]
+    recycle_edges: List[Tuple[str, str]]
+    streams_created: List[str]
+    units_created: List[str]
+    warnings: List[str]
+
+
+def compile_system(
+    session: "FlowsheetSession",
+    system_id: str,
+    unit_order: Optional[List[str]] = None,
+    recycle_stream_ids: Optional[Set[str]] = None,
+) -> Tuple["System", BuildInfo]:
+    """
+    Compile a flowsheet session into a QSDsan System.
+
+    This function:
+    1. Creates thermo and components for each model type used
+    2. Creates WasteStream objects from session.streams
+    3. Creates SanUnit objects from session.units with process models
+    4. Wires units together using pipe notation
+    5. Creates recycle streams for deferred connections
+    6. Builds the System with the specified unit order
+
+    Supports mixed-model flowsheets (e.g., ASM2d + mADM1 with junctions).
+
+    Args:
+        session: FlowsheetSession with streams, units, and connections
+        system_id: Name for the compiled system
+        unit_order: Optional execution order. If None, uses topological sort.
+        recycle_stream_ids: Stream IDs known to be recycles
+
+    Returns:
+        Tuple of (System, BuildInfo)
+
+    Raises:
+        ValueError: If session is invalid or units/streams can't be created
+    """
+    import qsdsan as qs
+    from qsdsan import sanunits, WasteStream, System
+
+    from core.unit_registry import get_unit_spec
+    from utils.pipe_parser import parse_port_notation, resolve_port, is_tuple_notation, parse_tuple_notation
+    from utils.topo_sort import topological_sort
+
+    warnings = []
+
+    # Cache for model-specific components/thermo
+    # This enables mixed-model flowsheets (ASM2d + mADM1)
+    model_components: Dict[str, Tuple] = {}
+
+    def get_components_for_model(model: str):
+        """Get or create components/thermo for a model type."""
+        if model not in model_components:
+            cmps, thermo = _get_model_components(model)
+            model_components[model] = (cmps, thermo)
+        return model_components[model]
+
+    # Initialize primary model components
+    primary_model = session.primary_model_type
+    cmps, thermo = get_components_for_model(primary_model)
+
+    # Set primary model as active thermo
+    qs.set_thermo(cmps)
+
+    # Create WasteStream objects
+    stream_registry: Dict[str, WasteStream] = {}
+    for stream_id, config in session.streams.items():
+        try:
+            # Use stream's model_type or fall back to primary
+            stream_model = config.model_type or primary_model
+            stream_cmps, _ = get_components_for_model(stream_model)
+
+            # Set thermo for this stream's model
+            qs.set_thermo(stream_cmps)
+
+            stream = _create_waste_stream(stream_id, config, stream_cmps)
+            stream_registry[stream_id] = stream
+            logger.debug(f"Created stream '{stream_id}' (model: {stream_model})")
+        except Exception as e:
+            raise ValueError(f"Failed to create stream '{stream_id}': {e}")
+
+    # Reset to primary thermo
+    qs.set_thermo(cmps)
+
+    # Create SanUnit objects
+    unit_registry: Dict[str, "SanUnit"] = {}
+    for unit_id, config in session.units.items():
+        try:
+            # Use unit's model_type or fall back to primary
+            unit_model = config.model_type or primary_model
+            unit_cmps, _ = get_components_for_model(unit_model)
+
+            # Set thermo for this unit's model
+            qs.set_thermo(unit_cmps)
+
+            unit = _create_san_unit(
+                unit_id, config, stream_registry, unit_registry, unit_cmps, unit_model
+            )
+            unit_registry[unit_id] = unit
+            logger.debug(f"Created unit '{unit_id}' ({config.unit_type}, model: {unit_model})")
+        except Exception as e:
+            raise ValueError(f"Failed to create unit '{unit_id}': {e}")
+
+    # Wire deferred connections (recycles)
+    recycle_streams = []
+    for conn in session.connections:
+        try:
+            _wire_connection(conn, unit_registry, stream_registry, recycle_streams)
+            logger.debug(f"Wired connection {conn.from_port} → {conn.to_port}")
+        except Exception as e:
+            warnings.append(f"Connection {conn.from_port} → {conn.to_port} failed: {e}")
+
+    # Determine unit order
+    if unit_order is None:
+        topo_result = topological_sort(
+            session.units,
+            session.connections,
+            recycle_stream_ids=recycle_stream_ids or set(),
+        )
+        unit_order = topo_result.unit_order
+        recycle_edges = topo_result.recycle_edges
+        warnings.extend(topo_result.warnings)
+    else:
+        recycle_edges = []
+
+    # Build System
+    path = [unit_registry[uid] for uid in unit_order if uid in unit_registry]
+
+    # Identify recycle streams for System
+    system_recycles = []
+    for stream_id in (recycle_stream_ids or set()):
+        if stream_id in stream_registry:
+            system_recycles.append(stream_registry[stream_id])
+    system_recycles.extend(recycle_streams)
+
+    system = System(
+        system_id,
+        path=path,
+        recycle=system_recycles[0] if len(system_recycles) == 1 else system_recycles if system_recycles else None,
+    )
+
+    build_info = BuildInfo(
+        system_id=system_id,
+        unit_order=unit_order,
+        recycle_edges=recycle_edges,
+        streams_created=list(stream_registry.keys()),
+        units_created=list(unit_registry.keys()),
+        warnings=warnings,
+    )
+
+    return system, build_info
+
+
+def simulate_compiled_system(
+    system: "System",
+    duration_days: float = 1.0,
+    timestep_hours: float = 1.0,
+    method: str = "RK23",
+    t_eval: Optional[List[float]] = None,
+    state_reset_hook: str = "reset_cache",
+    output_dir: Optional[Path] = None,
+    model_type: str = "ASM2d",
+    effluent_stream_ids: Optional[List[str]] = None,
+    biogas_stream_ids: Optional[List[str]] = None,
+    include_components: bool = False,
+    track: Optional[List[str]] = None,
+    export_state_to: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """
+    Simulate a compiled QSDsan System.
+
+    Args:
+        system: Compiled QSDsan System
+        duration_days: Simulation duration in days
+        timestep_hours: Output timestep in hours
+        method: ODE solver method (RK23, RK45, BDF)
+        t_eval: Custom evaluation times (days). If None, uses timestep.
+        state_reset_hook: Method name for state reset
+        output_dir: Directory for output files
+        model_type: Process model type for result analysis
+        effluent_stream_ids: Streams for effluent quality analysis
+        biogas_stream_ids: Streams for biogas analysis (mADM1 only)
+        include_components: Include full component breakdown in results
+        track: Stream IDs to track dynamically during simulation
+        export_state_to: Path to export final effluent state as PlantState JSON
+
+    Returns:
+        Dict with simulation results including effluent quality, removal efficiency, etc.
+    """
+    import numpy as np
+
+    # Generate t_eval if not provided
+    if t_eval is None:
+        t_eval = np.arange(0, duration_days + timestep_hours / 24, timestep_hours / 24).tolist()
+
+    t_span = (0, duration_days)
+
+    # Build simulate kwargs
+    sim_kwargs = {
+        "t_span": t_span,
+        "t_eval": t_eval,
+        "method": method,
+        "state_reset_hook": state_reset_hook,
+    }
+
+    # Add track streams if provided (for dynamic tracking during simulation)
+    if track:
+        # Resolve stream IDs to WasteStream objects
+        track_streams = []
+        for stream_id in track:
+            for stream in system.streams:
+                if stream and stream.ID == stream_id:
+                    track_streams.append(stream)
+                    break
+        if track_streams:
+            sim_kwargs["track"] = track_streams
+
+    # Run dynamic simulation
+    system.simulate(**sim_kwargs)
+
+    # Extract results
+    results = _extract_simulation_results(
+        system,
+        model_type=model_type,
+        effluent_stream_ids=effluent_stream_ids,
+        biogas_stream_ids=biogas_stream_ids,
+        include_components=include_components,
+    )
+
+    # Save diagram if output_dir provided
+    if output_dir:
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            from utils.diagram import save_system_diagram
+            diagram_path = save_system_diagram(system, output_dir / "flowsheet")
+            results["diagram_path"] = str(diagram_path)
+        except Exception as e:
+            logger.warning(f"Failed to generate diagram: {e}")
+
+    # Export final state as PlantState JSON if requested
+    if export_state_to:
+        export_path = Path(export_state_to)
+        export_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            _export_plant_state(system, export_path, model_type, effluent_stream_ids)
+            results["exported_state_path"] = str(export_path)
+        except Exception as e:
+            logger.warning(f"Failed to export plant state: {e}")
+
+    return results
+
+
+def _get_model_components(model_type: str) -> Tuple["CompiledComponents", "Thermo"]:
+    """Get components and thermo for a model type."""
+    import qsdsan as qs
+    from qsdsan import processes as pc
+
+    if model_type in ("mADM1", "ADM1"):
+        # Use mADM1 components (63 components)
+        from models.madm1 import create_madm1_cmps
+        cmps = create_madm1_cmps()
+    elif model_type in ("ASM2d", "ASM1", "mASM2d"):
+        # Use ASM2d components (19 components)
+        cmps = pc.create_asm2d_cmps()
+    else:
+        raise ValueError(f"Unknown model type: {model_type}")
+
+    thermo = qs.get_thermo()
+    return cmps, thermo
+
+
+def _create_waste_stream(
+    stream_id: str,
+    config: "StreamConfig",
+    cmps: "CompiledComponents",
+) -> "WasteStream":
+    """Create a WasteStream from StreamConfig.
+
+    Concentrations are specified in mg/L and converted properly using
+    WasteStream's set_flow_by_concentration method.
+    """
+    from qsdsan import WasteStream
+
+    # Build concentration dict (only valid components)
+    concentrations = {}
+    valid_ids = set(cmps.IDs)
+
+    for comp_id, conc in config.concentrations.items():
+        if comp_id in valid_ids:
+            concentrations[comp_id] = conc
+        else:
+            logger.warning(f"Stream '{stream_id}': component '{comp_id}' not in model, skipping")
+
+    # Create stream with temperature
+    stream = WasteStream(
+        ID=stream_id,
+        T=config.temperature_K,
+    )
+
+    # Set flow and concentrations using proper QSDsan method
+    if config.flow_m3_d > 0 and concentrations:
+        # Use set_flow_by_concentration for correct unit handling
+        # concentrations are in mg/L, flow is in m³/d
+        try:
+            stream.set_flow_by_concentration(
+                flow_tot=config.flow_m3_d,
+                concentrations=concentrations,
+                units=('m3/d', 'mg/L'),
+            )
+        except Exception as e:
+            # Fallback to manual calculation if set_flow_by_concentration fails
+            logger.warning(f"Stream '{stream_id}': set_flow_by_concentration failed ({e}), using fallback")
+            stream.set_total_flow(config.flow_m3_d, "m3/d")
+            # Convert mg/L to kg/hr: (mg/L * m³/d) / (1000 mg/g * 1000 g/kg) / 24 hr/d
+            for comp_id, conc in concentrations.items():
+                if conc > 0:
+                    # mg/L * m³/d = g/d -> /1000 = kg/d -> /24 = kg/hr
+                    stream.imass[comp_id] = (conc * config.flow_m3_d) / 1000 / 24  # kg/hr
+    elif config.flow_m3_d > 0:
+        stream.set_total_flow(config.flow_m3_d, "m3/d")
+
+    return stream
+
+
+def _resolve_single_input(
+    input_ref: str,
+    stream_registry: Dict[str, "WasteStream"],
+    unit_registry: Dict[str, "SanUnit"],
+) -> Optional[Any]:
+    """Resolve a single input reference to a stream/port or None.
+
+    Args:
+        input_ref: Port notation string (not tuple notation)
+        stream_registry: Dict of stream_id → WasteStream
+        unit_registry: Dict of unit_id → SanUnit
+
+    Returns:
+        WasteStream, output port, or None if not found
+    """
+    from utils.pipe_parser import parse_port_notation
+
+    ref = parse_port_notation(input_ref)
+
+    if ref.port_type == "stream":
+        # Direct stream reference
+        if ref.unit_id in stream_registry:
+            return stream_registry[ref.unit_id]
+        else:
+            # Create empty stream as placeholder
+            return None
+    elif ref.port_type == "output":
+        # Output port of another unit (e.g., "A1-0")
+        if ref.unit_id in unit_registry:
+            src_unit = unit_registry[ref.unit_id]
+            if ref.index < len(src_unit.outs):
+                return src_unit.outs[ref.index]
+        return None
+    elif ref.port_type == "direct":
+        # Direct unit-to-unit connection (e.g., "U1-U2" or "U1-0-1-U2")
+        # For inputs, we only care about the source unit's output
+        if ref.unit_id in unit_registry:
+            src_unit = unit_registry[ref.unit_id]
+            if ref.index < len(src_unit.outs):
+                return src_unit.outs[ref.index]
+        return None
+    elif ref.port_type == "input":
+        # Input port reference (e.g., "1-M1") - shouldn't be used as input source
+        # This is unusual - typically inputs reference outputs or streams
+        return None
+    else:
+        return None
+
+
+def _create_san_unit(
+    unit_id: str,
+    config: "UnitConfig",
+    stream_registry: Dict[str, "WasteStream"],
+    unit_registry: Dict[str, "SanUnit"],
+    cmps: "CompiledComponents",
+    model_type: str = "ASM2d",
+) -> "SanUnit":
+    """Create a SanUnit from UnitConfig with automatic process model instantiation.
+
+    Args:
+        unit_id: Unit identifier
+        config: UnitConfig with unit_type, params, inputs, outputs
+        stream_registry: Registry of created WasteStreams
+        unit_registry: Registry of created SanUnits
+        cmps: Components for this unit's model type
+        model_type: Process model type (ASM2d, ASM1, mASM2d, ADM1, mADM1)
+
+    Returns:
+        Configured SanUnit instance
+    """
+    from qsdsan import sanunits
+    from core.unit_registry import get_unit_spec
+    from utils.pipe_parser import parse_port_notation, is_tuple_notation, parse_tuple_notation
+
+    spec = get_unit_spec(config.unit_type)
+
+    # Resolve input streams/ports
+    # Supports tuple fan-in notation like "(A1-0, B1-0)" for Mixer inputs
+    ins = []
+    for input_ref in config.inputs:
+        # Check for tuple notation (fan-in)
+        if is_tuple_notation(input_ref):
+            # Parse tuple and resolve each port
+            port_strs = parse_tuple_notation(input_ref)
+            for port_str in port_strs:
+                resolved = _resolve_single_input(port_str, stream_registry, unit_registry)
+                ins.append(resolved)
+        else:
+            resolved = _resolve_single_input(input_ref, stream_registry, unit_registry)
+            ins.append(resolved)
+
+    # Get the QSDsan class
+    unit_class = _get_unit_class(spec.qsdsan_class)
+
+    # Build kwargs
+    kwargs = {"ID": unit_id}
+    if ins:
+        kwargs["ins"] = ins if len(ins) > 1 else ins[0]
+
+    # Add unit-specific parameters
+    for param, value in config.params.items():
+        if value is not None:
+            kwargs[param] = value
+
+    # Auto-instantiate process models for reactors
+    # Aerobic reactors (CSTR, MBR) need suspended_growth_model
+    if config.unit_type in ("CSTR", "CompletelyMixedMBR"):
+        from qsdsan import processes as pc
+        if model_type == "ASM2d":
+            kwargs.setdefault("suspended_growth_model", pc.ASM2d())
+        elif model_type == "mASM2d":
+            kwargs.setdefault("suspended_growth_model", pc.mASM2d())
+        elif model_type == "ASM1":
+            kwargs.setdefault("suspended_growth_model", pc.ASM1())
+        else:
+            logger.warning(f"Unit '{unit_id}': No suspended_growth_model for model_type '{model_type}'")
+
+    # Anaerobic reactors need anaerobic_digestion_model
+    elif config.unit_type == "AnaerobicCSTR":
+        from qsdsan import processes as pc
+        if model_type == "ADM1":
+            kwargs.setdefault("model", pc.ADM1())
+        else:
+            logger.warning(f"Unit '{unit_id}': AnaerobicCSTR typically uses ADM1, got '{model_type}'")
+
+    elif config.unit_type == "AnaerobicCSTRmADM1":
+        # Custom mADM1 reactor uses ModifiedADM1 process model
+        if model_type == "mADM1":
+            from models.madm1 import ModifiedADM1
+            kwargs.setdefault("model", ModifiedADM1())
+        else:
+            logger.warning(f"Unit '{unit_id}': AnaerobicCSTRmADM1 requires mADM1, got '{model_type}'")
+
+    # AnMBR (anaerobic MBR) also needs anaerobic model
+    elif config.unit_type == "AnMBR":
+        from qsdsan import processes as pc
+        if model_type == "ADM1":
+            kwargs.setdefault("model", pc.ADM1())
+        elif model_type == "mADM1":
+            from models.madm1 import ModifiedADM1
+            kwargs.setdefault("model", ModifiedADM1())
+        else:
+            logger.warning(f"Unit '{unit_id}': AnMBR typically uses ADM1/mADM1, got '{model_type}'")
+
+    # SBR also needs suspended_growth_model
+    elif config.unit_type == "SBR":
+        from qsdsan import processes as pc
+        if model_type == "ASM2d":
+            kwargs.setdefault("suspended_growth_model", pc.ASM2d())
+        elif model_type == "ASM1":
+            kwargs.setdefault("suspended_growth_model", pc.ASM1())
+
+    # Create unit
+    unit = unit_class(**kwargs)
+
+    # Handle named outputs - assign IDs to output streams and register them
+    if config.outputs:
+        for i, out_name in enumerate(config.outputs):
+            if i < len(unit.outs) and out_name:
+                # Set the stream ID
+                if unit.outs[i]:
+                    unit.outs[i].ID = out_name
+                    # Register in stream_registry for downstream reference
+                    stream_registry[out_name] = unit.outs[i]
+
+    return unit
+
+
+def _get_unit_class(qsdsan_class: str):
+    """Import and return a unit class from its path."""
+    from qsdsan import sanunits
+
+    # Handle qsdsan.sanunits.ClassName format
+    if qsdsan_class.startswith("qsdsan.sanunits."):
+        class_name = qsdsan_class.split(".")[-1]
+        if hasattr(sanunits, class_name):
+            return getattr(sanunits, class_name)
+        raise ValueError(f"Unit class '{class_name}' not found in qsdsan.sanunits")
+
+    # Handle custom classes (e.g., models.reactors.AnaerobicCSTRmADM1)
+    parts = qsdsan_class.rsplit(".", 1)
+    if len(parts) == 2:
+        module_path, class_name = parts
+        import importlib
+        try:
+            module = importlib.import_module(module_path)
+            return getattr(module, class_name)
+        except (ImportError, AttributeError) as e:
+            raise ValueError(f"Failed to import '{qsdsan_class}': {e}")
+
+    raise ValueError(f"Invalid qsdsan_class path: {qsdsan_class}")
+
+
+def _wire_connection(
+    conn: "ConnectionConfig",
+    unit_registry: Dict[str, "SanUnit"],
+    stream_registry: Dict[str, "WasteStream"],
+    recycle_streams: List["WasteStream"],
+) -> None:
+    """Wire a deferred connection between units.
+
+    Handles all pipe notation formats:
+    - Output notation: {"from": "A1-0", "to": "B1"} or {"from": "A1-0", "to": "1-B1"}
+    - Direct notation: {"from": "A1-B1", "to": None} (U1-U2 format)
+    - Explicit notation: {"from": "A1-0-1-B1", "to": None} (U1-0-1-U2 format)
+    """
+    from qsdsan import WasteStream
+    from utils.pipe_parser import parse_port_notation
+
+    from_ref = parse_port_notation(conn.from_port)
+
+    # Handle direct notation (U1-U2 or U1-0-1-U2) where source and target are in from_port
+    if from_ref.port_type == "direct":
+        # Source unit and port
+        if from_ref.unit_id not in unit_registry:
+            raise ValueError(f"Source unit '{from_ref.unit_id}' not found")
+        src_unit = unit_registry[from_ref.unit_id]
+
+        src_out_idx = from_ref.index  # Default 0 for U1-U2, explicit for U1-0-1-U2
+        if src_out_idx >= len(src_unit.outs):
+            raise ValueError(f"Unit '{from_ref.unit_id}' has no output port {src_out_idx}")
+        src_port = src_unit.outs[src_out_idx]
+
+        # Target unit and port (embedded in from_ref)
+        if from_ref.target_unit_id not in unit_registry:
+            raise ValueError(f"Target unit '{from_ref.target_unit_id}' not found")
+        dst_unit = unit_registry[from_ref.target_unit_id]
+
+        dst_in_idx = from_ref.target_index if from_ref.target_index is not None else 0
+        if dst_in_idx >= len(dst_unit.ins):
+            raise ValueError(f"Unit '{from_ref.target_unit_id}' has no input port {dst_in_idx}")
+
+        # Wire the connection
+        dst_unit.ins[dst_in_idx] = src_port
+
+        # Track as recycle stream
+        if src_port not in recycle_streams:
+            recycle_streams.append(src_port)
+        return
+
+    # Standard notation: from_port is output, to_port is input destination
+    to_ref = parse_port_notation(conn.to_port)
+
+    # Get source port (from output notation like "A1-0")
+    if from_ref.unit_id not in unit_registry:
+        raise ValueError(f"Source unit '{from_ref.unit_id}' not found")
+
+    src_unit = unit_registry[from_ref.unit_id]
+    src_out_idx = from_ref.index if from_ref.index >= 0 else 0
+    if src_out_idx >= len(src_unit.outs):
+        raise ValueError(f"Unit '{from_ref.unit_id}' has no output port {src_out_idx}")
+
+    src_port = src_unit.outs[src_out_idx]
+
+    # Get destination port
+    if to_ref.port_type == "stream":
+        # Destination is a unit ID (e.g., "B1") - use input port 0
+        if to_ref.unit_id not in unit_registry:
+            raise ValueError(f"Destination unit '{to_ref.unit_id}' not found")
+        dst_unit = unit_registry[to_ref.unit_id]
+        dst_in_idx = 0
+    elif to_ref.port_type == "input":
+        # Explicit input notation (e.g., "1-B1")
+        if to_ref.unit_id not in unit_registry:
+            raise ValueError(f"Destination unit '{to_ref.unit_id}' not found")
+        dst_unit = unit_registry[to_ref.unit_id]
+        dst_in_idx = to_ref.index
+    else:
+        raise ValueError(
+            f"Invalid to_port '{conn.to_port}': expected input notation or unit ID"
+        )
+
+    if dst_in_idx >= len(dst_unit.ins):
+        raise ValueError(f"Unit '{to_ref.unit_id}' has no input port {dst_in_idx}")
+
+    # Wire the connection
+    dst_unit.ins[dst_in_idx] = src_port
+
+    # Track as recycle stream
+    if src_port not in recycle_streams:
+        recycle_streams.append(src_port)
+
+
+def _extract_simulation_results(
+    system: "System",
+    model_type: str = "ASM2d",
+    effluent_stream_ids: Optional[List[str]] = None,
+    biogas_stream_ids: Optional[List[str]] = None,
+    include_components: bool = False,
+) -> Dict[str, Any]:
+    """Extract simulation results from a completed system.
+
+    Args:
+        system: Completed QSDsan System
+        model_type: Process model type for component interpretation
+        effluent_stream_ids: Streams for effluent analysis
+        biogas_stream_ids: Streams for biogas analysis
+        include_components: Include full component breakdown for each stream
+    """
+    from utils.stream_analysis import (
+        calculate_effluent_quality,
+        calculate_removal_efficiency,
+    )
+
+    results = {
+        "system_id": system.ID,
+        "simulation_completed": True,
+        "units": [u.ID for u in system.units],
+        "streams": [s.ID for s in system.streams if s],
+    }
+
+    # Include full component breakdown if requested
+    if include_components:
+        components_data = {}
+        for stream in system.streams:
+            if stream:
+                try:
+                    # Get component concentrations in mg/L
+                    stream_components = {}
+                    for comp_id in stream.components.IDs:
+                        try:
+                            conc = stream.iconc[comp_id]
+                            if conc > 0:
+                                stream_components[comp_id] = float(conc)
+                        except Exception:
+                            pass
+                    if stream_components:
+                        components_data[stream.ID] = stream_components
+                except Exception as e:
+                    logger.warning(f"Failed to get components for stream {stream.ID}: {e}")
+        if components_data:
+            results["components"] = components_data
+
+    # Find effluent streams
+    if effluent_stream_ids:
+        effluent_streams = [s for s in system.streams if s and s.ID in effluent_stream_ids]
+    else:
+        # Auto-detect effluent (streams with "effluent" in name or last stream)
+        effluent_streams = [s for s in system.streams if s and "effluent" in s.ID.lower()]
+        if not effluent_streams and system.streams:
+            effluent_streams = [system.streams[-1]]
+
+    # Calculate effluent quality
+    if effluent_streams:
+        eff = effluent_streams[0]
+        try:
+            results["effluent_quality"] = calculate_effluent_quality(eff, model_type)
+        except Exception as e:
+            logger.warning(f"Failed to calculate effluent quality: {e}")
+            results["effluent_quality"] = {"error": str(e)}
+
+    # Find influent for removal efficiency
+    influent_streams = [s for s in system.streams if s and "influent" in s.ID.lower()]
+    if influent_streams and effluent_streams:
+        try:
+            results["removal_efficiency"] = calculate_removal_efficiency(
+                influent_streams[0], effluent_streams[0], model_type
+            )
+        except Exception as e:
+            logger.warning(f"Failed to calculate removal efficiency: {e}")
+
+    # Biogas analysis for anaerobic models
+    if model_type in ("mADM1", "ADM1"):
+        if biogas_stream_ids:
+            biogas_streams = [s for s in system.streams if s and s.ID in biogas_stream_ids]
+        else:
+            biogas_streams = [s for s in system.streams if s and "biogas" in s.ID.lower()]
+
+        if biogas_streams:
+            try:
+                from utils.stream_analysis import calculate_biogas_composition
+                results["biogas"] = calculate_biogas_composition(biogas_streams[0])
+            except Exception as e:
+                logger.warning(f"Failed to calculate biogas composition: {e}")
+
+    return results
+
+
+def _export_plant_state(
+    system: "System",
+    export_path: Path,
+    model_type: str,
+    effluent_stream_ids: Optional[List[str]] = None,
+) -> None:
+    """Export final effluent state as PlantState JSON.
+
+    Args:
+        system: Completed QSDsan System
+        export_path: Path to write JSON file
+        model_type: Process model type for component definitions
+        effluent_stream_ids: Specific effluent stream IDs to export
+    """
+    from core.plant_state import PlantState
+
+    # Find effluent stream
+    if effluent_stream_ids:
+        effluent_streams = [s for s in system.streams if s and s.ID in effluent_stream_ids]
+    else:
+        effluent_streams = [s for s in system.streams if s and "effluent" in s.ID.lower()]
+
+    if not effluent_streams:
+        raise ValueError("No effluent stream found to export")
+
+    stream = effluent_streams[0]
+
+    # Build concentrations dict
+    concentrations = {}
+    for comp_id in stream.components.IDs:
+        try:
+            conc = stream.iconc[comp_id]
+            if conc > 0:
+                concentrations[comp_id] = float(conc)
+        except Exception:
+            pass
+
+    # Get flow in m³/d
+    try:
+        flow_m3_d = float(stream.F_vol * 24)  # m³/hr → m³/d
+    except Exception:
+        flow_m3_d = 0.0
+
+    # Create PlantState
+    plant_state = PlantState(
+        model_type=model_type,
+        flow_m3_d=flow_m3_d,
+        temperature_K=float(stream.T) if hasattr(stream, 'T') else 293.15,
+        concentrations=concentrations,
+    )
+
+    # Write to JSON
+    with open(export_path, "w") as f:
+        json.dump(plant_state.__dict__, f, indent=2)
+
+
+# =============================================================================
+# Module exports
+# =============================================================================
+__all__ = [
+    'compile_system',
+    'simulate_compiled_system',
+    'BuildInfo',
+]

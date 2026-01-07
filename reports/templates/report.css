@@ -1,0 +1,558 @@
+/*
+ * QSDsan Engine Report Stylesheet
+ * Aesthetic: Technical Engineering Document
+ *
+ * Design philosophy: Clean, professional black & white engineering
+ * deliverable inspired by technical specifications, P&ID drawings,
+ * and control system documentation. Print-friendly and precise.
+ */
+
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap");
+
+:root {
+  /* Grayscale palette */
+  --ink: #0f0f0f;
+  --ink-secondary: #3a3a3a;
+  --ink-muted: #6a6a6a;
+  --ink-light: #9a9a9a;
+
+  /* Surfaces */
+  --paper: #ffffff;
+  --paper-alt: #f8f8f8;
+  --paper-dark: #f0f0f0;
+
+  /* Borders & lines */
+  --rule: #d0d0d0;
+  --rule-strong: #0f0f0f;
+  --rule-dashed: #b0b0b0;
+
+  /* Status colors (minimal, functional) */
+  --status-ok: #1a1a1a;
+  --status-warn: #5a5a5a;
+  --status-crit: #0f0f0f;
+
+  /* Accent - single color for emphasis */
+  --accent: #0f0f0f;
+
+  /* Shadows (subtle for depth) */
+  --shadow-soft: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+/* ============================================
+   BASE LAYOUT & TYPOGRAPHY
+   ============================================ */
+
+body {
+  font-family: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 11pt;
+  line-height: 1.5;
+  color: var(--ink);
+  background: var(--paper);
+  max-width: 210mm;
+  margin: 0 auto;
+  padding: 20mm;
+}
+
+h1, h2, h3, h4 {
+  font-family: "IBM Plex Sans", sans-serif;
+  font-weight: 600;
+  color: var(--ink);
+  margin-top: 0;
+}
+
+h1 {
+  font-size: 18pt;
+  letter-spacing: -0.02em;
+  padding-bottom: 8pt;
+  border-bottom: 2pt solid var(--ink);
+  margin-bottom: 16pt;
+}
+
+h2 {
+  font-size: 11pt;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  margin-top: 24pt;
+  margin-bottom: 12pt;
+  padding-bottom: 4pt;
+  border-bottom: 0.5pt solid var(--rule);
+}
+
+h3 {
+  font-size: 10pt;
+  font-weight: 500;
+  color: var(--ink-secondary);
+  margin-top: 16pt;
+  margin-bottom: 8pt;
+}
+
+p {
+  margin: 0 0 8pt 0;
+}
+
+/* ============================================
+   REPORT HEADER
+   ============================================ */
+
+.report-header {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 16pt;
+  margin-bottom: 24pt;
+  padding-bottom: 12pt;
+  border-bottom: 0.5pt solid var(--rule);
+}
+
+.report-meta {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 8pt;
+  color: var(--ink-muted);
+  text-align: right;
+}
+
+.report-meta .label {
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--ink-light);
+}
+
+/* ============================================
+   KPI DASHBOARD
+   ============================================ */
+
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0;
+  margin: 16pt 0;
+  border: 0.5pt solid var(--rule);
+}
+
+.kpi-card {
+  padding: 12pt 16pt;
+  border-right: 0.5pt solid var(--rule);
+  background: var(--paper);
+}
+
+.kpi-card:last-child {
+  border-right: none;
+}
+
+.kpi-card.kpi-ok { }
+.kpi-card.kpi-warn { background: var(--paper-alt); }
+.kpi-card.kpi-crit {
+  background: var(--paper-dark);
+  position: relative;
+}
+
+.kpi-card.kpi-crit::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 3pt;
+  height: 100%;
+  background: var(--ink);
+}
+
+.kpi-label {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 7pt;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--ink-muted);
+  margin-bottom: 4pt;
+}
+
+.kpi-value {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 20pt;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--ink);
+}
+
+.kpi-unit {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 8pt;
+  color: var(--ink-muted);
+  margin-top: 2pt;
+}
+
+/* ============================================
+   STATUS INDICATORS
+   ============================================ */
+
+.status-dot {
+  display: inline-block;
+  width: 6pt;
+  height: 6pt;
+  border-radius: 50%;
+  margin-right: 6pt;
+  vertical-align: middle;
+  border: 0.5pt solid var(--ink);
+}
+
+.status-dot.status-green {
+  background: var(--paper);
+}
+
+.status-dot.status-yellow {
+  background: var(--paper-dark);
+}
+
+.status-dot.status-red {
+  background: var(--ink);
+}
+
+/* ============================================
+   DIAGNOSTIC PANEL
+   ============================================ */
+
+.diag-panel {
+  background: var(--paper-alt);
+  border: 0.5pt solid var(--rule);
+  padding: 12pt 16pt;
+  margin: 12pt 0;
+}
+
+.diag-panel p {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 9pt;
+  margin: 6pt 0;
+  display: flex;
+  justify-content: space-between;
+  padding-bottom: 6pt;
+  border-bottom: 0.25pt dashed var(--rule-dashed);
+}
+
+.diag-panel p:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.diag-panel strong {
+  font-weight: 500;
+  color: var(--ink);
+}
+
+/* ============================================
+   DATA TABLES
+   ============================================ */
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 8.5pt;
+  margin: 12pt 0;
+}
+
+.table thead {
+  border-bottom: 1pt solid var(--ink);
+}
+
+.table th {
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 7pt;
+  color: var(--ink);
+  padding: 8pt 10pt;
+  text-align: left;
+  background: var(--paper-alt);
+  border-top: 0.5pt solid var(--rule);
+}
+
+.table th:not(:first-child) {
+  text-align: right;
+}
+
+.table td {
+  padding: 6pt 10pt;
+  border-bottom: 0.25pt solid var(--rule);
+  color: var(--ink-secondary);
+}
+
+.table td:first-child {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.table td:not(:first-child) {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.table tbody tr:hover {
+  background: var(--paper-alt);
+}
+
+.table-striped tbody tr:nth-of-type(even) {
+  background: var(--paper-alt);
+}
+
+/* ============================================
+   CALLOUT WARNINGS
+   ============================================ */
+
+.callout-warning {
+  background: var(--paper-alt);
+  border: 0.5pt solid var(--rule);
+  border-left: 3pt solid var(--ink);
+  padding: 10pt 14pt;
+  margin: 12pt 0;
+  font-size: 9pt;
+}
+
+.callout-warning::before {
+  content: "NOTICE";
+  display: block;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 7pt;
+  font-weight: 600;
+  letter-spacing: 0.15em;
+  margin-bottom: 4pt;
+  color: var(--ink);
+}
+
+/* ============================================
+   GAUGE VISUALIZATIONS
+   ============================================ */
+
+.gauge {
+  height: 4pt;
+  background: var(--paper-dark);
+  border: 0.25pt solid var(--rule);
+  margin-top: 4pt;
+}
+
+.gauge-fill {
+  height: 100%;
+  background: var(--ink);
+}
+
+.gauge-fill.warn {
+  background: var(--ink-muted);
+}
+
+.gauge-fill.crit {
+  background: var(--ink);
+}
+
+/* ============================================
+   TIME SERIES PLACEHOLDER
+   ============================================ */
+
+.ts-placeholder {
+  background: var(--paper-alt);
+  border: 0.5pt dashed var(--rule-dashed);
+  padding: 24pt;
+  margin: 12pt 0;
+  text-align: center;
+  color: var(--ink-muted);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 8pt;
+  min-height: 120pt;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ============================================
+   FLOWSHEET DIAGRAM
+   ============================================ */
+
+.flowsheet-diagram {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 16pt auto;
+  border: 0.5pt solid var(--rule);
+  background: var(--paper);
+  padding: 8pt;
+}
+
+/* Style the diagram container for centered display */
+p:has(> .flowsheet-diagram) {
+  text-align: center;
+  margin: 16pt 0;
+}
+
+/* Ensure SVG diagrams scale properly */
+.flowsheet-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* ============================================
+   SECTION CARDS (for grouped content)
+   ============================================ */
+
+.section-card {
+  border: 0.5pt solid var(--rule);
+  padding: 12pt 16pt;
+  margin: 16pt 0;
+}
+
+.section-card h3 {
+  margin-top: 0;
+  padding-bottom: 8pt;
+  border-bottom: 0.25pt solid var(--rule);
+  margin-bottom: 12pt;
+}
+
+/* ============================================
+   TWO-COLUMN LAYOUT
+   ============================================ */
+
+.two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16pt;
+}
+
+.two-col > * {
+  min-width: 0;
+}
+
+/* ============================================
+   FLOW DIAGRAM ELEMENTS
+   ============================================ */
+
+.flow-connector {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8pt 0;
+  color: var(--ink-muted);
+}
+
+.flow-connector::before {
+  content: "";
+  width: 24pt;
+  height: 0.5pt;
+  background: var(--rule);
+}
+
+.flow-connector::after {
+  content: "\25B6";
+  font-size: 6pt;
+  margin-left: -1pt;
+}
+
+/* ============================================
+   SPEC BLOCK (for technical parameters)
+   ============================================ */
+
+.spec-block {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 8pt;
+  background: var(--paper);
+  border: 0.5pt solid var(--rule);
+  padding: 8pt 12pt;
+  margin: 8pt 0;
+}
+
+.spec-block dt {
+  float: left;
+  clear: left;
+  width: 50%;
+  color: var(--ink-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 7pt;
+}
+
+.spec-block dd {
+  margin-left: 50%;
+  color: var(--ink);
+  font-weight: 500;
+  padding-bottom: 4pt;
+  border-bottom: 0.25pt dotted var(--rule-dashed);
+  margin-bottom: 4pt;
+}
+
+.spec-block dd:last-of-type {
+  border-bottom: none;
+}
+
+/* ============================================
+   FOOTNOTES & REFERENCES
+   ============================================ */
+
+.footnote {
+  font-size: 7pt;
+  color: var(--ink-muted);
+  border-top: 0.5pt solid var(--rule);
+  margin-top: 24pt;
+  padding-top: 8pt;
+}
+
+/* ============================================
+   PRINT OPTIMIZATION
+   ============================================ */
+
+@media print {
+  body {
+    padding: 0;
+    max-width: none;
+  }
+
+  h2 {
+    page-break-after: avoid;
+  }
+
+  .table, .kpi-grid, .diag-panel {
+    page-break-inside: avoid;
+  }
+
+  .ts-placeholder {
+    min-height: 80pt;
+  }
+
+  .flowsheet-diagram {
+    max-width: 180mm;
+    page-break-inside: avoid;
+    page-break-before: auto;
+  }
+}
+
+/* ============================================
+   RESPONSIVE (for screen viewing)
+   ============================================ */
+
+@media screen and (max-width: 768px) {
+  body {
+    padding: 16pt;
+    font-size: 10pt;
+  }
+
+  .kpi-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .kpi-card {
+    border-bottom: 0.5pt solid var(--rule);
+  }
+
+  .kpi-card:nth-child(2n) {
+    border-right: none;
+  }
+
+  .kpi-value {
+    font-size: 16pt;
+  }
+
+  .two-col {
+    grid-template-columns: 1fr;
+  }
+
+  .table {
+    font-size: 7.5pt;
+  }
+
+  .table th, .table td {
+    padding: 4pt 6pt;
+  }
+}
