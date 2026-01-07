@@ -45,6 +45,7 @@ output/
 jobs/
 
 # Claude Code artifacts
+CLAUDE.md
 .claude/settings.json
 .claude/*.local.md
 .claude/plans/
