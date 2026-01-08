@@ -130,10 +130,10 @@ class AnaerobicCSTRmADM1(AnaerobicCSTR):
         n_gas = self._n_gas
         V_liq = self.V_liq
         V_gas = self.V_gas
-        # FIX #4: Gas mass-to-molar conversion (kg/m³ → kmol/m³)
+        # FIX #4: Gas mass-to-molar conversion (kg/m³ -> kmol/m³)
         # CRITICAL: Rate function returns rhos in kg COD/m³/d (COD basis, NOT pure mass basis)
         # Must use COD-weighted conversion: i_mass/MW to account for COD content per mole
-        # i_mass = kg COD/kg compound, MW = kg/kmol → i_mass/MW = kmol/kg COD
+        # i_mass = kg COD/kg compound, MW = kg/kmol -> i_mass/MW = kmol/kg COD
         # Using 1/MW (pure molecular weight) would OVERCOUNT CH4 moles by ~4×
         # Reference: QSDsan upstream AnaerobicCSTR uses i_mass/MW (line 518, 557, 622)
         gas_mass2mol_conversion = cmps.i_mass[self._gas_cmp_idx] / cmps.chem_MW[self._gas_cmp_idx]  # kmol/kg COD

@@ -44,8 +44,7 @@ htmlcov/
 output/
 jobs/
 
-# Claude Code artifacts
-CLAUDE.md
+# Claude Code artifacts (keep CLAUDE.md tracked for documentation)
 .claude/settings.json
 .claude/*.local.md
 .claude/plans/

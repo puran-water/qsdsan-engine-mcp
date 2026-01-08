@@ -1,5 +1,5 @@
 """
-Junction Units - Custom junction classes for ASM2d ↔ mADM1 state conversion.
+Junction Units - Custom junction classes for ASM2d <-> mADM1 state conversion.
 
 This module provides custom junction units that work with our 63-component mADM1
 (ModifiedADM1) model. The standard QSDsan junction units expect ADM1_p_extension,
@@ -47,7 +47,7 @@ _aligned_components_cache: dict = {}
 
 class ASM2dtomADM1_custom(ASM2dtomADM1):
     """
-    Custom ASM2d → mADM1 junction that accepts ModifiedADM1 process model.
+    Custom ASM2d -> mADM1 junction that accepts ModifiedADM1 process model.
 
     This class inherits from QSDsan's ASM2dtomADM1 to get:
     - _compile_reactions() - the actual conversion stoichiometry
@@ -324,7 +324,7 @@ class ASM2dtomADM1_custom(ASM2dtomADM1):
 
 class mADM1toASM2d_custom(mADM1toASM2d):
     """
-    Custom mADM1 → ASM2d junction that accepts ModifiedADM1 process model.
+    Custom mADM1 -> ASM2d junction that accepts ModifiedADM1 process model.
 
     This class inherits from QSDsan's mADM1toASM2d to get:
     - _compile_reactions() - the actual conversion stoichiometry
@@ -558,7 +558,7 @@ class mADM1toASM2d_custom(mADM1toASM2d):
         """
         if self._auto_align_components and self._aligned_cmps is not None:
             # Use aligned components instead of stream components
-            # Note: For mADM1→ASM2d, input is mADM1 (adm), output is ASM2d (asm)
+            # Note: For mADM1->ASM2d, input is mADM1 (adm), output is ASM2d (asm)
             cmps_asm, cmps_adm = self._aligned_cmps
             logger.debug(f"Junction {self.ID}: Using aligned components for reaction compilation")
         else:

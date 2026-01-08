@@ -10,7 +10,7 @@ Core Tools (Phase 1):
     - get_job_results: Retrieve simulation results
     - list_templates: List available flowsheet templates
     - validate_state: Validate PlantState against model
-    - convert_state: ASM2d ↔ mADM1 state conversion (background job)
+    - convert_state: ASM2d <-> mADM1 state conversion (background job)
 
 Utility Tools:
     - list_jobs: List all background jobs
@@ -342,7 +342,7 @@ async def convert_state(
     Convert PlantState between model types using QSDsan Junction units.
 
     This tool runs as a background job for complex conversions.
-    Supports ASM2d ↔ mADM1 conversions for integrated plant simulation.
+    Supports ASM2d <-> mADM1 conversions for integrated plant simulation.
 
     Args:
         state_json: JSON string of PlantState to convert
@@ -386,7 +386,7 @@ async def convert_state(
         if (from_mt, to_mt) not in supported_conversions:
             return {
                 "error": f"Conversion from {from_model} to {to_model} not supported",
-                "supported": [f"{f.value} → {t.value}" for f, t in supported_conversions],
+                "supported": [f"{f.value} -> {t.value}" for f, t in supported_conversions],
             }
 
         # Create job directory
@@ -418,7 +418,7 @@ async def convert_state(
         return {
             "job_id": job["id"],
             "status": job["status"],
-            "conversion": f"{from_model} → {to_model}",
+            "conversion": f"{from_model} -> {to_model}",
             "message": f"Conversion started. Use get_job_status('{job['id']}') to monitor.",
         }
 
@@ -549,7 +549,7 @@ async def create_stream(
         session_id: Session identifier from create_flowsheet_session
         stream_id: Unique stream identifier (e.g., "influent", "RAS")
         flow_m3_d: Flow rate in m³/day
-        concentrations: JSON dict of component ID → concentration (mg/L)
+        concentrations: JSON dict of component ID -> concentration (mg/L)
         temperature_K: Temperature in Kelvin (default 293.15 = 20°C)
         stream_type: One of "influent", "recycle", "intermediate"
         model_type: Process model override (defaults to session's primary model)
@@ -697,7 +697,7 @@ async def connect_units(
     Args:
         session_id: Session identifier
         connections: JSON list of connection objects. Formats:
-            - Standard: {"from": "SP-0", "to": "A1-1"}
+            - Standard: {"from": "SP-0", "to": "1-A1"}  # Note: input notation for "to"
             - Direct:   {"from": "U1-U2"} or {"from": "U1-0-1-U2"}
 
     Returns:
@@ -706,7 +706,7 @@ async def connect_units(
     Example:
         >>> await connect_units(
         ...     session_id="abc123",
-        ...     connections='[{"from": "SP-0", "to": "A1-1"}]',
+        ...     connections='[{"from": "SP-0", "to": "1-A1"}]',
         ... )
         >>> await connect_units(
         ...     session_id="abc123",

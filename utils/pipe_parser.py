@@ -5,12 +5,12 @@ This module parses string-based pipe notation into port references that can
 be resolved to actual QSDsan unit ports. Supports full BioSTEAM syntax.
 
 Supported notations:
-    - "A1-0"      → Output port 0 of unit A1
-    - "1-M1"      → Input port 1 of unit M1
-    - "U1-U2"     → Direct connection: U1.outs[0] → U2.ins[0]
-    - "U1-0-1-U2" → Explicit: U1.outs[0] → U2.ins[1]
-    - "influent"  → Named stream
-    - "(A1-0, B1-0)" → Tuple fan-in notation
+    - "A1-0"      -> Output port 0 of unit A1
+    - "1-M1"      -> Input port 1 of unit M1
+    - "U1-U2"     -> Direct connection: U1.outs[0] -> U2.ins[0]
+    - "U1-0-1-U2" -> Explicit: U1.outs[0] -> U2.ins[1]
+    - "influent"  -> Named stream
+    - "(A1-0, B1-0)" -> Tuple fan-in notation
 
 Usage:
     from utils.pipe_parser import (
@@ -55,11 +55,11 @@ def parse_port_notation(port_str: str) -> PortReference:
     Parse pipe notation string with full BioSTEAM syntax support.
 
     Supported notations:
-        "A1-0"      → Output port 0 of unit A1
-        "1-M1"      → Input port 1 of unit M1
-        "U1-U2"     → Direct connection: U1.outs[0] → U2.ins[0]
-        "U1-0-1-U2" → Explicit: U1.outs[0] → U2.ins[1]
-        "influent"  → Named stream
+        "A1-0"      -> Output port 0 of unit A1
+        "1-M1"      -> Input port 1 of unit M1
+        "U1-U2"     -> Direct connection: U1.outs[0] -> U2.ins[0]
+        "U1-0-1-U2" -> Explicit: U1.outs[0] -> U2.ins[1]
+        "influent"  -> Named stream
 
     Args:
         port_str: Port notation string
@@ -142,7 +142,7 @@ def parse_port_notation(port_str: str) -> PortReference:
 
     elif len(parts) == 4:
         # Explicit port mapping: "U1-0-1-U2"
-        # U1.outs[0] → U2.ins[1]
+        # U1.outs[0] -> U2.ins[1]
         src_unit, out_idx_str, in_idx_str, dst_unit = parts
 
         # Validate numeric parts
@@ -210,8 +210,8 @@ def resolve_port(
 
     Args:
         port_str: Port notation or stream ID
-        unit_registry: Dict of unit_id → SanUnit object
-        stream_registry: Dict of stream_id → WasteStream object
+        unit_registry: Dict of unit_id -> SanUnit object
+        stream_registry: Dict of stream_id -> WasteStream object
 
     Returns:
         WasteStream for streams, or unit.ins[i]/unit.outs[i] for ports

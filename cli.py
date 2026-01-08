@@ -340,7 +340,7 @@ def convert(
 
             result = {
                 "status": "completed",
-                "message": f"Converted {from_model} → {to_model}",
+                "message": f"Converted {from_model} -> {to_model}",
                 "output_state": output_ps.to_dict(),
                 "metadata": metadata,
             }
@@ -349,7 +349,7 @@ def convert(
         if json_out:
             print(json.dumps(result, indent=2))
         else:
-            console.print(f"[bold]Conversion: {from_model} → {to_model}[/bold]")
+            console.print(f"[bold]Conversion: {from_model} -> {to_model}[/bold]")
             console.print(f"Status: {result.get('status', 'unknown')}")
             console.print(f"Message: {result.get('message', '')}")
 
@@ -724,7 +724,7 @@ def flowsheet_connect(
             console.print(f"[green]Added {len(results)} connection(s) to session {session_id}[/green]")
             for r in results:
                 stream_info = f" ({r.get('stream_id')})" if r.get('stream_id') else ""
-                console.print(f"  {r['from']} → {r['to']}{stream_info}")
+                console.print(f"  {r['from']} -> {r['to']}{stream_info}")
 
     except Exception as e:
         _error_exit(str(e), json_out)
@@ -827,7 +827,7 @@ def flowsheet_build(
             console.print(f"[bold green]Compiled flowsheet session {session_id}[/bold green]")
             console.print(f"System ID: {result['system_id']}")
             console.print(f"Models: {result['model_types']}")
-            console.print(f"Unit order: {' → '.join(result['unit_order'])}")
+            console.print(f"Unit order: {' -> '.join(result['unit_order'])}")
             console.print(f"Streams created: {len(result['streams_created'])}")
             console.print(f"Units created: {len(result['units_created'])}")
             if result['recycle_edges']:
@@ -1022,7 +1022,7 @@ def flowsheet_simulate(
         else:
             console.print(f"\n[bold green]Simulation completed![/bold green]")
             console.print(f"System: {system_id}")
-            console.print(f"Units: {' → '.join(build_info.unit_order)}")
+            console.print(f"Units: {' -> '.join(build_info.unit_order)}")
             console.print(f"Duration: {duration} days")
             console.print(f"Output: {output_dir}")
 
@@ -1130,7 +1130,7 @@ def flowsheet_show(
             if summary['connections']:
                 console.print(f"\n[bold]Connections ({len(summary['connections'])}):[/bold]")
                 for conn in summary['connections']:
-                    console.print(f"  - {conn['from']} → {conn['to']}")
+                    console.print(f"  - {conn['from']} -> {conn['to']}")
 
     except Exception as e:
         _error_exit(str(e), json_out)

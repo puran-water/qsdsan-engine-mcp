@@ -300,13 +300,13 @@ class TestFlowsheetSession:
         manager.create_session(model_type="ASM2d", session_id="test_conn")
         config = ConnectionConfig(
             from_port="SP-0",
-            to_port="A1-1",
+            to_port="1-A1",
             stream_id="RAS",
         )
         result = manager.add_connection("test_conn", config)
 
         assert result["from"] == "SP-0"
-        assert result["to"] == "A1-1"
+        assert result["to"] == "1-A1"
 
         # Verify persistence
         session = manager.get_session("test_conn")
@@ -606,7 +606,7 @@ class TestFlowsheetIntegration:
 
         # Add RAS recycle connection
         manager.add_connection("mle_recycle", ConnectionConfig(
-            from_port="SP-0", to_port="A1-1", stream_id="RAS"
+            from_port="SP-0", to_port="1-A1", stream_id="RAS"
         ))
 
         # Load session and verify
@@ -827,7 +827,7 @@ class TestCLIFullWorkflow:
 
     @pytest.mark.slow
     def test_cli_mle_full_workflow(self, clean_workflow_sessions):
-        """Test full MLE workflow via CLI: new → add-stream → add-unit → build."""
+        """Test full MLE workflow via CLI: new -> add-stream -> add-unit -> build."""
         import subprocess
         cwd = Path(__file__).parent.parent
 
@@ -967,7 +967,7 @@ class TestConverters:
         assert adm_state.model_type == ModelType.MADM1
         assert adm_state.flow_m3_d == 100
         assert meta["success"] is True
-        assert "ASM2d → mADM1" in meta["conversion"]
+        assert "ASM2d -> mADM1" in meta["conversion"]
 
         # Check that biomass was mapped
         assert adm_state.concentrations.get('S_IN', 0) > 0  # From S_NH4
@@ -996,7 +996,7 @@ class TestConverters:
         assert asm_state.model_type == ModelType.ASM2D
         assert asm_state.flow_m3_d == 50
         assert meta["success"] is True
-        assert "mADM1 → ASM2d" in meta["conversion"]
+        assert "mADM1 -> ASM2d" in meta["conversion"]
 
         # Check that components were mapped
         assert asm_state.concentrations.get('S_NH4', 0) > 0  # From S_IN
@@ -1040,7 +1040,7 @@ class TestConverters:
             convert_state(asm_state, ModelType.MADM1)
 
     def test_create_junction_unit_asm2d_to_madm1(self):
-        """create_junction_unit should create ASM2d→mADM1 junction type."""
+        """create_junction_unit should create ASM2d->mADM1 junction type."""
         from core.converters import create_junction_unit
         from core.junction_units import ASM2dtomADM1_custom
         from models.madm1 import create_madm1_cmps
@@ -1054,7 +1054,7 @@ class TestConverters:
         assert isinstance(result, ASM2dtomADM1_custom)
 
     def test_create_junction_unit_madm1_to_asm2d(self):
-        """create_junction_unit should create mADM1→ASM2d junction type."""
+        """create_junction_unit should create mADM1->ASM2d junction type."""
         from core.converters import create_junction_unit
         from core.junction_units import mADM1toASM2d_custom
         from models.madm1 import create_madm1_cmps

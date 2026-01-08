@@ -1,9 +1,9 @@
 """
 MLE-MBR (Modified Ludzack-Ettinger with Membrane Bioreactor) Template.
 
-Flowsheet: Influent → A1 → A2 → O1 → O2 → [SP_IR] → MBR → Effluent + WAS
-                      ↑______IR______↓         ↓
-                      ↑___________RAS___________↓
+Flowsheet: Influent -> A1 -> A2 -> O1 -> O2 -> [SP_IR] -> MBR -> Effluent + WAS
+                      ^______IR______v         v
+                      ^___________RAS___________v
 
 Reference: Pune_Nanded_WWTP_updated.py (Gates Foundation MBR project)
 
@@ -159,9 +159,9 @@ def build_and_run(
         Q_to_mbr = Q + Q_ras - Q_ir  # Approximate flow to MBR
         split_ir = Q_ir / (Q_ir + Q_to_mbr) if (Q_ir + Q_to_mbr) > 0 else 0
 
-        # Build flowsheet: A1 → A2 → O1 → O2 → SP_IR → MBR
-        #                  ↑____IR____↓          ↓
-        #                  ↑_______RAS____________↓
+        # Build flowsheet: A1 -> A2 -> O1 -> O2 -> SP_IR -> MBR
+        #                  ^____IR____v          v
+        #                  ^_______RAS____________v
 
         # Anoxic zones (no aeration) - receive influent, RAS, and IR
         A1 = su.CSTR(

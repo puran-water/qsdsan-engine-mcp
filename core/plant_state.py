@@ -34,35 +34,27 @@ class PlantState:
     Standard state vector for plant-wide simulation.
 
     This is the primary data structure passed between simulation tools.
-
-    **Concentration Units (MODEL-SPECIFIC):**
-    - ASM2d/ASM1/mASM2d: mg/L (standard practitioner units)
-    - mADM1/ADM1: kg/m³ (QSDsan convention for anaerobic models)
-
-    Flow is in m³/day. Temperature is in Kelvin.
+    All concentrations are in kg/m³ (COD basis for organic components).
 
     Attributes:
         model_type: Biological process model (mADM1, ASM2d, etc.)
         flow_m3_d: Volumetric flow rate in m³/day
         temperature_K: Temperature in Kelvin
-        concentrations: Component ID -> concentration (units depend on model_type)
+        concentrations: Component ID -> concentration (kg/m³)
         reactor_config: Reactor parameters (V_liq, HRT, SRT, recycles)
         metadata: Optional provenance and tracking info
 
-    Example (ASM2d - mg/L):
-        >>> state = PlantState(
-        ...     model_type=ModelType.ASM2D,
-        ...     flow_m3_d=4000.0,
-        ...     temperature_K=293.15,
-        ...     concentrations={"S_F": 75, "S_A": 20, "S_NH4": 17}  # mg/L
-        ... )
-
-    Example (mADM1 - kg/m³):
+    Example:
         >>> state = PlantState(
         ...     model_type=ModelType.MADM1,
-        ...     flow_m3_d=200.0,
+        ...     flow_m3_d=1000.0,
         ...     temperature_K=308.15,
-        ...     concentrations={"S_su": 0.5, "S_aa": 0.8, "X_ch": 3.0}  # kg/m³
+        ...     concentrations={
+        ...         "S_su": 0.010,   # 10 g/m³ sugars
+        ...         "S_aa": 0.005,   # 5 g/m³ amino acids
+        ...         "X_c": 0.100,    # 100 g/m³ composite
+        ...         # ... 60 more components
+        ...     }
         ... )
     """
     model_type: ModelType
@@ -125,99 +117,6 @@ class PlantState:
     def temperature_C(self) -> float:
         """Temperature in Celsius."""
         return self.temperature_K - 273.15
-
-    def get_concentration_units(self) -> str:
-        """
-        Return expected concentration units based on model type.
-
-        Returns:
-            "mg/L" for aerobic models (ASM2d, ASM1, mASM2d)
-            "kg/m3" for anaerobic models (mADM1, ADM1)
-        """
-        model_value = getattr(self.model_type, 'value', self.model_type)
-        if model_value in ("ASM2d", "ASM1", "mASM2d"):
-            return "mg/L"
-        elif model_value in ("mADM1", "ADM1"):
-            return "kg/m3"
-        return "mg/L"  # Default to practitioner units
-
-    def validate_concentration_bounds(self) -> list:
-        """
-        Check concentrations for likely unit confusion.
-
-        Returns warnings if values suggest 1000x unit error.
-
-        Typical ranges:
-        - ASM2d/ASM1 (mg/L): COD 200-1000, BOD5 100-300, NH4-N 15-40, TP 4-15
-        - mADM1 (kg/m³): Digester feeds 1-20 kg/m³ for most components
-
-        Returns:
-            List of warning strings (empty if no issues detected)
-        """
-        warnings = []
-        model_value = getattr(self.model_type, 'value', self.model_type)
-        units = self.get_concentration_units()
-
-        if model_value in ("ASM2d", "ASM1", "mASM2d") and units == "mg/L":
-            for comp, val in self.concentrations.items():
-                if 0 < val < 0.1:
-                    warnings.append(
-                        f"{comp}={val} mg/L is suspiciously low "
-                        f"(did you mean kg/m³ for anaerobic model?)"
-                    )
-                if val > 50000:
-                    warnings.append(
-                        f"{comp}={val} mg/L is suspiciously high"
-                    )
-
-        elif model_value in ("mADM1", "ADM1") and units == "kg/m3":
-            for comp, val in self.concentrations.items():
-                if val > 100:
-                    warnings.append(
-                        f"{comp}={val} kg/m³ is suspiciously high "
-                        f"(did you mean mg/L for aerobic model?)"
-                    )
-
-        return warnings
-
-
-def validate_concentration_bounds(
-    concentrations: Dict[str, float],
-    model_type: str,
-    units: str = "mg/L"
-) -> list:
-    """
-    Standalone function to check concentrations for likely unit confusion.
-
-    Args:
-        concentrations: Component ID to concentration mapping
-        model_type: Model type string (e.g., "ASM2d", "mADM1")
-        units: Expected units ("mg/L" or "kg/m3")
-
-    Returns:
-        List of warning strings (empty if no issues detected)
-    """
-    warnings = []
-
-    if model_type in ("ASM2d", "ASM1", "mASM2d") and units == "mg/L":
-        for comp, val in concentrations.items():
-            if 0 < val < 0.1:
-                warnings.append(
-                    f"{comp}={val} mg/L is suspiciously low "
-                    f"(did you mean kg/m³?)"
-                )
-            if val > 50000:
-                warnings.append(f"{comp}={val} mg/L is suspiciously high")
-
-    elif model_type in ("mADM1", "ADM1") and units == "kg/m3":
-        for comp, val in concentrations.items():
-            if val > 100:
-                warnings.append(
-                    f"{comp}={val} kg/m³ is suspiciously high "
-                    f"(did you mean mg/L?)"
-                )
-
-    return warnings
 
 
 @dataclass

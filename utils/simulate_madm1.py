@@ -357,8 +357,8 @@ def check_steady_state(eff, gas, window=5, tolerance=1e-3):
             logger.info(f"System converged: max derivatives below {tolerance}")
             return True
 
-        logger.info(f"Not converged yet (COD: {max_dCOD_dt/tolerance:.1f}× tolerance, "
-                   f"Biomass: {max_dBiomass_dt/tolerance:.1f}× tolerance)")
+        logger.info(f"Not converged yet (COD: {max_dCOD_dt/tolerance:.1f}x tolerance, "
+                   f"Biomass: {max_dBiomass_dt/tolerance:.1f}x tolerance)")
         return False
 
     except Exception as e:
@@ -741,8 +741,8 @@ def run_simulation_sulfur(basis, adm1_state_62, HRT, check_interval=2, tolerance
         # CRITICAL FIX: Convert kg/m³ to mg/L for set_init_conc()
         # QSDsan's set_init_conc() expects mg/L, but our state is in kg/m³
         # Without this conversion, initial concentrations are 1000x too low
-        init_conds_mg_L = {k: v * 1000 for k, v in init_conds_kg_m3.items()}  # kg/m³ → mg/L
-        logger.info(f"Unit conversion applied: X_I = {init_conds_kg_m3.get('X_I', 0):.3f} kg/m³ → {init_conds_mg_L.get('X_I', 0):.1f} mg/L")
+        init_conds_mg_L = {k: v * 1000 for k, v in init_conds_kg_m3.items()}  # kg/m³ -> mg/L
+        logger.info(f"Unit conversion applied: X_I = {init_conds_kg_m3.get('X_I', 0):.3f} kg/m³ -> {init_conds_mg_L.get('X_I', 0):.1f} mg/L")
 
         AD.set_init_conc(**init_conds_mg_L)
         logger.info(f"Initial S_SO4={init_conds_kg_m3['S_SO4']:.4f}, S_IS={init_conds_kg_m3['S_IS']:.6f}, X_hSRB={init_conds_kg_m3.get('X_hSRB', 0):.4f} (all kg/m³)")
@@ -826,7 +826,7 @@ def assess_robustness(results_design, results_check, threshold=10.0):
         if cod_drop > threshold:
             warnings.append(
                 f"COD removal drops {cod_drop:.1f}% at increased HRT "
-                f"({cod_removal_design:.1f}% → {cod_removal_check:.1f}%). "
+                f"({cod_removal_design:.1f}% -> {cod_removal_check:.1f}%). "
                 f"Design may be sensitive to HRT variations."
             )
     else:
@@ -845,7 +845,7 @@ def assess_robustness(results_design, results_check, threshold=10.0):
         if biogas_change > threshold:
             warnings.append(
                 f"Biogas production changes {biogas_change:.1f}% at increased HRT "
-                f"({biogas_design:.1f} → {biogas_check:.1f} m3/d)."
+                f"({biogas_design:.1f} -> {biogas_check:.1f} m3/d)."
             )
     else:
         warnings.append(
