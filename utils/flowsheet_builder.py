@@ -286,17 +286,34 @@ def simulate_compiled_system(
 
 
 def _get_model_components(model_type: str) -> Tuple["CompiledComponents", "Thermo"]:
-    """Get components and thermo for a model type."""
+    """Get components and thermo for a model type.
+
+    Model type mapping:
+        - mADM1: Custom 63-component ModifiedADM1 with H2S/sulfide support
+        - ADM1: Standard QSDsan ADM1 (35 components)
+        - ASM2d: Standard QSDsan ASM2d (19 components)
+        - ASM1: Standard QSDsan ASM1 (13 components)
+        - mASM2d: Modified ASM2d with minerals/ions
+    """
     import qsdsan as qs
     from qsdsan import processes as pc
 
-    if model_type in ("mADM1", "ADM1"):
-        # Use mADM1 components (63 components)
+    if model_type == "mADM1":
+        # Custom 63-component mADM1 with H2S modeling and sulfide precipitation
         from models.madm1 import create_madm1_cmps
         cmps = create_madm1_cmps()
-    elif model_type in ("ASM2d", "ASM1", "mASM2d"):
-        # Use ASM2d components (19 components)
+    elif model_type == "ADM1":
+        # Standard QSDsan ADM1 (35 components)
+        cmps = pc.create_adm1_cmps()
+    elif model_type == "ASM2d":
+        # Standard QSDsan ASM2d (19 components)
         cmps = pc.create_asm2d_cmps()
+    elif model_type == "ASM1":
+        # Standard QSDsan ASM1 (13 components)
+        cmps = pc.create_asm1_cmps()
+    elif model_type == "mASM2d":
+        # Modified ASM2d with minerals and ions
+        cmps = pc.create_masm2d_cmps()
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 
@@ -501,6 +518,124 @@ def _create_san_unit(
         else:
             logger.warning(f"Unit '{unit_id}': AnMBR typically uses ADM1/mADM1, got '{model_type}'")
 
+    # Junction units - use custom classes for mADM1, standard QSDsan for ADM1 (Phase 2B Fix 2)
+    elif config.unit_type == "ASM2dtomADM1":
+        # Custom junction for mADM1 (63 components) that accepts CompiledProcesses
+        from core.junction_units import ASM2dtomADM1_custom
+        from qsdsan import processes as pc
+        from models.madm1 import ModifiedADM1
+
+        unit = ASM2dtomADM1_custom(
+            ID=unit_id,
+            upstream=ins[0] if ins else None,
+            auto_align_components=True,
+            **{k: v for k, v in config.params.items() if v is not None}
+        )
+        unit.asm2d_model = pc.ASM2d()
+        unit.adm1_model = ModifiedADM1()  # Custom 63-component model
+
+        prep_status = unit.prepare_for_simulation()
+        logger.debug(f"Junction {unit_id} prep status: {prep_status}")
+        return unit
+
+    elif config.unit_type == "ASM2dtoADM1":
+        # Standard QSDsan junction for ADM1 (35 components)
+        from qsdsan import sanunits, processes as pc
+
+        unit = sanunits.ASM2dtoADM1(
+            ID=unit_id,
+            upstream=ins[0] if ins else None,
+            **{k: v for k, v in config.params.items() if v is not None}
+        )
+        unit.asm2d_model = pc.ASM2d()
+        unit.adm1_model = pc.ADM1()  # Standard 35-component model
+        return unit
+
+    elif config.unit_type == "mADM1toASM2d":
+        # Custom junction for mADM1 (63 components) that accepts CompiledProcesses
+        from core.junction_units import mADM1toASM2d_custom
+        from qsdsan import processes as pc
+        from models.madm1 import ModifiedADM1
+
+        unit = mADM1toASM2d_custom(
+            ID=unit_id,
+            upstream=ins[0] if ins else None,
+            auto_align_components=True,
+            **{k: v for k, v in config.params.items() if v is not None}
+        )
+        unit.adm1_model = ModifiedADM1()  # Custom 63-component model
+        unit.asm2d_model = pc.ASM2d()
+
+        prep_status = unit.prepare_for_simulation()
+        logger.debug(f"Junction {unit_id} prep status: {prep_status}")
+        return unit
+
+    elif config.unit_type == "ADM1toASM2d":
+        # Standard QSDsan junction for ADM1 (35 components)
+        from qsdsan import sanunits, processes as pc
+
+        unit = sanunits.ADM1toASM2d(
+            ID=unit_id,
+            upstream=ins[0] if ins else None,
+            **{k: v for k, v in config.params.items() if v is not None}
+        )
+        unit.adm1_model = pc.ADM1()  # Standard 35-component model
+        unit.asm2d_model = pc.ASM2d()
+        return unit
+
+    # Additional junction types with model injection (Phase 2B Fix 3)
+    elif config.unit_type == "ASMtoADM":
+        # Generic ASM to ADM junction
+        from qsdsan import sanunits, processes as pc
+
+        unit = sanunits.ASMtoADM(
+            ID=unit_id,
+            upstream=ins[0] if ins else None,
+            **{k: v for k, v in config.params.items() if v is not None}
+        )
+        unit.asm_model = pc.ASM2d()
+        unit.adm_model = pc.ADM1()
+        return unit
+
+    elif config.unit_type == "ADMtoASM":
+        # Generic ADM to ASM junction
+        from qsdsan import sanunits, processes as pc
+
+        unit = sanunits.ADMtoASM(
+            ID=unit_id,
+            upstream=ins[0] if ins else None,
+            **{k: v for k, v in config.params.items() if v is not None}
+        )
+        unit.adm_model = pc.ADM1()
+        unit.asm_model = pc.ASM2d()
+        return unit
+
+    elif config.unit_type == "ADM1ptomASM2d":
+        # ADM1 with P extension to modified ASM2d junction
+        from qsdsan import sanunits, processes as pc
+
+        unit = sanunits.ADM1ptomASM2d(
+            ID=unit_id,
+            upstream=ins[0] if ins else None,
+            **{k: v for k, v in config.params.items() if v is not None}
+        )
+        unit.adm1_model = pc.ADM1_p_extension()
+        unit.asm2d_model = pc.mASM2d()
+        return unit
+
+    elif config.unit_type == "mASM2dtoADM1p":
+        # Modified ASM2d to ADM1 with P extension junction
+        from qsdsan import sanunits, processes as pc
+
+        unit = sanunits.mASM2dtoADM1p(
+            ID=unit_id,
+            upstream=ins[0] if ins else None,
+            **{k: v for k, v in config.params.items() if v is not None}
+        )
+        unit.asm2d_model = pc.mASM2d()
+        unit.adm1_model = pc.ADM1_p_extension()
+        return unit
+
     # SBR also needs suspended_growth_model
     elif config.unit_type == "SBR":
         from qsdsan import processes as pc
@@ -657,7 +792,8 @@ def _extract_simulation_results(
         include_components: Include full component breakdown for each stream
     """
     from utils.stream_analysis import (
-        calculate_effluent_quality,
+        analyze_aerobic_stream,
+        analyze_gas_stream,
         calculate_removal_efficiency,
     )
 
@@ -703,7 +839,7 @@ def _extract_simulation_results(
     if effluent_streams:
         eff = effluent_streams[0]
         try:
-            results["effluent_quality"] = calculate_effluent_quality(eff, model_type)
+            results["effluent_quality"] = analyze_aerobic_stream(eff)
         except Exception as e:
             logger.warning(f"Failed to calculate effluent quality: {e}")
             results["effluent_quality"] = {"error": str(e)}
@@ -718,19 +854,22 @@ def _extract_simulation_results(
         except Exception as e:
             logger.warning(f"Failed to calculate removal efficiency: {e}")
 
-    # Biogas analysis for anaerobic models
-    if model_type in ("mADM1", "ADM1"):
-        if biogas_stream_ids:
-            biogas_streams = [s for s in system.streams if s and s.ID in biogas_stream_ids]
-        else:
-            biogas_streams = [s for s in system.streams if s and "biogas" in s.ID.lower()]
+    # Biogas analysis - analyze if biogas_stream_ids explicitly provided OR model is anaerobic
+    # This allows mixed-model flowsheets (ASM2d + mADM1) to get biogas analysis
+    # when the user explicitly specifies biogas streams
+    biogas_streams = []
+    if biogas_stream_ids:
+        # Explicit biogas streams provided - always analyze regardless of model_type
+        biogas_streams = [s for s in system.streams if s and s.ID in biogas_stream_ids]
+    elif model_type in ("mADM1", "ADM1"):
+        # Auto-detect biogas streams for anaerobic models
+        biogas_streams = [s for s in system.streams if s and "biogas" in s.ID.lower()]
 
-        if biogas_streams:
-            try:
-                from utils.stream_analysis import calculate_biogas_composition
-                results["biogas"] = calculate_biogas_composition(biogas_streams[0])
-            except Exception as e:
-                logger.warning(f"Failed to calculate biogas composition: {e}")
+    if biogas_streams:
+        try:
+            results["biogas"] = analyze_gas_stream(biogas_streams[0])
+        except Exception as e:
+            logger.warning(f"Failed to calculate biogas composition: {e}")
 
     return results
 

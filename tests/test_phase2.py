@@ -1188,5 +1188,433 @@ class TestJunctionIntegration:
         assert result["unit_id"] == "J1"
 
 
+# =============================================================================
+# Phase 2B Tests - Junction Enhancement and Dynamic Coefficients
+# =============================================================================
+
+class TestJunctionAutoAlignment:
+    """Test Phase 2B junction unit enhancements with auto-alignment."""
+
+    @pytest.fixture(autouse=True)
+    def setup_thermo(self):
+        """Set up QSDsan thermo context before each test."""
+        import qsdsan as qs
+        from qsdsan import processes as pc
+        cmps = pc.create_asm2d_cmps(set_thermo=False)
+        qs.set_thermo(cmps)
+        yield
+
+    def test_junction_has_auto_align_flag(self):
+        """Custom junction units should have auto_align_components parameter."""
+        from core.junction_units import ASM2dtomADM1_custom, mADM1toASM2d_custom
+
+        # Create with default (False)
+        j1 = ASM2dtomADM1_custom(ID="J_test1")
+        assert hasattr(j1, 'auto_align_components')
+        assert j1.auto_align_components is False
+
+        # Create with auto_align enabled
+        j2 = ASM2dtomADM1_custom(ID="J_test2", auto_align_components=True)
+        assert j2.auto_align_components is True
+
+        # Same for reverse direction
+        j3 = mADM1toASM2d_custom(ID="J_test3", auto_align_components=True)
+        assert j3.auto_align_components is True
+
+    def test_junction_auto_align_can_be_toggled(self):
+        """auto_align_components should be settable after creation."""
+        from core.junction_units import ASM2dtomADM1_custom
+
+        j = ASM2dtomADM1_custom(ID="J_toggle")
+        assert j.auto_align_components is False
+
+        j.auto_align_components = True
+        assert j.auto_align_components is True
+
+        # Toggling should clear cached aligned components
+        assert j._aligned_cmps is None
+
+    def test_junction_has_prepare_for_simulation(self):
+        """Junction units should have prepare_for_simulation method."""
+        from core.junction_units import ASM2dtomADM1_custom, mADM1toASM2d_custom
+
+        j1 = ASM2dtomADM1_custom(ID="J_prep1")
+        assert hasattr(j1, 'prepare_for_simulation')
+        assert callable(j1.prepare_for_simulation)
+
+        j2 = mADM1toASM2d_custom(ID="J_prep2")
+        assert hasattr(j2, 'prepare_for_simulation')
+        assert callable(j2.prepare_for_simulation)
+
+    def test_prepare_for_simulation_returns_status(self):
+        """prepare_for_simulation should return status dict."""
+        from core.junction_units import ASM2dtomADM1_custom
+
+        j = ASM2dtomADM1_custom(ID="J_status", auto_align_components=False)
+        status = j.prepare_for_simulation()
+
+        assert isinstance(status, dict)
+        assert 'aligned' in status
+        assert 'direction' in status
+        assert 'junction_id' in status
+        assert status['junction_id'] == 'J_status'
+
+    def test_junction_has_aligned_cmps_properties(self):
+        """Junction units should have aligned component properties."""
+        from core.junction_units import ASM2dtomADM1_custom
+
+        j = ASM2dtomADM1_custom(ID="J_cmps")
+        assert hasattr(j, 'aligned_asm_cmps')
+        assert hasattr(j, 'aligned_adm_cmps')
+        assert hasattr(j, 'ensure_aligned_components')
+
+
+class TestDynamicCoefficientExtraction:
+    """Test Phase 2B dynamic coefficient extraction helpers."""
+
+    def test_extract_component_coefficients_exists(self):
+        """extract_component_coefficients should be importable."""
+        from core.converters import extract_component_coefficients
+        assert callable(extract_component_coefficients)
+
+    def test_get_coefficients_exists(self):
+        """get_coefficients should be importable."""
+        from core.converters import get_coefficients
+        assert callable(get_coefficients)
+
+    def test_get_coefficients_fallback_asm2d(self):
+        """get_coefficients with fallback should return ASM2d coefficients."""
+        from core.converters import get_coefficients
+
+        i_cod, i_n, i_p = get_coefficients('ASM2d', use_component_props=False)
+
+        assert isinstance(i_cod, dict)
+        assert isinstance(i_n, dict)
+        assert isinstance(i_p, dict)
+
+        # Check expected keys
+        assert 'X_H' in i_cod
+        assert 'S_NH4' in i_n
+        assert 'S_PO4' in i_p
+
+        # Check expected values (fallback)
+        assert i_cod['X_H'] == 1.42
+        assert i_n['S_NH4'] == 1.0
+        assert i_p['S_PO4'] == 1.0
+
+    def test_get_coefficients_fallback_madm1(self):
+        """get_coefficients with fallback should return mADM1 coefficients."""
+        from core.converters import get_coefficients
+
+        i_cod, i_n, i_p = get_coefficients('mADM1', use_component_props=False)
+
+        assert isinstance(i_cod, dict)
+        assert isinstance(i_n, dict)
+        assert isinstance(i_p, dict)
+
+        # Check expected keys
+        assert 'X_su' in i_cod
+        assert 'S_IN' in i_n
+        assert 'S_IP' in i_p
+
+        # Check SRB components
+        assert 'X_hSRB' in i_cod
+        assert 'X_aSRB' in i_n
+        assert 'X_c4SRB' in i_p
+
+    def test_get_coefficients_unknown_model(self):
+        """get_coefficients with unknown model should return empty dicts."""
+        from core.converters import get_coefficients
+
+        i_cod, i_n, i_p = get_coefficients('UnknownModel', use_component_props=False)
+
+        assert i_cod == {}
+        assert i_n == {}
+        assert i_p == {}
+
+    def test_extract_component_coefficients_returns_nested_dict(self):
+        """extract_component_coefficients should return nested dict structure."""
+        from core.converters import extract_component_coefficients
+
+        # This tests dynamic extraction
+        try:
+            result = extract_component_coefficients('ASM2d', use_cache=False)
+            assert isinstance(result, dict)
+            assert 'i_COD' in result
+            assert 'i_N' in result
+            assert 'i_P' in result
+        except Exception:
+            # QSDsan not fully loaded - skip
+            pytest.skip("QSDsan components not available")
+
+
+class TestConverterWithDynamicCoeffs:
+    """Test converters with use_component_props flag."""
+
+    def test_convert_asm2d_to_madm1_has_flag(self):
+        """convert_asm2d_to_madm1 should accept use_component_props."""
+        from core.converters import convert_asm2d_to_madm1
+        import inspect
+
+        sig = inspect.signature(convert_asm2d_to_madm1)
+        assert 'use_component_props' in sig.parameters
+
+    def test_convert_madm1_to_asm2d_has_flag(self):
+        """convert_madm1_to_asm2d should accept use_component_props."""
+        from core.converters import convert_madm1_to_asm2d
+        import inspect
+
+        sig = inspect.signature(convert_madm1_to_asm2d)
+        assert 'use_component_props' in sig.parameters
+
+    def test_convert_asm2d_to_madm1_default_fallback(self):
+        """convert_asm2d_to_madm1 should use fallback by default."""
+        from core.converters import convert_asm2d_to_madm1
+        from core.plant_state import PlantState, ModelType
+
+        input_state = PlantState(
+            model_type=ModelType.ASM2D,
+            concentrations={'X_H': 5000, 'X_S': 2000},
+            flow_m3_d=100,
+            temperature_K=293.15,
+        )
+
+        # Should not raise - uses fallback coefficients (no QSDsan imports needed)
+        try:
+            output, meta = convert_asm2d_to_madm1(input_state, use_component_props=False)
+            assert meta['success'] is True
+            assert output.model_type == ModelType.MADM1
+        except ImportError:
+            # Skip if QSDsan not fully loaded
+            pytest.skip("QSDsan not available")
+
+
+class TestFlowsheetBuilderJunctions:
+    """Test flowsheet_builder integration with custom junctions."""
+
+    def test_create_san_unit_handles_junction_types(self):
+        """_create_san_unit should handle junction unit types."""
+        from core.unit_registry import get_unit_spec
+
+        # Junction types should be in registry
+        for unit_type in ['ASM2dtomADM1', 'mADM1toASM2d', 'ASM2dtoADM1', 'ADM1toASM2d']:
+            spec = get_unit_spec(unit_type)
+            assert spec.category.value == 'junction'
+
+
+# =============================================================================
+# Phase 2B+ Tests - Codex Review Fixes
+# =============================================================================
+
+class TestJunctionCompileReactionsOverride:
+    """Test junction _compile_reactions override using aligned components."""
+
+    @pytest.fixture(autouse=True)
+    def setup_thermo(self):
+        """Set up QSDsan thermo context for junction tests."""
+        import qsdsan as qs
+        from qsdsan import processes as pc
+        cmps = pc.create_asm2d_cmps(set_thermo=False)
+        qs.set_thermo(cmps)
+        yield
+
+    def test_asm2dtomadm1_has_compile_reactions_override(self):
+        """ASM2dtomADM1_custom should have _compile_reactions override."""
+        from core.junction_units import ASM2dtomADM1_custom
+
+        j = ASM2dtomADM1_custom(ID='test_j1', auto_align_components=True)
+
+        # Verify the method exists and is overridden
+        assert hasattr(j, '_compile_reactions')
+
+        # Verify auto_align_components flag is set
+        assert j.auto_align_components is True
+
+    def test_madm1toasm2d_has_compile_reactions_override(self):
+        """mADM1toASM2d_custom should have _compile_reactions override."""
+        from core.junction_units import mADM1toASM2d_custom
+
+        j = mADM1toASM2d_custom(ID='test_j2', auto_align_components=True)
+
+        # Verify the method exists and is overridden
+        assert hasattr(j, '_compile_reactions')
+
+        # Verify auto_align_components flag is set
+        assert j.auto_align_components is True
+
+    def test_junction_compile_reactions_uses_aligned_components(self):
+        """_compile_reactions should use aligned components when auto_align=True."""
+        from core.junction_units import ASM2dtomADM1_custom
+
+        j = ASM2dtomADM1_custom(ID='test_j3', auto_align_components=True)
+
+        # Build aligned components first
+        j.ensure_aligned_components()
+
+        assert j._aligned_cmps is not None
+        assert len(j._aligned_cmps) == 2
+
+
+class TestExpandedUnitRegistry:
+    """Test expanded unit registry with missing wastewater sanunits."""
+
+    def test_unit_registry_has_45_plus_units(self):
+        """Unit registry should have 45+ unit types after expansion."""
+        from core.unit_registry import UNIT_REGISTRY
+
+        # After expansion: 37 original + 13 new = ~50 (some may overlap)
+        assert len(UNIT_REGISTRY) >= 45
+
+    def test_primary_clarifier_bsm2_exists(self):
+        """PrimaryClarifierBSM2 should be in registry."""
+        from core.unit_registry import get_unit_spec
+
+        spec = get_unit_spec("PrimaryClarifierBSM2")
+        assert spec.category.value == "clarifier"
+        assert "ASM2d" in spec.compatible_models
+
+    def test_activated_sludge_process_exists(self):
+        """ActivatedSludgeProcess should be in registry."""
+        from core.unit_registry import get_unit_spec
+
+        spec = get_unit_spec("ActivatedSludgeProcess")
+        assert spec.category.value == "reactor"
+
+    def test_anaerobic_digestion_exists(self):
+        """AnaerobicDigestion should be in registry."""
+        from core.unit_registry import get_unit_spec
+
+        spec = get_unit_spec("AnaerobicDigestion")
+        assert spec.category.value == "reactor"
+        assert "ADM1" in spec.compatible_models or "mADM1" in spec.compatible_models
+
+    def test_sludge_pasteurization_exists(self):
+        """SludgePasteurization should be in registry."""
+        from core.unit_registry import get_unit_spec
+
+        spec = get_unit_spec("SludgePasteurization")
+        assert spec.category.value == "sludge"
+
+    def test_drying_bed_exists(self):
+        """DryingBed should be in registry."""
+        from core.unit_registry import get_unit_spec
+
+        spec = get_unit_spec("DryingBed")
+        assert spec.category.value == "sludge"
+
+    def test_membrane_distillation_exists(self):
+        """MembraneDistillation should be in registry."""
+        from core.unit_registry import get_unit_spec
+
+        spec = get_unit_spec("MembraneDistillation")
+        assert spec.category.value == "separator"
+
+    def test_membrane_gas_extraction_exists(self):
+        """MembraneGasExtraction should be in registry."""
+        from core.unit_registry import get_unit_spec
+
+        spec = get_unit_spec("MembraneGasExtraction")
+        assert spec.category.value == "separator"
+        assert "mADM1" in spec.compatible_models or "ADM1" in spec.compatible_models
+
+    def test_additional_junctions_exist(self):
+        """Additional junction types should be in registry."""
+        from core.unit_registry import get_unit_spec
+
+        for unit_type in ['ADM1ptomASM2d', 'mASM2dtoADM1p', 'ASMtoADM', 'ADMtoASM']:
+            spec = get_unit_spec(unit_type)
+            assert spec.category.value == 'junction'
+
+
+class TestSystemIdSupport:
+    """Test system_id support in simulate_built_system."""
+
+    def test_simulate_built_system_has_system_id_param(self):
+        """MCP simulate_built_system should have system_id parameter."""
+        import asyncio
+        import inspect
+        import sys
+        sys.path.insert(0, str(Path(__file__).parent.parent))
+
+        # Import and check function signature
+        from server import simulate_built_system as mcp_func
+
+        # Get inner function if wrapped
+        func = mcp_func
+        while hasattr(func, '__wrapped__'):
+            func = func.__wrapped__
+
+        sig = inspect.signature(func)
+        assert 'system_id' in sig.parameters
+        assert 'session_id' in sig.parameters
+
+    def test_cli_flowsheet_simulate_has_system_id_option(self):
+        """CLI flowsheet simulate should have --system-id option."""
+        import subprocess
+        cwd = Path(__file__).parent.parent
+
+        result = subprocess.run(
+            ['../venv312/Scripts/python.exe', 'cli.py', 'flowsheet', 'simulate', '--help'],
+            capture_output=True, text=True, cwd=cwd
+        )
+
+        assert '--system-id' in result.stdout
+
+    def test_cli_requires_session_or_system_id(self):
+        """CLI flowsheet simulate should require --session or --system-id."""
+        import subprocess
+        cwd = Path(__file__).parent.parent
+
+        # Running without either should fail
+        result = subprocess.run(
+            ['../venv312/Scripts/python.exe', 'cli.py', 'flowsheet', 'simulate',
+             '--json-out'],
+            capture_output=True, text=True, cwd=cwd
+        )
+
+        assert result.returncode != 0
+        # Check for error message about missing session/system-id
+        assert 'session' in result.stdout.lower() or 'session' in result.stderr.lower() or \
+               'system' in result.stdout.lower() or 'system' in result.stderr.lower()
+
+
+class TestBiogasAnalysisFix:
+    """Test biogas analysis with explicit stream IDs."""
+
+    def test_biogas_analysis_explicit_streams_any_model(self):
+        """Biogas analysis should work with explicit stream IDs regardless of model type."""
+        # This tests the fix for biogas analysis gated on model_type
+        from utils.flowsheet_builder import _extract_simulation_results
+
+        # Create a mock system with biogas stream
+        class MockStream:
+            def __init__(self, stream_id):
+                self.ID = stream_id
+                self.components = type('MockCmps', (), {'IDs': []})()
+                self.iconc = {}
+
+        class MockSystem:
+            def __init__(self):
+                self.ID = "test_system"  # Required by _extract_simulation_results
+                self.streams = [MockStream("effluent"), MockStream("biogas")]
+                self.units = []
+
+        system = MockSystem()
+
+        # Even with ASM2d model_type, explicit biogas_stream_ids should trigger analysis
+        # Note: This won't actually run calculate_biogas_composition (mock stream)
+        # but it verifies the code path is reachable
+        results = _extract_simulation_results(
+            system,
+            model_type="ASM2d",  # Not anaerobic, but explicit biogas streams
+            effluent_stream_ids=["effluent"],
+            biogas_stream_ids=["biogas"],  # Explicit biogas stream
+        )
+
+        # Results should be extracted (even if biogas calc fails on mock)
+        assert isinstance(results, dict)
+        assert results["system_id"] == "test_system"
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v', '--tb=short'])

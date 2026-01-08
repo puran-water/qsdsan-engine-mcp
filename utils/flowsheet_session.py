@@ -89,12 +89,12 @@ class ConnectionConfig:
     Used for recycle streams that can't be specified during unit creation.
 
     Attributes:
-        from_port: Source port notation (e.g., "SP-0", "C1-1")
-        to_port: Destination port notation (e.g., "A1-1")
+        from_port: Source port notation (e.g., "SP-0", "C1-1", "U1-U2")
+        to_port: Destination port notation (e.g., "A1-1"). Optional for direct notation.
         stream_id: Optional stream ID for the connection
     """
-    from_port: str  # e.g., "C1-1"
-    to_port: str    # e.g., "A1-1"
+    from_port: str  # e.g., "C1-1" or direct "U1-U2"
+    to_port: Optional[str] = None  # Optional for direct notation (U1-U2 or U1-0-1-U2)
     stream_id: Optional[str] = None  # Optional name for the connection stream
 
 

@@ -846,7 +846,8 @@ def flowsheet_build(
 
 @flowsheet_app.command("simulate")
 def flowsheet_simulate(
-    session_id: str = typer.Option(..., "--session", "-s", help="Session ID"),
+    session_id: Optional[str] = typer.Option(None, "--session", "-s", help="Session ID (mutually exclusive with --system-id)"),
+    system_id_opt: Optional[str] = typer.Option(None, "--system-id", help="System ID from build_system (mutually exclusive with --session)"),
     duration: float = typer.Option(1.0, "--duration", "-d", help="Simulation duration in days"),
     duration_days: float = typer.Option(None, "--duration-days", help="Alias for --duration (MCP compatibility)"),
     timestep: float = typer.Option(1.0, "--timestep", help="Output timestep in hours"),
@@ -868,7 +869,14 @@ def flowsheet_simulate(
 
     Example:
         qsdsan-engine flowsheet simulate --session abc123 --duration 15 --report
+        qsdsan-engine flowsheet simulate --system-id custom_mle --duration 15 --report
     """
+    # Validate arguments: exactly one of session_id or system_id must be provided
+    if session_id and system_id_opt:
+        _error_exit("Provide either --session or --system-id, not both", json_out)
+    if not session_id and not system_id_opt:
+        _error_exit("Must provide either --session or --system-id", json_out)
+
     # Handle MCP compatibility aliases
     if duration_days is not None:
         duration = duration_days
@@ -883,6 +891,31 @@ def flowsheet_simulate(
 
     try:
         from utils.flowsheet_builder import compile_system, simulate_compiled_system
+
+        # If system_id is provided, find the session with that system_id
+        if system_id_opt:
+            found_session_id = None
+            sessions_dir = Path("jobs") / "flowsheets"
+            if sessions_dir.exists():
+                for sess_dir in sessions_dir.iterdir():
+                    if sess_dir.is_dir():
+                        build_config_path = sess_dir / "build_config.json"
+                        if build_config_path.exists():
+                            try:
+                                with open(build_config_path) as f:
+                                    build_config = json.load(f)
+                                if build_config.get("system_id") == system_id_opt:
+                                    found_session_id = sess_dir.name
+                                    break
+                            except Exception:
+                                continue
+            if not found_session_id:
+                _error_exit(
+                    f"No compiled session found with system_id '{system_id_opt}'. "
+                    "Run 'flowsheet build' first.",
+                    json_out
+                )
+            session_id = found_session_id
 
         session = session_manager.get_session(session_id)
 

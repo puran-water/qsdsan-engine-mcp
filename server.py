@@ -1,7 +1,7 @@
 """
 QSDsan Engine MCP Server - Universal Biological Wastewater Treatment Simulation
 
-This is the MCP adapter for the QSDsan simulation engine. It provides 16 tools
+This is the MCP adapter for the QSDsan simulation engine. It provides 18 tools
 for stateless simulation with explicit state passing.
 
 Core Tools (Phase 1):
@@ -25,6 +25,10 @@ Flowsheet Construction Tools (Phase 2):
     - build_system: Compile flowsheet into QSDsan System
     - list_units: List available SanUnit types
     - simulate_built_system: Simulate compiled flowsheet with reporting
+
+Session Management Tools:
+    - get_flowsheet_session: Get details of an existing session
+    - list_flowsheet_sessions: List all flowsheet sessions
 
 Architecture:
     This server exposes the same engine core as the CLI adapter (cli.py).
@@ -692,7 +696,9 @@ async def connect_units(
 
     Args:
         session_id: Session identifier
-        connections: JSON list of {"from": "C1-1", "to": "A1-1"} objects
+        connections: JSON list of connection objects. Formats:
+            - Standard: {"from": "SP-0", "to": "A1-1"}
+            - Direct:   {"from": "U1-U2"} or {"from": "U1-0-1-U2"}
 
     Returns:
         Dict with connections added and validation status
@@ -702,7 +708,13 @@ async def connect_units(
         ...     session_id="abc123",
         ...     connections='[{"from": "SP-0", "to": "A1-1"}]',
         ... )
+        >>> await connect_units(
+        ...     session_id="abc123",
+        ...     connections='[{"from": "SP-0-1-A1"}]',  # Direct notation
+        ... )
     """
+    from utils.pipe_parser import parse_port_notation
+
     try:
         # Parse connections
         conn_data = json.loads(connections)
@@ -712,13 +724,34 @@ async def connect_units(
 
         results = []
         for conn in conn_data:
-            if not isinstance(conn, dict) or "from" not in conn or "to" not in conn:
-                results.append({"error": f"Invalid connection format: {conn}"})
+            if not isinstance(conn, dict) or "from" not in conn:
+                results.append({"error": f"Invalid connection format (missing 'from'): {conn}"})
                 continue
 
+            from_port = conn["from"]
+
+            # Check if direct notation (U1-U2 or U1-0-1-U2) - target embedded in from
+            try:
+                from_ref = parse_port_notation(from_port)
+                if from_ref.port_type == "direct":
+                    # Direct notation: to_port is optional/ignored
+                    to_port = conn.get("to")  # May be None
+                else:
+                    # Standard notation: requires to field
+                    if "to" not in conn:
+                        results.append({"error": f"Standard notation requires 'to' field: {conn}"})
+                        continue
+                    to_port = conn["to"]
+            except ValueError:
+                # If parsing fails, require to field for backward compatibility
+                if "to" not in conn:
+                    results.append({"error": f"Invalid connection format (missing 'to'): {conn}"})
+                    continue
+                to_port = conn["to"]
+
             config = ConnectionConfig(
-                from_port=conn["from"],
-                to_port=conn["to"],
+                from_port=from_port,
+                to_port=to_port,
                 stream_id=conn.get("stream_id"),
             )
 
@@ -901,7 +934,8 @@ async def list_units(
 
 @mcp.tool()
 async def simulate_built_system(
-    session_id: str,
+    session_id: Optional[str] = None,
+    system_id: Optional[str] = None,
     duration_days: float = 1.0,
     timestep_hours: float = 1.0,
     method: str = "RK23",
@@ -921,7 +955,9 @@ async def simulate_built_system(
     The session must be compiled first with build_system().
 
     Args:
-        session_id: Flowsheet session ID (must be compiled)
+        session_id: Flowsheet session ID (mutually exclusive with system_id)
+        system_id: Previously built system ID (mutually exclusive with session_id).
+            The system_id is the value returned in build_system() output.
         duration_days: Simulation duration in days
         timestep_hours: Output timestep in hours
         method: ODE solver method ("RK23", "RK45", "BDF")
@@ -945,19 +981,58 @@ async def simulate_built_system(
         - Quarto report with mass balance tables
 
     Example:
+        >>> # Using session_id
         >>> result = await simulate_built_system(
         ...     session_id="abc123",
         ...     duration_days=15,
         ...     report=True,
-        ...     effluent_stream_ids='["effluent"]',
-        ...     track='["influent", "effluent"]',
-        ...     export_state_to="output/final_state.json",
+        ... )
+        >>> # Or using system_id from build_system output
+        >>> result = await simulate_built_system(
+        ...     system_id="custom_mle",
+        ...     duration_days=15,
+        ...     report=True,
         ... )
         >>> job_id = result["job_id"]
         >>> # Use get_job_status(job_id) and get_job_results(job_id)
     """
     try:
         import uuid
+
+        # Validate arguments: exactly one of session_id or system_id must be provided
+        if session_id and system_id:
+            return {
+                "error": "Provide either session_id or system_id, not both"
+            }
+        if not session_id and not system_id:
+            return {
+                "error": "Must provide either session_id or system_id"
+            }
+
+        # If system_id is provided, find the session that has this system_id
+        if system_id:
+            # Search for session with matching system_id in build_config
+            found_session_id = None
+            sessions_dir = Path("jobs") / "flowsheets"
+            if sessions_dir.exists():
+                for session_dir in sessions_dir.iterdir():
+                    if session_dir.is_dir():
+                        build_config_path = session_dir / "build_config.json"
+                        if build_config_path.exists():
+                            try:
+                                with open(build_config_path) as f:
+                                    build_config = json.load(f)
+                                if build_config.get("system_id") == system_id:
+                                    found_session_id = session_dir.name
+                                    break
+                            except Exception:
+                                continue
+            if not found_session_id:
+                return {
+                    "error": f"No compiled session found with system_id '{system_id}'. "
+                    f"Run build_system() first to create a system."
+                }
+            session_id = found_session_id
 
         # Load and validate session
         session = session_manager.get_session(session_id)
