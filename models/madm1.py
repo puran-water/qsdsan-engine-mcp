@@ -349,7 +349,7 @@ def calc_biogas(state_arr, params, pH):
     # CRITICAL: Must match unit_conversion at line 819 in rhos_madm1
     # The inconsistent i_mass/chem_MW was causing H2S to be on wrong scale
     # FIX: Remove extra 1e3 factor - mass2mol_conversion already converts kg/m³ to mol/L
-    unit_conversion = mass2mol_conversion(cmps)  # kg/m³ → mol/L (NOT kmol/m³!)
+    unit_conversion = mass2mol_conversion(cmps)  # kg/m³ -> mol/L (NOT kmol/m³!)
     S_IS_M = S_IS_kg * unit_conversion[is_idx]
 
     # Codex fix #7: Get temperature-corrected Ka_h2s from params
@@ -497,7 +497,7 @@ def pcm(state_arr, params):
     params['Ka_h2s'] = Ka_h2s
 
     # Unit conversion from kg/m³ to M (mol/L)
-    # FIX: Use mass2mol_conversion which includes the ×1000 factor for m³→L
+    # FIX: Use mass2mol_conversion which includes the ×1000 factor for m³->L
     # The previous calculation was missing this factor, inflating ionic strengths by 1000×
     from qsdsan.processes import mass2mol_conversion
     unit_conversion = mass2mol_conversion(cmps)
@@ -873,7 +873,7 @@ def rhos_madm1(state_arr, params, T_op, h=None):
     # ******************
     # Convert kg/m³ (model states) to mol/L
     # FIX: Remove extra 1e3 factor - mass2mol_conversion already converts kg/m³ to mol/L
-    unit_conversion = mass2mol_conversion(cmps)  # kg/m³ → mol/L (NOT kmol/m³!)
+    unit_conversion = mass2mol_conversion(cmps)  # kg/m³ -> mol/L (NOT kmol/m³!)
     if T_op == T_base:
         Ka = Kab
         KH = KHb / unit_conversion[[7,8,9,30]]
@@ -931,7 +931,7 @@ def rhos_madm1(state_arr, params, T_op, h=None):
     SIs = np.array([SI_dict.get(name, 1.0) for name in mineral_names])
 
     # CRITICAL FIX (per Codex review): Do NOT clamp SI at 1.0
-    # That prevents dissolution (SI < 1 → negative rate)
+    # That prevents dissolution (SI < 1 -> negative rate)
     # The kinetic expression must preserve sign for dissolution
     X_minerals = state_arr[47:60]
 
@@ -972,7 +972,7 @@ def rhos_madm1(state_arr, params, T_op, h=None):
     Ka_co2 = Ka[2]  # Ka for CO2/HCO3- equilibrium
     co2_dissolved = state_arr[9] * h_ion / (Ka_co2 + h_ion)  # kg/m³ (dissolved CO2 from TOTAL S_IC)
     biogas_S[2] = co2_dissolved  # Use directly - S_IC already contains supersaturation from biology
-    biogas_S[3] = Z_h2s / unit_conversion[30]  # H2S from calc_biogas: kmol/m³ → kg/m³
+    biogas_S[3] = Z_h2s / unit_conversion[30]  # H2S from calc_biogas: kmol/m³ -> kg/m³
 
     # Partial pressures in bar (R is in bar·m³/(kmol·K), state[gas_slice] is kmol/m³)
     biogas_p = R * T_op * state_arr[gas_slice]  # bar - FIXED to use dynamic slice

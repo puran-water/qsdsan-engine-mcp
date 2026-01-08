@@ -57,7 +57,7 @@ TEMPLATES: Dict[str, FlowsheetTemplate] = {
     # Aerobic MBR templates
     "mle_mbr_asm2d": FlowsheetTemplate(
         name="mle_mbr_asm2d",
-        description="MLE-MBR (anoxic → aerobic → MBR) with ASM2d",
+        description="MLE-MBR (anoxic -> aerobic -> MBR) with ASM2d",
         model_type="ASM2d",
         reactor_type="CSTR + CompletelyMixedMBR",
         category="aerobic",
@@ -67,7 +67,7 @@ TEMPLATES: Dict[str, FlowsheetTemplate] = {
     ),
     "a2o_mbr_asm2d": FlowsheetTemplate(
         name="a2o_mbr_asm2d",
-        description="A2O-MBR (anaerobic → anoxic → aerobic → MBR) with EBPR",
+        description="A2O-MBR (anaerobic -> anoxic -> aerobic -> MBR) with EBPR",
         model_type="ASM2d",
         reactor_type="CSTR + CompletelyMixedMBR",
         category="aerobic",

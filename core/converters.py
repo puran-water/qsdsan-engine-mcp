@@ -3,8 +3,8 @@ State Converters - Junction-based state conversion between biological models.
 
 This module provides state conversion between ASM2d and mADM1 models using
 custom Junction units that work with our 63-component ModifiedADM1. Key use cases:
-- WAS → digester feed (ASM2d → mADM1)
-- Digester effluent → sidestream (mADM1 → ASM2d)
+- WAS -> digester feed (ASM2d -> mADM1)
+- Digester effluent -> sidestream (mADM1 -> ASM2d)
 
 The conversions preserve mass balance for COD, TKN, and TP.
 
@@ -71,11 +71,15 @@ def extract_component_coefficients(
         return _coefficient_cache[cache_key]
 
     try:
-        # Get component definitions
+        # Get component definitions - use model-specific component sets
         if model_type in ('mADM1', 'ADM1'):
             from models.madm1 import create_madm1_cmps
             cmps = create_madm1_cmps(set_thermo=False)
-        elif model_type in ('ASM2d', 'mASM2d', 'ASM1'):
+        elif model_type == 'ASM1':
+            # ASM1 has 13 components, different from ASM2d's 19
+            from qsdsan import processes as pc
+            cmps = pc.create_asm1_cmps(set_thermo=False)
+        elif model_type in ('ASM2d', 'mASM2d'):
             from qsdsan import processes as pc
             cmps = pc.create_asm2d_cmps(set_thermo=False)
         else:
@@ -163,8 +167,17 @@ def get_coefficients(
         coeffs = extract_component_coefficients(model_type)
         return coeffs['i_COD'], coeffs['i_N'], coeffs['i_P']
 
-    # Fallback to hard-coded defaults
-    if model_type in ('ASM2d', 'mASM2d', 'ASM1'):
+    # Fallback to hard-coded defaults - model-specific coefficients
+    if model_type == 'ASM1':
+        # ASM1 has 13 components, different from ASM2d
+        return (
+            {'X_BH': 1.42, 'X_BA': 1.42, 'X_S': 1.0, 'X_I': 1.5, 'X_P': 1.5,
+             'S_S': 1.0, 'S_I': 1.0},
+            {'X_BH': 0.086, 'X_BA': 0.086, 'X_S': 0.04, 'X_I': 0.03, 'X_P': 0.03,
+             'S_ND': 1.0, 'X_ND': 1.0, 'S_NH': 1.0},
+            {},  # ASM1 does not model phosphorus
+        )
+    elif model_type in ('ASM2d', 'mASM2d'):
         return (
             {'X_H': 1.42, 'X_PAO': 1.42, 'X_AUT': 1.42, 'X_S': 1.0, 'X_I': 1.5,
              'S_F': 1.0, 'S_A': 1.0, 'S_I': 1.0, 'X_PHA': 1.67, 'X_PP': 0.0},
@@ -207,7 +220,7 @@ def convert_asm2d_to_madm1(
     """
     Convert ASM2d state to mADM1 state.
 
-    Use case: WAS from aerobic MBR → anaerobic digester feed
+    Use case: WAS from aerobic MBR -> anaerobic digester feed
 
     This performs a stoichiometric mapping from ASM2d components to mADM1
     components while preserving mass balance (COD, TKN, TP).
@@ -350,7 +363,7 @@ def convert_asm2d_to_madm1(
 
     metadata = {
         "success": True,
-        "conversion": "ASM2d → mADM1",
+        "conversion": "ASM2d -> mADM1",
         "balance": {
             "cod_in_kg_m3": cod_in / 1000,
             "cod_out_kg_m3": cod_out / 1000,
@@ -371,7 +384,7 @@ def convert_asm2d_to_madm1(
     }
 
     logger.info(
-        f"Converted ASM2d → mADM1: {len(asm_concs)} → {sum(1 for v in adm_concs.values() if v > 0)} components"
+        f"Converted ASM2d -> mADM1: {len(asm_concs)} -> {sum(1 for v in adm_concs.values() if v > 0)} components"
     )
 
     return output_state, metadata
@@ -387,7 +400,7 @@ def convert_madm1_to_asm2d(
     """
     Convert mADM1 state to ASM2d state.
 
-    Use case: Digester effluent → sidestream treatment (returns to mainstream)
+    Use case: Digester effluent -> sidestream treatment (returns to mainstream)
 
     This performs a stoichiometric mapping from mADM1 components to ASM2d
     components while preserving mass balance (COD, TKN, TP).
@@ -497,7 +510,7 @@ def convert_madm1_to_asm2d(
 
     metadata = {
         "success": True,
-        "conversion": "mADM1 → ASM2d",
+        "conversion": "mADM1 -> ASM2d",
         "balance": {
             "cod_in_kg_m3": cod_in / 1000,
             "cod_out_kg_m3": cod_out / 1000,
@@ -516,7 +529,7 @@ def convert_madm1_to_asm2d(
     }
 
     logger.info(
-        f"Converted mADM1 → ASM2d: {len(adm_concs)} → {sum(1 for v in asm_concs.values() if v > 0)} components"
+        f"Converted mADM1 -> ASM2d: {len(adm_concs)} -> {sum(1 for v in asm_concs.values() if v > 0)} components"
     )
 
     return output_state, metadata
@@ -559,20 +572,20 @@ def convert_state(
     if source_model == target_model:
         return input_state, {"success": True, "conversion": "none", "message": "No conversion needed"}
 
-    # ASM2d/mASM2d → mADM1/ADM1
+    # ASM2d/mASM2d -> mADM1/ADM1
     if source_model in (ModelType.ASM2D, ModelType.MASM2D):
         if target_model in (ModelType.MADM1, ModelType.ADM1):
             return convert_asm2d_to_madm1(input_state, **kwargs)
 
-    # mADM1/ADM1 → ASM2d/mASM2d
+    # mADM1/ADM1 -> ASM2d/mASM2d
     if source_model in (ModelType.MADM1, ModelType.ADM1):
         if target_model in (ModelType.ASM2D, ModelType.MASM2D):
             return convert_madm1_to_asm2d(input_state, **kwargs)
 
     # Unsupported conversion
     raise ValueError(
-        f"Conversion {source_model.value} → {target_model.value} is not supported. "
-        f"Supported paths: ASM2d↔mADM1"
+        f"Conversion {source_model.value} -> {target_model.value} is not supported. "
+        f"Supported paths: ASM2d<->mADM1"
     )
 
 

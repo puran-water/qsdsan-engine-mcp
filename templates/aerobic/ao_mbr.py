@@ -3,8 +3,8 @@ A/O-MBR (Anoxic-Oxic with Membrane Bioreactor) Template.
 
 Simplified configuration for basic nitrogen removal.
 
-Flowsheet: Influent → A1 → O1 → MBR → Effluent + WAS
-                      ↑_____RAS_____↓
+Flowsheet: Influent -> A1 -> O1 -> MBR -> Effluent + WAS
+                      ^_____RAS_____v
 
 Usage:
     from templates.aerobic.ao_mbr import build_and_run

@@ -153,7 +153,7 @@ def create_sulfate_reduction_processes():
         """
         H2-utilizing SRB rate with dynamic component indexing.
 
-        Reaction: 4 H2 + SO4²⁻ → HS⁻ + 3 H2O + OH⁻
+        Reaction: 4 H2 + SO4²⁻ -> HS⁻ + 3 H2O + OH⁻
 
         Implements from mADM1:
         - Dual-substrate Monod (H2, SO4)
@@ -212,7 +212,7 @@ def create_sulfate_reduction_processes():
         """
         Acetate-utilizing SRB rate with dynamic component indexing.
 
-        Reaction: CH3COO⁻ + SO4²⁻ → 2 HCO3⁻ + HS⁻
+        Reaction: CH3COO⁻ + SO4²⁻ -> 2 HCO3⁻ + HS⁻
         """
         # Use dynamic indices (captured from closure)
         S_ac = state_arr[idx_ac]

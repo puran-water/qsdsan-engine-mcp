@@ -48,7 +48,7 @@ class StreamConfig:
         stream_id: Unique stream identifier (e.g., "influent", "RAS")
         flow_m3_d: Flow rate in m³/day
         temperature_K: Temperature in Kelvin
-        concentrations: Component ID → concentration (mg/L)
+        concentrations: Component ID -> concentration (mg/L)
         stream_type: One of "influent", "recycle", "intermediate"
         model_type: Process model for this stream (e.g., "ASM2d", "mADM1")
     """
@@ -90,7 +90,7 @@ class ConnectionConfig:
 
     Attributes:
         from_port: Source port notation (e.g., "SP-0", "C1-1", "U1-U2")
-        to_port: Destination port notation (e.g., "A1-1"). Optional for direct notation.
+        to_port: Destination port notation (e.g., "1-A1"). Optional for direct notation.
         stream_id: Optional stream ID for the connection
     """
     from_port: str  # e.g., "C1-1" or direct "U1-U2"
@@ -109,8 +109,8 @@ class FlowsheetSession:
         session_id: Unique session identifier
         primary_model_type: Default model for new units/streams
         model_types: Set of all models used in session (auto-tracked)
-        streams: stream_id → StreamConfig
-        units: unit_id → UnitConfig
+        streams: stream_id -> StreamConfig
+        units: unit_id -> UnitConfig
         connections: List of deferred connections
         created_at: ISO timestamp of creation
         updated_at: ISO timestamp of last update
@@ -400,7 +400,7 @@ class FlowsheetSessionManager:
         self._save_session(session)
 
         logger.info(
-            f"Added connection {config.from_port} → {config.to_port} "
+            f"Added connection {config.from_port} -> {config.to_port} "
             f"to session {session_id}"
         )
         return {

@@ -139,9 +139,9 @@ def compile_system(
     for conn in session.connections:
         try:
             _wire_connection(conn, unit_registry, stream_registry, recycle_streams)
-            logger.debug(f"Wired connection {conn.from_port} → {conn.to_port}")
+            logger.debug(f"Wired connection {conn.from_port} -> {conn.to_port}")
         except Exception as e:
-            warnings.append(f"Connection {conn.from_port} → {conn.to_port} failed: {e}")
+            warnings.append(f"Connection {conn.from_port} -> {conn.to_port} failed: {e}")
 
     # Determine unit order
     if unit_order is None:
@@ -383,8 +383,8 @@ def _resolve_single_input(
 
     Args:
         input_ref: Port notation string (not tuple notation)
-        stream_registry: Dict of stream_id → WasteStream
-        unit_registry: Dict of unit_id → SanUnit
+        stream_registry: Dict of stream_id -> WasteStream
+        unit_registry: Dict of unit_id -> SanUnit
 
     Returns:
         WasteStream, output port, or None if not found
@@ -585,7 +585,7 @@ def _create_san_unit(
 
     # Additional junction types with model injection (Phase 2B Fix 3)
     elif config.unit_type == "ASMtoADM":
-        # Generic ASM to ADM junction
+        # Generic ASM to ADM junction - use model-aware ASM selection
         from qsdsan import sanunits, processes as pc
 
         unit = sanunits.ASMtoADM(
@@ -593,12 +593,16 @@ def _create_san_unit(
             upstream=ins[0] if ins else None,
             **{k: v for k, v in config.params.items() if v is not None}
         )
-        unit.asm_model = pc.ASM2d()
+        # Select ASM model based on model_type
+        if model_type == "ASM1":
+            unit.asm_model = pc.ASM1()
+        else:
+            unit.asm_model = pc.ASM2d()  # Default for ASM2d, mASM2d
         unit.adm_model = pc.ADM1()
         return unit
 
     elif config.unit_type == "ADMtoASM":
-        # Generic ADM to ASM junction
+        # Generic ADM to ASM junction - use model-aware ASM selection
         from qsdsan import sanunits, processes as pc
 
         unit = sanunits.ADMtoASM(
@@ -607,7 +611,11 @@ def _create_san_unit(
             **{k: v for k, v in config.params.items() if v is not None}
         )
         unit.adm_model = pc.ADM1()
-        unit.asm_model = pc.ASM2d()
+        # Select ASM model based on model_type
+        if model_type == "ASM1":
+            unit.asm_model = pc.ASM1()
+        else:
+            unit.asm_model = pc.ASM2d()  # Default for ASM2d, mASM2d
         return unit
 
     elif config.unit_type == "ADM1ptomASM2d":
@@ -793,6 +801,7 @@ def _extract_simulation_results(
     """
     from utils.stream_analysis import (
         analyze_aerobic_stream,
+        analyze_liquid_stream,
         analyze_gas_stream,
         calculate_removal_efficiency,
     )
@@ -835,11 +844,23 @@ def _extract_simulation_results(
         if not effluent_streams and system.streams:
             effluent_streams = [system.streams[-1]]
 
-    # Calculate effluent quality
+    # Calculate effluent quality - use model-aware analysis function
     if effluent_streams:
         eff = effluent_streams[0]
         try:
-            results["effluent_quality"] = analyze_aerobic_stream(eff)
+            # Normalize model_type for comparison (handle both strings and ModelType enums)
+            mt = getattr(model_type, 'value', model_type) if model_type else "ASM2d"
+            mt = str(mt).upper()
+            if mt in ("MADM1", "ADM1"):
+                # Anaerobic models use liquid stream analysis with mADM1 components
+                results["effluent_quality"] = analyze_liquid_stream(eff)
+            elif mt == "ASM1":
+                # ASM1 has different components - use basic stream analysis
+                from utils.analysis.common import analyze_stream_basics
+                results["effluent_quality"] = analyze_stream_basics(eff)
+            else:
+                # ASM2d, mASM2d and others use aerobic analysis
+                results["effluent_quality"] = analyze_aerobic_stream(eff)
         except Exception as e:
             logger.warning(f"Failed to calculate effluent quality: {e}")
             results["effluent_quality"] = {"error": str(e)}
@@ -848,9 +869,28 @@ def _extract_simulation_results(
     influent_streams = [s for s in system.streams if s and "influent" in s.ID.lower()]
     if influent_streams and effluent_streams:
         try:
-            results["removal_efficiency"] = calculate_removal_efficiency(
-                influent_streams[0], effluent_streams[0], model_type
-            )
+            inf = influent_streams[0]
+            eff = effluent_streams[0]
+            # Calculate removal efficiency for key parameters
+            cod_in = inf.COD if hasattr(inf, 'COD') else 0
+            cod_out = eff.COD if hasattr(eff, 'COD') else 0
+            tss_in = inf.get_TSS() if hasattr(inf, 'get_TSS') else 0
+            tss_out = eff.get_TSS() if hasattr(eff, 'get_TSS') else 0
+
+            results["removal_efficiency"] = {
+                "COD_removal_pct": calculate_removal_efficiency(cod_in, cod_out),
+                "TSS_removal_pct": calculate_removal_efficiency(tss_in, tss_out),
+            }
+            # Add TN removal if available
+            if hasattr(inf, 'TN') and hasattr(eff, 'TN'):
+                tn_in = inf.TN if inf.TN else 0
+                tn_out = eff.TN if eff.TN else 0
+                results["removal_efficiency"]["TN_removal_pct"] = calculate_removal_efficiency(tn_in, tn_out)
+            # Add TP removal if available
+            if hasattr(inf, 'TP') and hasattr(eff, 'TP'):
+                tp_in = inf.TP if inf.TP else 0
+                tp_out = eff.TP if eff.TP else 0
+                results["removal_efficiency"]["TP_removal_pct"] = calculate_removal_efficiency(tp_in, tp_out)
         except Exception as e:
             logger.warning(f"Failed to calculate removal efficiency: {e}")
 
@@ -858,12 +898,42 @@ def _extract_simulation_results(
     # This allows mixed-model flowsheets (ASM2d + mADM1) to get biogas analysis
     # when the user explicitly specifies biogas streams
     biogas_streams = []
+    # Normalize model_type for comparison (handle both strings and ModelType enums)
+    mt_biogas = getattr(model_type, 'value', model_type) if model_type else "ASM2d"
+    mt_biogas = str(mt_biogas).upper()
+
     if biogas_stream_ids:
         # Explicit biogas streams provided - always analyze regardless of model_type
         biogas_streams = [s for s in system.streams if s and s.ID in biogas_stream_ids]
-    elif model_type in ("mADM1", "ADM1"):
+    elif mt_biogas in ("MADM1", "ADM1"):
         # Auto-detect biogas streams for anaerobic models
-        biogas_streams = [s for s in system.streams if s and "biogas" in s.ID.lower()]
+        # First check for streams with "biogas" or "gas" in name
+        biogas_streams = [s for s in system.streams if s and (
+            "biogas" in s.ID.lower() or "gas" in s.ID.lower()
+        )]
+        # If not found, check for gas-phase streams from digester second outputs
+        if not biogas_streams:
+            for unit in system.units:
+                # Check if unit is an anaerobic digester with 2 outputs
+                unit_type = type(unit).__name__
+                if any(x in unit_type for x in ["Anaerobic", "ADM1", "Digester"]):
+                    if len(unit.outs) >= 2 and unit.outs[1]:
+                        # Second output is typically biogas
+                        gas_stream = unit.outs[1]
+                        # Verify it has gas-phase components (CH4, CO2, H2, H2S, IC)
+                        try:
+                            cmps = gas_stream.components
+                            # Check for common biogas components in various naming conventions
+                            gas_comp_ids = [
+                                'S_ch4', 'S_CH4', 'S_co2', 'S_CO2',  # Methane, CO2
+                                'S_h2s', 'S_H2S', 'S_IS',            # Sulfide
+                                'S_h2', 'S_H2', 'S_IC',              # Hydrogen, inorganic carbon
+                            ]
+                            has_gas = any(hasattr(cmps, c) for c in gas_comp_ids)
+                            if has_gas:
+                                biogas_streams.append(gas_stream)
+                        except Exception:
+                            pass
 
     if biogas_streams:
         try:
@@ -913,7 +983,7 @@ def _export_plant_state(
 
     # Get flow in m³/d
     try:
-        flow_m3_d = float(stream.F_vol * 24)  # m³/hr → m³/d
+        flow_m3_d = float(stream.F_vol * 24)  # m³/hr -> m³/d
     except Exception:
         flow_m3_d = 0.0
 

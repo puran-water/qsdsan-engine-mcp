@@ -40,7 +40,7 @@ class PlantState:
         model_type: Biological process model (mADM1, ASM2d, etc.)
         flow_m3_d: Volumetric flow rate in m³/day
         temperature_K: Temperature in Kelvin
-        concentrations: Component ID → concentration (kg/m³)
+        concentrations: Component ID -> concentration (kg/m³)
         reactor_config: Reactor parameters (V_liq, HRT, SRT, recycles)
         metadata: Optional provenance and tracking info
 

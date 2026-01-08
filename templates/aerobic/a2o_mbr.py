@@ -3,8 +3,8 @@ A2O-MBR (Anaerobic-Anoxic-Oxic with Membrane Bioreactor) Template.
 
 Enhanced biological phosphorus removal (EBPR) configuration.
 
-Flowsheet: Influent → AN → A1 → O1 → O2 → MBR → Effluent + WAS
-                            ↑_______RAS_______↓
+Flowsheet: Influent -> AN -> A1 -> O1 -> O2 -> MBR -> Effluent + WAS
+                            ^_______RAS_______v
 
 The anaerobic zone (AN) promotes PAO enrichment for EBPR.
 

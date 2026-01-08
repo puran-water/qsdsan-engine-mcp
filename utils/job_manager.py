@@ -13,13 +13,13 @@ Key Features:
 - Automatic cleanup of orphaned processes
 
 Architecture:
-    User → MCP Tool → JobManager.execute() → Returns job_id immediately
+    User -> MCP Tool -> JobManager.execute() -> Returns job_id immediately
                               ↓
                     Background subprocess runs heavy computation
                               ↓
-    User → get_job_status(job_id) → "running, 65% complete"
+    User -> get_job_status(job_id) -> "running, 65% complete"
                               ↓
-    User → get_job_results(job_id) → Full structured results
+    User -> get_job_results(job_id) -> Full structured results
 
 Note: This is a stateless version for qsdsan-engine-mcp.
 State reconciliation is not needed since the engine passes state explicitly.
