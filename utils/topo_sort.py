@@ -24,7 +24,12 @@ from dataclasses import dataclass, field
 from collections import defaultdict, deque
 import logging
 
-from utils.pipe_parser import parse_port_notation, extract_unit_ids
+from utils.pipe_parser import (
+    parse_port_notation,
+    extract_unit_ids,
+    is_tuple_notation,
+    parse_tuple_notation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +49,50 @@ class TopoSortResult:
     recycle_edges: List[Tuple[str, str]] = field(default_factory=list)
     has_non_recycle_cycle: bool = False
     warnings: List[str] = field(default_factory=list)
+
+
+def _process_input_dependency(
+    input_ref: str,
+    unit_id: str,
+    recycle_stream_ids: Set[str],
+    adjacency: Dict[str, Set[str]],
+    recycle_edges: List[Tuple[str, str]],
+    units: Dict[str, any],
+) -> None:
+    """
+    Process a single input reference for dependency tracking.
+
+    Args:
+        input_ref: Port notation string (not tuple notation)
+        unit_id: Current unit being processed
+        recycle_stream_ids: Set of stream IDs known to be recycles
+        adjacency: Adjacency dict to update
+        recycle_edges: Recycle edge list to update
+        units: Dict of unit_id -> UnitConfig
+    """
+    try:
+        ref = parse_port_notation(input_ref)
+
+        # Skip streams (they're not units)
+        if ref.port_type == "stream":
+            # Recycle streams are handled via connections
+            return
+
+        # This unit depends on ref.unit_id (the source unit)
+        source_unit = ref.unit_id
+
+        # Check if this is a recycle edge
+        if input_ref in recycle_stream_ids or _is_recycle_edge(
+            source_unit, unit_id, recycle_stream_ids, units, input_ref=input_ref
+        ):
+            recycle_edges.append((source_unit, unit_id))
+        else:
+            # Normal dependency: source -> current
+            adjacency[source_unit].add(unit_id)
+
+    except ValueError:
+        # Invalid port notation, skip
+        pass
 
 
 def _build_dependency_graph(
@@ -71,36 +120,19 @@ def _build_dependency_graph(
     # Build from unit inputs
     for unit_id, config in units.items():
         for input_ref in config.inputs:
-            try:
-                ref = parse_port_notation(input_ref)
-
-                # Skip streams (they're not units)
-                if ref.port_type == "stream":
-                    # Check if this is a recycle stream
-                    if input_ref in recycle_stream_ids:
-                        # This is a recycle, we'll handle it via connections
-                        pass
-                    continue
-
-                # This unit depends on ref.unit_id (the source unit)
-                source_unit = ref.unit_id
-
-                # For direct notation (U1-U2), the current unit is the target
-                # so we still depend on source_unit (which is U1)
-                # The target_unit_id would be the current unit in this context
-
-                # Check if this is a recycle edge - pass the specific input_ref
-                if input_ref in recycle_stream_ids or _is_recycle_edge(
-                    source_unit, unit_id, recycle_stream_ids, units, input_ref=input_ref
-                ):
-                    recycle_edges.append((source_unit, unit_id))
-                else:
-                    # Normal dependency: source -> current
-                    adjacency[source_unit].add(unit_id)
-
-            except ValueError:
-                # Invalid port notation, skip
-                pass
+            # Handle tuple notation (fan-in like "(A1-0, B1-0)")
+            if is_tuple_notation(input_ref):
+                port_strs = parse_tuple_notation(input_ref)
+                for port_str in port_strs:
+                    _process_input_dependency(
+                        port_str, unit_id, recycle_stream_ids,
+                        adjacency, recycle_edges, units
+                    )
+            else:
+                _process_input_dependency(
+                    input_ref, unit_id, recycle_stream_ids,
+                    adjacency, recycle_edges, units
+                )
 
     # Build from explicit connections
     for conn in connections:
@@ -336,6 +368,11 @@ def detect_recycle_streams(
     for conn in connections:
         try:
             from_ref = parse_port_notation(conn.from_port)
+            # Handle direct notation where to_port is None (e.g., "U1-U2" in from_port)
+            if conn.to_port is None:
+                if from_ref.port_type == "direct" and from_ref.target_unit_id:
+                    adjacency[from_ref.unit_id].add(from_ref.target_unit_id)
+                continue
             to_ref = parse_port_notation(conn.to_port)
             if from_ref.port_type != "stream" and to_ref.port_type != "stream":
                 adjacency[from_ref.unit_id].add(to_ref.unit_id)
@@ -371,6 +408,14 @@ def detect_recycle_streams(
         for conn in connections:
             try:
                 from_ref = parse_port_notation(conn.from_port)
+                # Handle direct notation where to_port is None
+                if conn.to_port is None:
+                    if (from_ref.port_type == "direct" and
+                        from_ref.unit_id == from_unit and
+                        from_ref.target_unit_id == to_unit and
+                        conn.stream_id):
+                        recycle_streams.add(conn.stream_id)
+                    continue
                 to_ref = parse_port_notation(conn.to_port)
                 if (from_ref.unit_id == from_unit and
                     to_ref.unit_id == to_unit and
@@ -417,33 +462,51 @@ def validate_flowsheet_connectivity(
     referenced_units = set()
     referenced_streams = set()
 
-    # Check unit inputs
+    # Helper to process a single port notation
+    def _process_port_ref(port_str: str, context: str):
+        try:
+            ref = parse_port_notation(port_str)
+            if ref.port_type == "stream":
+                referenced_streams.add(ref.unit_id)
+            else:
+                referenced_units.add(ref.unit_id)
+                # For direct notation, also track target unit
+                if ref.port_type == "direct" and ref.target_unit_id:
+                    referenced_units.add(ref.target_unit_id)
+        except ValueError as e:
+            errors.append(f"{context}: {e}")
+
+    # Check unit inputs (handle tuple notation)
     for unit_id, config in units.items():
         for input_ref in config.inputs:
-            try:
-                ref = parse_port_notation(input_ref)
-                if ref.port_type == "stream":
-                    referenced_streams.add(ref.unit_id)
-                else:
-                    referenced_units.add(ref.unit_id)
-            except ValueError as e:
-                errors.append(f"Unit '{unit_id}' has invalid input '{input_ref}': {e}")
+            if is_tuple_notation(input_ref):
+                # Parse tuple and validate each port
+                port_strs = parse_tuple_notation(input_ref)
+                for port_str in port_strs:
+                    _process_port_ref(port_str, f"Unit '{unit_id}' has invalid input '{port_str}' in tuple")
+            else:
+                _process_port_ref(input_ref, f"Unit '{unit_id}' has invalid input '{input_ref}'")
 
-    # Check connections
+    # Check connections (handle direct notation with None to_port)
     for conn in connections:
         try:
             from_ref = parse_port_notation(conn.from_port)
             if from_ref.port_type != "stream":
                 referenced_units.add(from_ref.unit_id)
+            # For direct notation, also track target unit from from_port
+            if from_ref.port_type == "direct" and from_ref.target_unit_id:
+                referenced_units.add(from_ref.target_unit_id)
         except ValueError as e:
             errors.append(f"Invalid connection from '{conn.from_port}': {e}")
 
-        try:
-            to_ref = parse_port_notation(conn.to_port)
-            if to_ref.port_type != "stream":
-                referenced_units.add(to_ref.unit_id)
-        except ValueError as e:
-            errors.append(f"Invalid connection to '{conn.to_port}': {e}")
+        # Only validate to_port if it's provided (not None for direct notation)
+        if conn.to_port is not None:
+            try:
+                to_ref = parse_port_notation(conn.to_port)
+                if to_ref.port_type != "stream":
+                    referenced_units.add(to_ref.unit_id)
+            except ValueError as e:
+                errors.append(f"Invalid connection to '{conn.to_port}': {e}")
 
     # Check for missing units
     for ref_unit in referenced_units:
