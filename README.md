@@ -1,50 +1,34 @@
 # QSDsan Engine MCP
 
-> **⚠️ DEVELOPMENT STATUS: This project is under active development and is not yet production-ready. APIs, interfaces, and functionality may change without notice. Use at your own risk for evaluation and testing purposes only. Not recommended for production deployments.**
-
-
 A universal wastewater treatment simulation engine exposing [QSDsan](https://github.com/QSD-Group/QSDsan) capabilities through dual adapters for AI agent integration.
 
-## Motivation
+## Vision
 
-Commercial wastewater simulation platforms offer sophisticated biological models but impose a significant bottleneck: **GUI-driven workflows** that limit iteration speed, parallelization, and reproducibility. Process engineers spend substantial time navigating interfaces rather than exploring designs.
-
-QSDsan Engine MCP inverts this paradigm by making **natural language the primary interface**. Instead of clicking through dialogs, engineers describe what they want:
-
-> "Compare anaerobic-aerobic vs aerobic-only treatment for this high-strength industrial waste: evaluate supplemental alkalinity and nutrient costs, digester heating load, and biogas energy credit to identify the lowest life cycle cost flowsheet."
-
-This enables:
-
-- **Collapsed iteration cycles**: Build -> run -> diagnose -> patch -> rerun without GUI navigation
-- **Massive scenario enumeration**: DOE, Monte Carlo, and optimization workflows become natural since everything is code
-- **Reproducible, diffable runs**: Version-controlled session specs with deterministic metadata
-- **Structured diagnostics**: Validation warnings, model compatibility checks, and actionable error messages surfaced directly to agents
-
-The goal is not to replace domain expertise, but to **remove friction** so engineers can focus on design decisions rather than tool mechanics.
+Enable AI agents to design, simulate, and optimize wastewater treatment systems using industry-standard biological process models (ASM1, ASM2d, mADM1) without requiring deep domain expertise.
 
 ## Architecture: Dual Adapters
 
-The engine exposes identical functionality through two adapters:
+The engine exposes identical functionality through two adapters, enabling integration with different agent runtimes:
 
 ```
-                    +-------------------------------------+
-                    |       QSDsan Engine Core            |
-                    |  (Templates, Models, Converters)    |
-                    +-----------------+-------------------+
-                                      |
-              +-----------------------+---------------------+
-              |                       |                     |
-              v                       v                     v
-     +----------------+      +----------------+     +----------------+
-     |   MCP Adapter  |      |   CLI Adapter  |     |  Python API    |
-     |   (server.py)  |      |   (cli.py)     |     |  (direct use)  |
-     +----------------+      +----------------+     +----------------+
-              |                       |
-              v                       v
-     +----------------+      +----------------+
-     |  MCP Clients   |      |  Agent Skills  |
-     |  (Claude, etc) |      |  (Claude Code) |
-     +----------------+      +----------------+
+                    ┌─────────────────────────────────────┐
+                    │       QSDsan Engine Core            │
+                    │  (Templates, Models, Converters)    │
+                    └─────────────┬───────────────────────┘
+                                  │
+              ┌───────────────────┼───────────────────┐
+              │                   │                   │
+              ▼                   ▼                   ▼
+     ┌────────────────┐  ┌────────────────┐  ┌────────────────┐
+     │   MCP Adapter  │  │   CLI Adapter  │  │  Python API    │
+     │   (server.py)  │  │   (cli.py)     │  │  (direct use)  │
+     └────────────────┘  └────────────────┘  └────────────────┘
+              │                   │
+              ▼                   ▼
+     ┌────────────────┐  ┌────────────────┐
+     │  MCP Clients   │  │  Agent Skills  │
+     │  (Claude, etc) │  │  (Claude Code) │
+     └────────────────┘  └────────────────┘
 ```
 
 ### MCP Adapter (`server.py`)
@@ -52,6 +36,7 @@ The engine exposes identical functionality through two adapters:
 For MCP-compatible clients (Claude Desktop, Cline, etc.):
 
 ```bash
+# Start MCP server
 python server.py
 ```
 
@@ -60,19 +45,19 @@ python server.py
 For CLI-based agent runtimes and Agent Skills:
 
 ```bash
+# List available commands
 python cli.py --help
 ```
 
 ## Tool Surface
 
-### Core Simulation Tools
+### Simulation Tools
 
 | Tool | MCP | CLI | Description |
 |------|-----|-----|-------------|
 | `list_templates` | `list_templates` | `templates` | List available treatment templates |
 | `validate_state` | `validate_state` | `validate` | Validate influent state against model |
-| `simulate_system` | `simulate_system` | `simulate` | Run template-based simulation |
-| `convert_state` | `convert_state` | `convert` | Convert between ASM2d and mADM1 |
+| `run_simulation` | `run_simulation` | `simulate` | Run template-based simulation |
 
 ### Flowsheet Construction Tools
 
@@ -88,55 +73,18 @@ Build custom treatment trains dynamically:
 | `simulate_built_system` | `simulate_built_system` | `flowsheet simulate` | Run simulation |
 | `list_units` | `list_units` | `flowsheet units` | List available unit types |
 
-### Session Management Tools
-
-Modify flowsheets without starting over:
+### State Conversion Tools
 
 | Tool | MCP | CLI | Description |
 |------|-----|-----|-------------|
-| `update_stream` | `update_stream` | `flowsheet update-stream` | Modify stream properties |
-| `update_unit` | `update_unit` | `flowsheet update-unit` | Modify unit parameters |
-| `delete_stream` | `delete_stream` | `flowsheet delete-stream` | Remove stream |
-| `delete_unit` | `delete_unit` | `flowsheet delete-unit` | Remove unit and connections |
-| `delete_connection` | `delete_connection` | `flowsheet delete-connection` | Remove specific connection |
-| `clone_session` | `clone_session` | `flowsheet clone` | Fork session for experimentation |
-
-### Discoverability Tools
-
-Explore models and validate configurations before simulation:
-
-| Tool | MCP | CLI | Description |
-|------|-----|-----|-------------|
-| `get_model_components` | `get_model_components` | `models components` | Get component IDs and metadata |
-| `validate_flowsheet` | `validate_flowsheet` | `flowsheet validate` | Pre-compilation validation |
-| `suggest_recycles` | `suggest_recycles` | `flowsheet suggest-recycles` | Detect potential recycle streams |
-
-### Artifact Retrieval Tools
-
-Access simulation outputs programmatically:
-
-| Tool | MCP | CLI | Description |
-|------|-----|-----|-------------|
-| `get_artifact` | `get_artifact` | `flowsheet artifact` | Get diagram/report content |
-| `get_flowsheet_timeseries` | `get_flowsheet_timeseries` | `flowsheet timeseries` | Get time-series trajectories |
-
-### Techno-Economic Analysis (TEA) Tools
-
-Estimate capital and operating costs:
-
-| Tool | MCP | CLI | Description |
-|------|-----|-----|-------------|
-| `create_tea` | `create_tea` | - | Create TEA for completed simulation |
-| `get_capex_breakdown` | `get_capex_breakdown` | - | CAPEX hierarchy (DPI, TDC, FCI, TCI) |
-| `get_opex_summary` | `get_opex_summary` | - | OPEX components (FOC, VOC, AOC) |
-| `get_utility_costs` | `get_utility_costs` | - | Utility consumption (kWh/yr, heating) |
+| `convert_state` | `convert_state` | `convert` | Convert between ASM2d and mADM1 |
 
 ## Supported Models
 
 | Model | Components | Use Case |
 |-------|------------|----------|
-| **ASM1** | 13 | Activated sludge (basic nitrification/denitrification) |
-| **ASM2d** | 19 | Activated sludge with biological phosphorus removal |
+| **ASM1** | 13 | Activated sludge (basic) |
+| **ASM2d** | 19 | Activated sludge with biological P removal |
 | **mADM1** | 63 | Anaerobic digestion with sulfur-reducing bacteria |
 
 ## Pre-built Templates
@@ -148,38 +96,6 @@ Estimate capital and operating costs:
 | `ao_mbr_asm2d` | ASM2d | A/O process with MBR |
 | `a2o_mbr_asm2d` | ASM2d | A2O process with EBPR and MBR |
 
-## Mixed-Model Flowsheets
-
-Build flowsheets combining aerobic and anaerobic treatment with automatic model conversion:
-
-```bash
-# Create ASM2d session
-python cli.py flowsheet new --model ASM2d --id mixed_plant
-
-# Add aerobic treatment
-python cli.py flowsheet add-stream --session mixed_plant --id influent \
-  --flow 4000 --concentrations '{"S_F": 75, "S_NH4": 35}'
-python cli.py flowsheet add-unit --session mixed_plant --type CSTR --id aerobic \
-  --params '{"V_max": 2000, "aeration": 2.0}' --inputs '["influent"]'
-
-# Add junction to convert ASM2d -> mADM1
-python cli.py flowsheet add-unit --session mixed_plant --type ASM2dtomADM1 --id J1 \
-  --inputs '["aerobic-0"]'
-
-# Add anaerobic digester (mADM1 model)
-python cli.py flowsheet add-unit --session mixed_plant --type AnaerobicCSTRmADM1 --id digester \
-  --params '{"V_max": 500}' --inputs '["J1-0"]'
-
-# Build and simulate
-python cli.py flowsheet build --session mixed_plant
-python cli.py flowsheet simulate --session mixed_plant --duration 30
-```
-
-The engine automatically:
-- Tracks model zones through junction units
-- Suggests appropriate junctions when model-incompatible units are added
-- Warns about fan-in from different model types
-
 ## Quick Start
 
 ### Using CLI
@@ -188,20 +104,11 @@ The engine automatically:
 # List templates
 python cli.py templates --json-out
 
-# Create influent file
-cat > influent.json << 'EOF'
-{
-  "flow_m3_d": 4000,
-  "temperature_K": 293.15,
-  "concentrations": {"S_F": 75, "S_A": 20, "S_NH4": 35, "S_PO4": 9}
-}
-EOF
-
-# Run MLE-MBR simulation (use file path for --influent, --duration-days not --duration)
+# Run MLE-MBR simulation
 python cli.py simulate \
   --template mle_mbr_asm2d \
-  --influent influent.json \
-  --duration-days 15 \
+  --influent '{"flow_m3_d": 4000, "concentrations": {"S_F": 75, "S_NH4": 35}}' \
+  --duration 15 \
   --report
 
 # Build custom flowsheet
@@ -242,7 +149,7 @@ Then use natural language:
 - **Separators:** CompletelyMixedMBR, AnMBR, PolishingFilter, MembraneDistillation
 - **Clarifiers:** FlatBottomCircularClarifier, PrimaryClarifier, IdealClarifier
 - **Sludge:** Thickener, Centrifuge, SludgeDigester, DryingBed
-- **Junctions:** ASM2dtomADM1, mADM1toASM2d, ASM2dtoADM1, ADM1toASM2d (model converters for mixed flowsheets)
+- **Junctions:** ASM2dtoADM1, ADM1toASM2d, mADM1toASM2d (model converters)
 - **Utilities:** Splitter, Mixer, Tank, StorageTank, DynamicInfluent
 
 ```bash
@@ -267,15 +174,6 @@ Connect units using BioSTEAM pipe notation:
 # Explicit: "U1-0-1-U2" -> U1.outs[0] -> U2.ins[1]
 ```
 
-## Output
-
-Simulations produce:
-
-- **JSON results** with effluent quality, removal efficiencies, and deterministic metadata (solver settings, library versions, timestamps)
-- **SVG flowsheet diagrams** showing unit operations and streams
-- **Quarto reports** (optional) with comprehensive analysis
-- **Time-series data** for tracked streams
-
 ## Installation
 
 ```bash
@@ -287,30 +185,24 @@ cd qsdsan-engine-mcp
 python -m venv venv
 source venv/bin/activate  # or venv\Scripts\activate on Windows
 
-# Install dependencies (either method works)
+# Install dependencies
 pip install -r requirements.txt
-# OR
-pip install -e .
 ```
 
 ### Dependencies
 
-**Python packages** (installed automatically):
 - Python 3.10+
 - QSDsan 1.3+
 - BioSTEAM 2.40+
 - FastMCP (for MCP adapter)
-- Typer + Rich (for CLI adapter)
-- Jinja2 (for report generation)
-- Matplotlib (for time-series plots)
+- Typer (for CLI adapter)
 
-**External tools** (install separately):
-- **Graphviz**: Required for flowsheet diagrams
-  - Linux: `sudo apt install graphviz`
-  - macOS: `brew install graphviz`
-  - Windows: https://graphviz.org/download/
-- **Quarto CLI** (optional): For rendering `.qmd` reports to HTML/PDF
-  - https://quarto.org/docs/get-started/
+## Output
+
+Simulations produce:
+- **JSON results** with effluent quality, removal efficiencies, and mass balances
+- **SVG flowsheet diagrams** showing unit operations and streams
+- **Quarto reports** (optional) with comprehensive analysis
 
 ## License
 
