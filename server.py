@@ -39,7 +39,7 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-from typing import Dict, Any, Optional, Literal
+from typing import Dict, Any, Optional, Literal, List
 
 from mcp.server.fastmcp import FastMCP
 
@@ -88,11 +88,11 @@ session_manager = FlowsheetSessionManager(sessions_dir=Path("jobs"))
 @mcp.tool()
 async def simulate_system(
     template: str,
-    influent_json: str,
+    influent: Dict[str, Any],
     duration_days: float = 1.0,
     timestep_hours: float = 1.0,
-    reactor_config: Optional[str] = None,
-    parameters: Optional[str] = None,
+    reactor_config: Optional[Dict[str, Any]] = None,
+    parameters: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Run QSDsan dynamic simulation using a flowsheet template.
@@ -102,11 +102,12 @@ async def simulate_system(
 
     Args:
         template: Flowsheet template name (e.g., "anaerobic_cstr_madm1", "mle_mbr_asm2d")
-        influent_json: JSON string of PlantState for influent
+        influent: PlantState dict for influent with keys: model_type, flow_m3_d,
+                  temperature_K, concentrations
         duration_days: Simulation duration in days (default 1.0)
         timestep_hours: Output timestep in hours (default 1.0)
-        reactor_config: Optional JSON string of reactor configuration overrides
-        parameters: Optional JSON string of kinetic parameter overrides
+        reactor_config: Optional reactor configuration overrides
+        parameters: Optional kinetic parameter overrides
 
     Returns:
         Dict with job_id, status, and instructions for monitoring
@@ -114,20 +115,19 @@ async def simulate_system(
     Example:
         >>> result = await simulate_system(
         ...     template="anaerobic_cstr_madm1",
-        ...     influent_json='{"model_type": "mADM1", "flow_m3_d": 1000, ...}',
+        ...     influent={"model_type": "mADM1", "flow_m3_d": 1000, "concentrations": {...}},
         ...     duration_days=30.0
         ... )
         >>> job_id = result["job_id"]
         >>> # Then call get_job_status(job_id) and get_job_results(job_id)
     """
     try:
-        # Parse influent state
-        influent_data = json.loads(influent_json)
-        influent = PlantState.from_dict(influent_data)
+        # Use influent directly (native dict)
+        influent_state = PlantState.from_dict(influent)
 
-        # Parse optional configs
-        reactor_cfg = json.loads(reactor_config) if reactor_config else {}
-        params = json.loads(parameters) if parameters else {}
+        # Use configs directly (native dicts)
+        reactor_cfg = reactor_config or {}
+        params = parameters or {}
 
         # Create job directory
         import uuid
@@ -136,7 +136,7 @@ async def simulate_system(
         job_dir.mkdir(parents=True, exist_ok=True)
 
         # Save influent state to job directory
-        influent.save(str(job_dir / "influent.json"))
+        influent_state.save(str(job_dir / "influent.json"))
 
         # Save config
         config = {
@@ -163,9 +163,9 @@ async def simulate_system(
         ]
 
         if reactor_config:
-            cmd.extend(["--reactor-config", reactor_config])
+            cmd.extend(["--reactor-config", json.dumps(reactor_config)])
         if parameters:
-            cmd.extend(["--parameters", parameters])
+            cmd.extend(["--parameters", json.dumps(parameters)])
 
         # Execute as background job
         cwd = str(Path(__file__).parent.absolute())
@@ -178,9 +178,6 @@ async def simulate_system(
             "duration_days": duration_days,
             "message": f"Simulation started. Use get_job_status('{job['id']}') to monitor progress.",
         }
-
-    except json.JSONDecodeError as e:
-        return {"error": f"Invalid JSON input: {e}"}
     except Exception as e:
         logger.error(f"simulate_system failed: {e}", exc_info=True)
         return {"error": str(e)}
@@ -244,7 +241,7 @@ async def list_templates() -> Dict[str, Any]:
 # =============================================================================
 @mcp.tool()
 async def validate_state(
-    state_json: str,
+    state: Dict[str, Any],
     model_type: str,
     check_charge_balance: bool = True,
     check_mass_balance: bool = True,
@@ -259,7 +256,7 @@ async def validate_state(
     - Concentration bounds
 
     Args:
-        state_json: JSON string of PlantState to validate
+        state: PlantState dict with keys: model_type, flow_m3_d, temperature_K, concentrations
         model_type: Target model type ("mADM1", "ASM2d", etc.)
         check_charge_balance: Whether to check electroneutrality
         check_mass_balance: Whether to check mass balance closure
@@ -268,9 +265,8 @@ async def validate_state(
         ValidationResult as dict
     """
     try:
-        # Parse state
-        state_data = json.loads(state_json)
-        state = PlantState.from_dict(state_data)
+        # Use state directly (native dict)
+        plant_state = PlantState.from_dict(state)
 
         # Get model info
         mt = ModelType(model_type)
@@ -280,7 +276,7 @@ async def validate_state(
         warnings = []
 
         # Check components
-        provided = set(state.concentrations.keys())
+        provided = set(plant_state.concentrations.keys())
         missing, extra = validate_components(mt, provided)
 
         if missing:
@@ -289,14 +285,14 @@ async def validate_state(
             warnings.append(f"Extra components (will be ignored): {extra[:5]}{'...' if len(extra) > 5 else ''}")
 
         # Basic validation
-        if state.flow_m3_d <= 0:
-            errors.append(f"flow_m3_d must be positive, got {state.flow_m3_d}")
+        if plant_state.flow_m3_d <= 0:
+            errors.append(f"flow_m3_d must be positive, got {plant_state.flow_m3_d}")
 
-        if state.temperature_K < 273.15 or state.temperature_K > 373.15:
-            warnings.append(f"Temperature {state.temperature_K} K outside typical range (273-373 K)")
+        if plant_state.temperature_K < 273.15 or plant_state.temperature_K > 373.15:
+            warnings.append(f"Temperature {plant_state.temperature_K} K outside typical range (273-373 K)")
 
         # Check for negative concentrations
-        negative = [k for k, v in state.concentrations.items() if v < 0]
+        negative = [k for k, v in plant_state.concentrations.items() if v < 0]
         if negative:
             errors.append(f"Negative concentrations: {negative}")
 
@@ -304,8 +300,8 @@ async def validate_state(
         charge_balance = None
         if check_charge_balance and mt == ModelType.MADM1:
             # Simplified check - actual implementation uses full speciation
-            s_cat = state.concentrations.get('S_Na', 0) + state.concentrations.get('S_K', 0)
-            s_an = state.concentrations.get('S_Cl', 0)
+            s_cat = plant_state.concentrations.get('S_Na', 0) + plant_state.concentrations.get('S_K', 0)
+            s_an = plant_state.concentrations.get('S_Cl', 0)
             if s_cat == 0 and s_an == 0:
                 warnings.append("Charge balance species (S_Na, S_Cl, S_K) not set")
             charge_balance = {"S_cat_approx": s_cat, "S_an_approx": s_an}
@@ -322,8 +318,6 @@ async def validate_state(
 
         return result.to_dict()
 
-    except json.JSONDecodeError as e:
-        return {"error": f"Invalid JSON: {e}", "is_valid": False}
     except Exception as e:
         logger.error(f"validate_state failed: {e}", exc_info=True)
         return {"error": str(e), "is_valid": False}
@@ -334,7 +328,7 @@ async def validate_state(
 # =============================================================================
 @mcp.tool()
 async def convert_state(
-    state_json: str,
+    state: Dict[str, Any],
     from_model: str,
     to_model: str,
 ) -> Dict[str, Any]:
@@ -345,7 +339,7 @@ async def convert_state(
     Supports ASM2d <-> mADM1 conversions for integrated plant simulation.
 
     Args:
-        state_json: JSON string of PlantState to convert
+        state: PlantState dict with keys: model_type, flow_m3_d, temperature_K, concentrations
         from_model: Source model type ("ASM2d", "mADM1", etc.)
         to_model: Target model type
 
@@ -355,14 +349,14 @@ async def convert_state(
     Example:
         # Convert WAS from activated sludge to anaerobic digester
         >>> result = await convert_state(
-        ...     state_json='{"model_type": "ASM2d", ...}',
+        ...     state={"model_type": "ASM2d", "flow_m3_d": 100, "concentrations": {...}},
         ...     from_model="ASM2d",
         ...     to_model="mADM1"
         ... )
     """
     try:
-        # Parse state
-        state_data = json.loads(state_json)
+        # Use state directly (native dict)
+        state_data = state
 
         # Validate model types
         from_mt = ModelType(from_model)
@@ -372,7 +366,7 @@ async def convert_state(
             return {
                 "status": "no_conversion_needed",
                 "message": f"Source and target model are both {from_model}",
-                "state": state_data,
+                "state": state,
             }
 
         # Check for supported conversions
@@ -422,8 +416,6 @@ async def convert_state(
             "message": f"Conversion started. Use get_job_status('{job['id']}') to monitor.",
         }
 
-    except json.JSONDecodeError as e:
-        return {"error": f"Invalid JSON: {e}"}
     except Exception as e:
         logger.error(f"convert_state failed: {e}", exc_info=True)
         return {"error": str(e)}
@@ -537,8 +529,9 @@ async def create_stream(
     session_id: str,
     stream_id: str,
     flow_m3_d: float,
-    concentrations: str,
+    concentrations: Dict[str, float],
     temperature_K: float = 293.15,
+    concentration_units: str = "mg/L",
     stream_type: str = "influent",
     model_type: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -548,9 +541,10 @@ async def create_stream(
     Args:
         session_id: Session identifier from create_flowsheet_session
         stream_id: Unique stream identifier (e.g., "influent", "RAS")
-        flow_m3_d: Flow rate in m³/day
-        concentrations: JSON dict of component ID -> concentration (mg/L)
-        temperature_K: Temperature in Kelvin (default 293.15 = 20°C)
+        flow_m3_d: Flow rate in m3/day
+        concentrations: Dict of component ID -> concentration value
+        temperature_K: Temperature in Kelvin (default 293.15 = 20C)
+        concentration_units: Units for concentration values: "mg/L" (default) or "kg/m3"
         stream_type: One of "influent", "recycle", "intermediate"
         model_type: Process model override (defaults to session's primary model)
 
@@ -562,27 +556,49 @@ async def create_stream(
         ...     session_id="abc123",
         ...     stream_id="influent",
         ...     flow_m3_d=4000,
-        ...     concentrations='{"S_F": 75, "S_A": 20, "S_NH4": 17}',
+        ...     concentrations={"S_F": 75, "S_A": 20, "S_NH4": 17},
+        ...     concentration_units="mg/L",
         ... )
     """
     try:
-        # Parse concentrations
-        conc_data = json.loads(concentrations)
+        # Validate concentration_units
+        if concentration_units not in ("mg/L", "kg/m3"):
+            return {"error": f"Invalid concentration_units '{concentration_units}'. Must be 'mg/L' or 'kg/m3'."}
+
+        warnings = []
+
+        # Validate component IDs against model
+        session = session_manager.get_session(session_id)
+        effective_model = model_type or session.primary_model_type
+        try:
+            mt = ModelType(effective_model)
+            missing, extra = validate_components(mt, set(concentrations.keys()))
+            if extra:
+                extra_list = extra[:5]
+                suffix = f"... and {len(extra) - 5} more" if len(extra) > 5 else ""
+                warnings.append(f"Unknown component IDs (ignored by QSDsan): {extra_list}{suffix}")
+        except (ValueError, KeyError):
+            # Model not in registry - skip component validation
+            pass
 
         config = StreamConfig(
             stream_id=stream_id,
             flow_m3_d=flow_m3_d,
             temperature_K=temperature_K,
-            concentrations=conc_data,
+            concentrations=concentrations,
+            concentration_units=concentration_units,
             stream_type=stream_type,
             model_type=model_type,
         )
 
         result = session_manager.add_stream(session_id, config)
+
+        # Add warnings to result
+        if warnings:
+            result["warnings"] = warnings
+
         return result
 
-    except json.JSONDecodeError as e:
-        return {"error": f"Invalid concentrations JSON: {e}"}
     except ValueError as e:
         return {"error": str(e)}
     except Exception as e:
@@ -595,9 +611,9 @@ async def create_unit(
     session_id: str,
     unit_type: str,
     unit_id: str,
-    params: str,
-    inputs: str,
-    outputs: Optional[str] = None,
+    params: Dict[str, Any],
+    inputs: List[str],
+    outputs: Optional[List[str]] = None,
     model_type: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
@@ -607,9 +623,9 @@ async def create_unit(
         session_id: Session identifier from create_flowsheet_session
         unit_type: Unit type from registry (e.g., "CSTR", "Splitter", "CompletelyMixedMBR")
         unit_id: Unique unit identifier (e.g., "A1", "O1", "MBR")
-        params: JSON dict of unit-specific parameters
-        inputs: JSON list of input sources (stream IDs or pipe notation like "A1-0")
-        outputs: Optional JSON list of output stream names
+        params: Dict of unit-specific parameters
+        inputs: List of input sources (stream IDs or pipe notation like "A1-0")
+        outputs: Optional list of output stream names
         model_type: Process model override (defaults to session's primary model)
 
     Returns:
@@ -620,16 +636,11 @@ async def create_unit(
         ...     session_id="abc123",
         ...     unit_type="CSTR",
         ...     unit_id="A1",
-        ...     params='{"V_max": 1000, "aeration": null}',
-        ...     inputs='["influent", "RAS"]',
+        ...     params={"V_max": 1000, "aeration": None},
+        ...     inputs=["influent", "RAS"],
         ... )
     """
     try:
-        # Parse JSON inputs
-        params_data = json.loads(params)
-        inputs_data = json.loads(inputs)
-        outputs_data = json.loads(outputs) if outputs else None
-
         # Validate unit type exists
         try:
             spec = get_unit_spec(unit_type)
@@ -637,7 +648,7 @@ async def create_unit(
             return {"error": str(e)}
 
         # Validate parameters
-        param_errors, param_warnings = validate_unit_params(unit_type, params_data)
+        param_errors, param_warnings = validate_unit_params(unit_type, params)
         if param_errors:
             return {"error": f"Parameter validation failed: {param_errors}"}
 
@@ -656,9 +667,9 @@ async def create_unit(
         config = UnitConfig(
             unit_id=unit_id,
             unit_type=unit_type,
-            params=params_data,
-            inputs=inputs_data,
-            outputs=outputs_data,
+            params=params,
+            inputs=inputs,
+            outputs=outputs,
             model_type=model_type,
         )
 
@@ -674,8 +685,6 @@ async def create_unit(
 
         return result
 
-    except json.JSONDecodeError as e:
-        return {"error": f"Invalid JSON: {e}"}
     except ValueError as e:
         return {"error": str(e)}
     except Exception as e:
@@ -686,7 +695,7 @@ async def create_unit(
 @mcp.tool()
 async def connect_units(
     session_id: str,
-    connections: str,
+    connections: List[Dict[str, str]],
 ) -> Dict[str, Any]:
     """
     Add deferred connections between units (for recycles).
@@ -696,7 +705,7 @@ async def connect_units(
 
     Args:
         session_id: Session identifier
-        connections: JSON list of connection objects. Formats:
+        connections: List of connection dicts. Formats:
             - Standard: {"from": "SP-0", "to": "1-A1"}  # Note: input notation for "to"
             - Direct:   {"from": "U1-U2"} or {"from": "U1-0-1-U2"}
 
@@ -706,24 +715,18 @@ async def connect_units(
     Example:
         >>> await connect_units(
         ...     session_id="abc123",
-        ...     connections='[{"from": "SP-0", "to": "1-A1"}]',
+        ...     connections=[{"from": "SP-0", "to": "1-A1"}],
         ... )
         >>> await connect_units(
         ...     session_id="abc123",
-        ...     connections='[{"from": "SP-0-1-A1"}]',  # Direct notation
+        ...     connections=[{"from": "SP-0-1-A1"}],  # Direct notation
         ... )
     """
     from utils.pipe_parser import parse_port_notation
 
     try:
-        # Parse connections
-        conn_data = json.loads(connections)
-
-        if not isinstance(conn_data, list):
-            return {"error": "connections must be a JSON list"}
-
         results = []
-        for conn in conn_data:
+        for conn in connections:
             if not isinstance(conn, dict) or "from" not in conn:
                 results.append({"error": f"Invalid connection format (missing 'from'): {conn}"})
                 continue
@@ -764,8 +767,6 @@ async def connect_units(
             "results": results,
         }
 
-    except json.JSONDecodeError as e:
-        return {"error": f"Invalid connections JSON: {e}"}
     except ValueError as e:
         return {"error": str(e)}
     except Exception as e:
@@ -777,8 +778,8 @@ async def connect_units(
 async def build_system(
     session_id: str,
     system_id: str,
-    unit_order: Optional[str] = None,
-    recycle_streams: Optional[str] = None,
+    unit_order: Optional[List[str]] = None,
+    recycle_streams: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
     Compile flowsheet session into a QSDsan System.
@@ -789,9 +790,9 @@ async def build_system(
     Args:
         session_id: Session identifier
         system_id: Name for the compiled system
-        unit_order: Optional JSON list of unit IDs for execution order.
+        unit_order: Optional list of unit IDs for execution order.
                     If not provided, topological sort is used.
-        recycle_streams: Optional JSON list of recycle stream IDs
+        recycle_streams: Optional list of recycle stream IDs
 
     Returns:
         Dict with system_id, validation status, unit execution order, and build info
@@ -800,7 +801,7 @@ async def build_system(
         >>> await build_system(
         ...     session_id="abc123",
         ...     system_id="custom_mle",
-        ...     recycle_streams='["RAS"]',
+        ...     recycle_streams=["RAS"],
         ... )
     """
     try:
@@ -811,9 +812,9 @@ async def build_system(
         # Load session
         session = session_manager.get_session(session_id)
 
-        # Parse optional inputs
-        manual_order = json.loads(unit_order) if unit_order else None
-        recycles = set(json.loads(recycle_streams)) if recycle_streams else set()
+        # Use native types directly
+        manual_order = unit_order
+        recycles = set(recycle_streams) if recycle_streams else set()
 
         # Validate connectivity first
         errors, warnings = validate_flowsheet_connectivity(
@@ -885,8 +886,6 @@ async def build_system(
             "message": f"System compiled successfully. Use simulate_built_system(session_id='{session_id}', ...) to simulate.",
         }
 
-    except json.JSONDecodeError as e:
-        return {"error": f"Invalid JSON: {e}"}
     except ValueError as e:
         return {"error": str(e)}
     except Exception as e:
@@ -939,10 +938,10 @@ async def simulate_built_system(
     duration_days: float = 1.0,
     timestep_hours: float = 1.0,
     method: str = "RK23",
-    t_eval: Optional[str] = None,
-    track: Optional[str] = None,
-    effluent_stream_ids: Optional[str] = None,
-    biogas_stream_ids: Optional[str] = None,
+    t_eval: Optional[List[float]] = None,
+    track: Optional[List[str]] = None,
+    effluent_stream_ids: Optional[List[str]] = None,
+    biogas_stream_ids: Optional[List[str]] = None,
     report: bool = True,
     diagram: bool = True,
     include_components: bool = False,
@@ -961,10 +960,10 @@ async def simulate_built_system(
         duration_days: Simulation duration in days
         timestep_hours: Output timestep in hours
         method: ODE solver method ("RK23", "RK45", "BDF")
-        t_eval: Custom evaluation times as JSON list (days). If not provided, uses timestep.
-        track: JSON list of stream IDs to track dynamically during simulation
-        effluent_stream_ids: JSON list of stream IDs for effluent quality analysis
-        biogas_stream_ids: JSON list of stream IDs for biogas analysis (mADM1 only)
+        t_eval: Optional list of evaluation times (days). If not provided, uses timestep.
+        track: Optional list of stream IDs to track dynamically during simulation
+        effluent_stream_ids: Optional list of stream IDs for effluent quality analysis
+        biogas_stream_ids: Optional list of stream IDs for biogas analysis (mADM1 only)
         report: Generate Quarto report
         diagram: Generate flowsheet diagram
         include_components: Include full component breakdown in results
@@ -1087,13 +1086,13 @@ async def simulate_built_system(
         ]
 
         if t_eval:
-            cmd.extend(["--t-eval", t_eval])
+            cmd.extend(["--t-eval", json.dumps(t_eval)])
         if track:
-            cmd.extend(["--track", track])
+            cmd.extend(["--track", json.dumps(track)])
         if effluent_stream_ids:
-            cmd.extend(["--effluent-streams", effluent_stream_ids])
+            cmd.extend(["--effluent-streams", json.dumps(effluent_stream_ids)])
         if biogas_stream_ids:
-            cmd.extend(["--biogas-streams", biogas_stream_ids])
+            cmd.extend(["--biogas-streams", json.dumps(biogas_stream_ids)])
         if report:
             cmd.append("--report")
         if diagram:
@@ -1168,6 +1167,810 @@ async def list_flowsheet_sessions(
         }
     except Exception as e:
         logger.error(f"list_flowsheet_sessions failed: {e}", exc_info=True)
+        return {"error": str(e)}
+
+
+# =============================================================================
+# Session Mutation Tools (Phase 3)
+# =============================================================================
+
+@mcp.tool()
+async def update_stream(
+    session_id: str,
+    stream_id: str,
+    updates: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Update a stream in the flowsheet session (patch-style).
+
+    Modifying a stream resets session status to 'building' if it was 'compiled'.
+    Requires re-running build_system() before simulating.
+
+    Args:
+        session_id: Session identifier
+        stream_id: Stream to update
+        updates: Dict of fields to update. Valid fields:
+                 flow_m3_d, temperature_K, concentrations (merged), stream_type, model_type
+
+    Returns:
+        Dict with stream_id, updated fields, and session status
+
+    Example:
+        >>> await update_stream(
+        ...     session_id="abc123",
+        ...     stream_id="influent",
+        ...     updates={"flow_m3_d": 5000, "concentrations": {"S_F": 100}},
+        ... )
+    """
+    try:
+        return session_manager.update_stream(session_id, stream_id, updates)
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        logger.error(f"update_stream failed: {e}", exc_info=True)
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def update_unit(
+    session_id: str,
+    unit_id: str,
+    updates: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Update a unit in the flowsheet session (patch-style).
+
+    Modifying a unit resets session status to 'building' if it was 'compiled'.
+    Requires re-running build_system() before simulating.
+
+    Args:
+        session_id: Session identifier
+        unit_id: Unit to update
+        updates: Dict of fields to update. Valid fields:
+                 params (merged), inputs, outputs, model_type
+
+    Returns:
+        Dict with unit_id, updated fields, and session status
+
+    Example:
+        >>> await update_unit(
+        ...     session_id="abc123",
+        ...     unit_id="A1",
+        ...     updates={"params": {"V_max": 1500}},
+        ... )
+    """
+    try:
+        return session_manager.update_unit(session_id, unit_id, updates)
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        logger.error(f"update_unit failed: {e}", exc_info=True)
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def delete_stream(
+    session_id: str,
+    stream_id: str,
+    force: bool = False,
+) -> Dict[str, Any]:
+    """
+    Delete a stream from the flowsheet session.
+
+    By default, fails if any units reference this stream in their inputs.
+    Use force=True to delete anyway (also removes from unit inputs).
+
+    Args:
+        session_id: Session identifier
+        stream_id: Stream to delete
+        force: If True, also remove from unit inputs that reference this stream
+
+    Returns:
+        Dict with deletion status and any units that had their inputs modified
+
+    Example:
+        >>> await delete_stream(session_id="abc123", stream_id="RAS", force=True)
+    """
+    try:
+        return session_manager.delete_stream(session_id, stream_id, force)
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        logger.error(f"delete_stream failed: {e}", exc_info=True)
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def delete_unit(
+    session_id: str,
+    unit_id: str,
+) -> Dict[str, Any]:
+    """
+    Delete a unit from the flowsheet session.
+
+    Also removes any connections that reference this unit.
+
+    Args:
+        session_id: Session identifier
+        unit_id: Unit to delete
+
+    Returns:
+        Dict with deletion status and list of removed connections
+
+    Example:
+        >>> await delete_unit(session_id="abc123", unit_id="SP")
+    """
+    try:
+        return session_manager.delete_unit(session_id, unit_id)
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        logger.error(f"delete_unit failed: {e}", exc_info=True)
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def delete_connection(
+    session_id: str,
+    from_port: str,
+    to_port: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Delete a specific connection from the flowsheet session.
+
+    Args:
+        session_id: Session identifier
+        from_port: Source port of connection to delete (e.g., "SP-0")
+        to_port: Destination port (e.g., "A1-1"). Optional for direct notation.
+
+    Returns:
+        Dict with deletion status
+
+    Example:
+        >>> await delete_connection(session_id="abc123", from_port="SP-0", to_port="A1-1")
+    """
+    try:
+        return session_manager.delete_connection(session_id, from_port, to_port)
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        logger.error(f"delete_connection failed: {e}", exc_info=True)
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def clone_session(
+    source_session_id: str,
+    new_session_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Clone a flowsheet session for experimentation.
+
+    Creates a copy of the session with a new ID, reset to 'building' status.
+    Useful for testing variations without modifying the original.
+
+    Args:
+        source_session_id: Session to clone
+        new_session_id: Optional custom ID for new session. Auto-generates if not provided.
+
+    Returns:
+        Dict with new session info
+
+    Example:
+        >>> result = await clone_session(source_session_id="abc123")
+        >>> new_id = result["new_session_id"]
+        >>> # Now modify the clone without affecting original
+        >>> await update_unit(session_id=new_id, unit_id="A1", updates={"params": {"V_max": 2000}})
+    """
+    try:
+        return session_manager.clone_session(source_session_id, new_session_id)
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        logger.error(f"clone_session failed: {e}", exc_info=True)
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def get_flowsheet_timeseries(
+    job_id: str,
+    stream_ids: Optional[List[str]] = None,
+    components: Optional[List[str]] = None,
+    downsample_factor: int = 1,
+) -> Dict[str, Any]:
+    """
+    Get time-series data from a completed flowsheet simulation.
+
+    Use this tool to retrieve dynamic component trajectories for streams
+    that were tracked during simulation (via the 'track' parameter).
+
+    Args:
+        job_id: Job identifier from simulate_built_system
+        stream_ids: Optional list to filter which streams to include
+        components: Optional list to filter which component IDs to include
+        downsample_factor: Reduce data points by this factor (default 1 = no downsampling)
+
+    Returns:
+        Dict with time array and component trajectories per stream
+
+    Example:
+        >>> result = await get_flowsheet_timeseries(
+        ...     job_id="abc123",
+        ...     stream_ids=["effluent"],
+        ...     components=["S_NH4", "S_NO3"],
+        ...     downsample_factor=2,
+        ... )
+        >>> # result["time"] = [0, 0.5, 1.0, ...]
+        >>> # result["streams"]["effluent"]["S_NH4"] = [17.0, 15.2, ...]
+    """
+    try:
+        job_dir = Path("jobs") / job_id
+        ts_path = job_dir / "timeseries.json"
+
+        if not ts_path.exists():
+            # Also check results.json for time_series key
+            results_path = job_dir / "results.json"
+            if results_path.exists():
+                with open(results_path) as f:
+                    results = json.load(f)
+                if "time_series" in results:
+                    ts_data = results["time_series"]
+                else:
+                    return {
+                        "error": f"No time-series data found for job {job_id}. "
+                        f"Ensure you used 'track' parameter during simulation."
+                    }
+            else:
+                return {"error": f"Job {job_id} not found or no time-series available"}
+        else:
+            with open(ts_path) as f:
+                ts_data = json.load(f)
+
+        if not ts_data.get("success"):
+            return {
+                "error": ts_data.get("message", "Time-series extraction failed"),
+                "job_id": job_id,
+            }
+
+        # Filter streams if specified
+        result_streams = ts_data.get("streams", {})
+        if stream_ids:
+            result_streams = {k: v for k, v in result_streams.items() if k in stream_ids}
+
+        # Filter components if specified
+        if components:
+            filtered_streams = {}
+            for stream_id, stream_data in result_streams.items():
+                filtered = {k: v for k, v in stream_data.items() if k in components}
+                if filtered:
+                    filtered_streams[stream_id] = filtered
+            result_streams = filtered_streams
+
+        # Downsample if requested
+        time_arr = ts_data.get("time", [])
+        if downsample_factor > 1:
+            time_arr = time_arr[::downsample_factor]
+            downsampled_streams = {}
+            for stream_id, stream_data in result_streams.items():
+                downsampled_streams[stream_id] = {
+                    comp_id: values[::downsample_factor]
+                    for comp_id, values in stream_data.items()
+                }
+            result_streams = downsampled_streams
+
+        return {
+            "job_id": job_id,
+            "time": time_arr,
+            "time_units": ts_data.get("time_units", "days"),
+            "streams": result_streams,
+            "n_timepoints": len(time_arr),
+            "n_streams": len(result_streams),
+        }
+
+    except Exception as e:
+        logger.error(f"get_flowsheet_timeseries failed: {e}", exc_info=True)
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def delete_session(session_id: str) -> Dict[str, Any]:
+    """
+    Delete a flowsheet session and all its files.
+
+    Args:
+        session_id: Session identifier
+
+    Returns:
+        Dict with deletion status
+
+    Example:
+        >>> await delete_session(session_id="abc123")
+    """
+    try:
+        deleted = session_manager.delete_session(session_id)
+        if deleted:
+            return {"session_id": session_id, "status": "deleted"}
+        else:
+            return {"error": f"Session '{session_id}' not found"}
+    except Exception as e:
+        logger.error(f"delete_session failed: {e}", exc_info=True)
+        return {"error": str(e)}
+
+
+# =============================================================================
+# Phase 3B: Discoverability Tools
+# =============================================================================
+
+# Component metadata for discoverability (typical domestic wastewater values)
+COMPONENT_METADATA = {
+    "ASM2d": {
+        "S_O2": {"name": "Dissolved oxygen", "category": "soluble", "typical_domestic_mg_L": 0},
+        "S_F": {"name": "Fermentable substrate", "category": "soluble", "typical_domestic_mg_L": 75},
+        "S_A": {"name": "Acetate (VFA)", "category": "soluble", "typical_domestic_mg_L": 20},
+        "S_I": {"name": "Soluble inerts", "category": "soluble", "typical_domestic_mg_L": 30},
+        "S_NH4": {"name": "Ammonium-N", "category": "soluble", "typical_domestic_mg_L": 17},
+        "S_N2": {"name": "Dinitrogen", "category": "soluble", "typical_domestic_mg_L": 0},
+        "S_NO3": {"name": "Nitrate-N", "category": "soluble", "typical_domestic_mg_L": 0},
+        "S_PO4": {"name": "Phosphate-P", "category": "soluble", "typical_domestic_mg_L": 9},
+        "S_ALK": {"name": "Alkalinity", "category": "soluble", "typical_domestic_mg_L": 300},
+        "X_I": {"name": "Particulate inerts", "category": "particulate", "typical_domestic_mg_L": 50},
+        "X_S": {"name": "Slowly biodegradable substrate", "category": "particulate", "typical_domestic_mg_L": 125},
+        "X_H": {"name": "Heterotrophic biomass", "category": "biomass", "typical_domestic_mg_L": 30},
+        "X_PAO": {"name": "PAO biomass", "category": "biomass", "typical_domestic_mg_L": 0},
+        "X_PP": {"name": "Poly-phosphate", "category": "particulate", "typical_domestic_mg_L": 0},
+        "X_PHA": {"name": "Poly-hydroxy-alkanoates", "category": "particulate", "typical_domestic_mg_L": 0},
+        "X_AUT": {"name": "Autotrophic biomass", "category": "biomass", "typical_domestic_mg_L": 0},
+        "X_MeOH": {"name": "Metal-hydroxides", "category": "particulate", "typical_domestic_mg_L": 0},
+        "X_MeP": {"name": "Metal-phosphates", "category": "particulate", "typical_domestic_mg_L": 0},
+        "H2O": {"name": "Water", "category": "solvent", "typical_domestic_mg_L": None},
+    },
+    "mADM1": {
+        "S_su": {"name": "Sugars", "category": "soluble", "typical_domestic_mg_L": 50},
+        "S_aa": {"name": "Amino acids", "category": "soluble", "typical_domestic_mg_L": 50},
+        "S_fa": {"name": "Fatty acids", "category": "soluble", "typical_domestic_mg_L": 100},
+        "S_ac": {"name": "Acetate", "category": "soluble", "typical_domestic_mg_L": 200},
+        "S_IC": {"name": "Inorganic carbon", "category": "soluble", "typical_domestic_mg_L": 50},
+        "S_IN": {"name": "Inorganic nitrogen", "category": "soluble", "typical_domestic_mg_L": 200},
+        "S_IP": {"name": "Inorganic phosphorus", "category": "soluble", "typical_domestic_mg_L": 50},
+        "X_ch": {"name": "Carbohydrates", "category": "particulate", "typical_domestic_mg_L": 1000},
+        "X_pr": {"name": "Proteins", "category": "particulate", "typical_domestic_mg_L": 2000},
+        "X_li": {"name": "Lipids", "category": "particulate", "typical_domestic_mg_L": 1000},
+        "S_SO4": {"name": "Sulfate", "category": "soluble", "typical_domestic_mg_L": 100},
+        "S_IS": {"name": "Dissolved sulfide", "category": "soluble", "typical_domestic_mg_L": 0},
+    },
+    "ASM1": {
+        "S_I": {"name": "Soluble inerts", "category": "soluble", "typical_domestic_mg_L": 30},
+        "S_S": {"name": "Readily biodegradable substrate", "category": "soluble", "typical_domestic_mg_L": 70},
+        "X_I": {"name": "Particulate inerts", "category": "particulate", "typical_domestic_mg_L": 50},
+        "X_S": {"name": "Slowly biodegradable substrate", "category": "particulate", "typical_domestic_mg_L": 125},
+        "X_BH": {"name": "Active heterotrophic biomass", "category": "biomass", "typical_domestic_mg_L": 30},
+        "X_BA": {"name": "Active autotrophic biomass", "category": "biomass", "typical_domestic_mg_L": 0},
+        "X_P": {"name": "Particulate products from decay", "category": "particulate", "typical_domestic_mg_L": 0},
+        "S_O": {"name": "Dissolved oxygen", "category": "soluble", "typical_domestic_mg_L": 0},
+        "S_NO": {"name": "Nitrate+nitrite nitrogen", "category": "soluble", "typical_domestic_mg_L": 0},
+        "S_NH": {"name": "Ammonia nitrogen", "category": "soluble", "typical_domestic_mg_L": 17},
+        "S_ND": {"name": "Soluble biodegradable organic N", "category": "soluble", "typical_domestic_mg_L": 8},
+        "X_ND": {"name": "Particulate biodegradable organic N", "category": "particulate", "typical_domestic_mg_L": 10},
+        "S_ALK": {"name": "Alkalinity", "category": "soluble", "typical_domestic_mg_L": 300},
+    },
+}
+
+
+@mcp.tool()
+async def get_model_components(
+    model_type: str,
+    include_typical_values: bool = True,
+) -> Dict[str, Any]:
+    """
+    Get component IDs and metadata for a process model.
+
+    Use this tool to discover valid component IDs before creating streams.
+
+    Args:
+        model_type: Process model ("ASM2d", "mADM1", "ASM1", etc.)
+        include_typical_values: Include typical domestic wastewater concentrations
+
+    Returns:
+        Dict with component IDs, names, categories, and typical values
+
+    Example:
+        >>> result = await get_model_components(model_type="ASM2d")
+        >>> print(result["components"])  # List of component IDs with metadata
+    """
+    try:
+        mt = ModelType(model_type)
+        model_info = get_model_info(mt)
+
+        components = model_info.get("components")
+        if components is None:
+            # For models without predefined components, use QSDsan directly
+            return {
+                "model_type": model_type,
+                "n_components": model_info.get("n_components"),
+                "note": f"Component list for {model_type} uses upstream QSDsan. "
+                        "Import qsdsan.processes and use the create_*_cmps() functions.",
+            }
+
+        # Build component list with metadata
+        component_list = []
+        metadata = COMPONENT_METADATA.get(model_type, {})
+
+        for comp_id in components:
+            comp_info = {"id": comp_id}
+            if comp_id in metadata:
+                meta = metadata[comp_id]
+                comp_info["name"] = meta.get("name", comp_id)
+                comp_info["category"] = meta.get("category", "unknown")
+                if include_typical_values and meta.get("typical_domestic_mg_L") is not None:
+                    comp_info["typical_domestic_mg_L"] = meta["typical_domestic_mg_L"]
+            component_list.append(comp_info)
+
+        # Group by category
+        categories = {}
+        for comp in component_list:
+            cat = comp.get("category", "unknown")
+            if cat not in categories:
+                categories[cat] = []
+            categories[cat].append(comp["id"])
+
+        return {
+            "model_type": model_type,
+            "n_components": len(components),
+            "concentration_units": "mg/L",
+            "components": component_list,
+            "categories": categories,
+            "description": model_info.get("description", ""),
+        }
+
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        logger.error(f"get_model_components failed: {e}", exc_info=True)
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def validate_flowsheet(session_id: str) -> Dict[str, Any]:
+    """
+    Validate a flowsheet without compiling it.
+
+    Performs pre-compilation validation checks including:
+    - Unit inputs resolve to streams or other units
+    - No orphan units (not connected to anything)
+    - Model compatibility across junctions
+    - Potential recycle detection
+
+    Args:
+        session_id: Session identifier
+
+    Returns:
+        Dict with is_valid, errors, warnings, and detected recycles
+
+    Example:
+        >>> result = await validate_flowsheet(session_id="abc123")
+        >>> if not result["is_valid"]:
+        ...     print(result["errors"])
+    """
+    try:
+        from utils.topo_sort import validate_flowsheet_connectivity, detect_cycles
+        from core.unit_registry import get_unit_spec
+
+        session = session_manager.get_session(session_id)
+
+        # Run connectivity validation
+        errors, warnings = validate_flowsheet_connectivity(
+            session.units,
+            session.streams,
+            session.connections,
+        )
+
+        # Detect potential recycles (cycles in the graph)
+        detected_recycles = []
+        try:
+            cycle_info = detect_cycles(
+                session.units,
+                session.connections,
+                existing_recycles=set(),
+            )
+            if cycle_info:
+                detected_recycles = cycle_info
+        except Exception:
+            pass  # Cycle detection is optional
+
+        # Check for orphan units (no inputs and no outputs connected)
+        orphan_units = []
+        for unit_id, config in session.units.items():
+            has_input = bool(config.inputs)
+            has_output = any(
+                conn.from_port.startswith(unit_id)
+                for conn in session.connections
+            )
+            has_downstream = any(
+                unit_id in other_config.inputs
+                for other_id, other_config in session.units.items()
+                if other_id != unit_id
+            )
+            if not has_input and not has_output and not has_downstream:
+                orphan_units.append(unit_id)
+
+        if orphan_units:
+            warnings.append(f"Orphan units (not connected): {orphan_units}")
+
+        # Model compatibility check across junctions (Phase 3B.2)
+        # Junction units must be compatible with models of connected units
+        junction_types = {"ASM2dtoADM1", "ADM1toASM2d", "mADM1toASM2d", "ASM2dtomADM1",
+                         "ASMtoADM", "ADMtoASM", "ADM1ptomASM2d", "mASM2dtoADM1p"}
+        model_compat_warnings = []
+
+        for unit_id, config in session.units.items():
+            unit_type = config.unit_type
+            if unit_type in junction_types:
+                # Get the junction's compatible models
+                try:
+                    spec = get_unit_spec(unit_type)
+                    junction_models = set(spec.compatible_models) if spec.compatible_models else set()
+                except Exception:
+                    continue  # Can't check if spec not found
+
+                # Check upstream units (feeding into this junction)
+                for input_ref in config.inputs:
+                    # input_ref could be stream_id or "UnitID-port"
+                    upstream_unit_id = None
+                    if "-" in input_ref and not input_ref.startswith("-"):
+                        # Likely unit port notation
+                        upstream_unit_id = input_ref.split("-")[0]
+                    elif input_ref in session.units:
+                        upstream_unit_id = input_ref
+
+                    if upstream_unit_id and upstream_unit_id in session.units:
+                        upstream_config = session.units[upstream_unit_id]
+                        upstream_type = upstream_config.unit_type
+                        try:
+                            upstream_spec = get_unit_spec(upstream_type)
+                            upstream_models = set(upstream_spec.compatible_models) if upstream_spec.compatible_models else set()
+                            # Check if there's any overlap
+                            if upstream_models and junction_models:
+                                common = upstream_models & junction_models
+                                if not common:
+                                    model_compat_warnings.append(
+                                        f"Junction '{unit_id}' ({unit_type}) may be incompatible with upstream unit "
+                                        f"'{upstream_unit_id}' ({upstream_type}): junction supports {list(junction_models)}, "
+                                        f"upstream supports {list(upstream_models)}"
+                                    )
+                        except Exception:
+                            pass  # Can't check if spec not found
+
+        warnings.extend(model_compat_warnings)
+
+        return {
+            "session_id": session_id,
+            "is_valid": len(errors) == 0,
+            "errors": errors,
+            "warnings": warnings,
+            "detected_recycles": detected_recycles,
+            "n_units": len(session.units),
+            "n_streams": len(session.streams),
+            "n_connections": len(session.connections),
+        }
+
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        logger.error(f"validate_flowsheet failed: {e}", exc_info=True)
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def suggest_recycles(session_id: str) -> Dict[str, Any]:
+    """
+    Detect potential recycle streams in a flowsheet.
+
+    Analyzes the flowsheet topology to identify cycles that likely
+    represent recycle streams (e.g., RAS, internal recycles).
+
+    Args:
+        session_id: Session identifier
+
+    Returns:
+        Dict with detected cycles and suggested recycle configurations
+
+    Example:
+        >>> result = await suggest_recycles(session_id="abc123")
+        >>> for suggestion in result["suggestions"]:
+        ...     print(f"Recycle: {suggestion['suggested_recycle']}")
+    """
+    try:
+        from utils.topo_sort import detect_cycles
+
+        session = session_manager.get_session(session_id)
+
+        # Use topo_sort helper to detect cycles
+        cycles = detect_cycles(
+            session.units,
+            session.connections,
+        )
+
+        # Generate suggestions from detected cycles
+        suggestions = []
+        for cycle_info in cycles:
+            cycle_path = cycle_info.get("cycle_path", [])
+            if len(cycle_path) >= 2:
+                # Suggest the last edge as recycle
+                from_unit = cycle_path[-2]
+                to_unit = cycle_path[-1]
+
+                # Determine recycle type based on unit types
+                from_type = session.units[from_unit].unit_type if from_unit in session.units else None
+
+                recycle_type = "internal_recycle"
+                if from_type and "Splitter" in from_type:
+                    recycle_type = "return_activated_sludge"
+                elif from_type and "Clarifier" in from_type:
+                    recycle_type = "return_activated_sludge"
+
+                suggestions.append({
+                    "cycle_path": cycle_path,
+                    "suggested_recycle": {
+                        "from": f"{from_unit}-0",
+                        "to": f"{to_unit}-1",
+                        "stream_id": f"recycle_{from_unit}_{to_unit}",
+                    },
+                    "recycle_type": recycle_type,
+                    "confidence": "medium",
+                })
+
+        # Identify sources and sinks
+        sources = [
+            sid for sid, s in session.streams.items()
+            if s.stream_type == "influent"
+        ]
+
+        # Find sinks: units that are not in any connection's from_unit
+        all_from_units = set()
+        for conn in session.connections:
+            try:
+                from utils.pipe_parser import parse_port_notation
+                from_ref = parse_port_notation(conn.from_port)
+                all_from_units.add(from_ref.unit_id)
+            except Exception:
+                pass
+        sinks = [uid for uid in session.units.keys() if uid not in all_from_units]
+
+        return {
+            "session_id": session_id,
+            "n_cycles_detected": len(cycles),
+            "detected_cycles": [c.get("cycle_path", []) for c in cycles],
+            "suggestions": suggestions,
+            "topology": {
+                "sources": sources,
+                "sinks": sinks,
+            },
+        }
+
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        logger.error(f"suggest_recycles failed: {e}", exc_info=True)
+        return {"error": str(e)}
+
+
+# =============================================================================
+# Phase 3C: Engineering-Grade Results
+# =============================================================================
+
+@mcp.tool()
+async def get_artifact(
+    job_id: str,
+    artifact_type: str,
+    format: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Get simulation artifact content directly.
+
+    Use this tool to retrieve diagram SVGs, QMD reports, or other artifacts
+    as content rather than just file paths.
+
+    Args:
+        job_id: Job identifier from simulation
+        artifact_type: Type of artifact: "diagram", "report", "timeseries"
+        format: Optional format hint (e.g., "svg", "qmd", "json")
+
+    Returns:
+        Dict with artifact content, path, and metadata
+
+    Example:
+        >>> result = await get_artifact(job_id="abc123", artifact_type="diagram")
+        >>> svg_content = result["content"]
+    """
+    try:
+        job_dir = Path("jobs") / job_id
+
+        if not job_dir.exists():
+            return {"error": f"Job {job_id} not found"}
+
+        # Map artifact types to file patterns
+        artifact_patterns = {
+            "diagram": ["flowsheet.svg", "flowsheet.png", "diagram.svg"],
+            "report": ["report.qmd", "anaerobic_report.qmd", "aerobic_report.qmd"],
+            "timeseries": ["timeseries.json", "time_series.json"],
+            "results": ["results.json", "simulation_results.json"],
+        }
+
+        if artifact_type not in artifact_patterns:
+            return {
+                "error": f"Unknown artifact_type '{artifact_type}'. "
+                f"Valid types: {list(artifact_patterns.keys())}"
+            }
+
+        # Find the artifact file
+        artifact_path = None
+        for pattern in artifact_patterns[artifact_type]:
+            candidate = job_dir / pattern
+            if candidate.exists():
+                artifact_path = candidate
+                break
+
+        if artifact_path is None:
+            return {
+                "error": f"No {artifact_type} artifact found in job {job_id}",
+                "searched": artifact_patterns[artifact_type],
+                "job_dir": str(job_dir),
+            }
+
+        # Determine if binary or text
+        binary_extensions = {".svg", ".png", ".pdf"}
+        is_binary = artifact_path.suffix in binary_extensions
+
+        # Read content
+        if is_binary and artifact_path.suffix == ".svg":
+            # SVG is actually text/xml, safe to read as text
+            with open(artifact_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            is_binary = False
+        elif is_binary:
+            # For true binary files, return base64 or just path
+            import base64
+            with open(artifact_path, "rb") as f:
+                content = base64.b64encode(f.read()).decode("ascii")
+            return {
+                "job_id": job_id,
+                "artifact_type": artifact_type,
+                "format": artifact_path.suffix[1:],
+                "encoding": "base64",
+                "content": content,
+                "path": str(artifact_path),
+                "size_bytes": artifact_path.stat().st_size,
+            }
+        else:
+            # Text file
+            with open(artifact_path, "r", encoding="utf-8") as f:
+                content = f.read()
+
+        # Parse JSON if applicable
+        if artifact_path.suffix == ".json":
+            try:
+                parsed = json.loads(content)
+                return {
+                    "job_id": job_id,
+                    "artifact_type": artifact_type,
+                    "format": "json",
+                    "content": parsed,
+                    "path": str(artifact_path),
+                }
+            except json.JSONDecodeError:
+                pass  # Return as raw text
+
+        return {
+            "job_id": job_id,
+            "artifact_type": artifact_type,
+            "format": artifact_path.suffix[1:] if artifact_path.suffix else "text",
+            "content": content,
+            "path": str(artifact_path),
+            "size_bytes": len(content),
+        }
+
+    except Exception as e:
+        logger.error(f"get_artifact failed: {e}", exc_info=True)
         return {"error": str(e)}
 
 

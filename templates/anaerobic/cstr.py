@@ -152,6 +152,35 @@ def build_and_run(
             result["time_series_available"] = True
             result["time_series"] = time_series
 
+        # Add deterministic metadata (Phase 3C)
+        import datetime
+        try:
+            import qsdsan as qs
+            qsdsan_version = getattr(qs, "__version__", "unknown")
+        except Exception:
+            qsdsan_version = "unknown"
+
+        try:
+            import biosteam as bst
+            biosteam_version = getattr(bst, "__version__", "unknown")
+        except Exception:
+            biosteam_version = "unknown"
+
+        result["metadata"] = {
+            "qsdsan_version": qsdsan_version,
+            "biosteam_version": biosteam_version,
+            "engine_version": "3.0.0",
+            "template": "anaerobic_cstr_madm1",
+            "solver": {
+                "method": "BDF",
+                "duration_days": duration_days,
+                "rtol": 1e-3,
+                "atol": 1e-6,
+            },
+            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            "model_type": "mADM1",
+        }
+
         # Generate diagram and mass balance data
         try:
             from utils.diagram import (

@@ -272,6 +272,20 @@ def simulate_compiled_system(
         except Exception as e:
             logger.warning(f"Failed to generate diagram: {e}")
 
+        # Extract and persist time-series data for tracked streams
+        if track:
+            try:
+                time_series = _extract_flowsheet_timeseries(system, track)
+                if time_series and time_series.get("success"):
+                    # Save to output_dir
+                    ts_path = output_dir / "timeseries.json"
+                    with open(ts_path, "w") as f:
+                        json.dump(time_series, f, indent=2)
+                    results["timeseries_path"] = str(ts_path)
+                    results["timeseries_available"] = True
+            except Exception as e:
+                logger.warning(f"Failed to extract time-series: {e}")
+
     # Export final state as PlantState JSON if requested
     if export_state_to:
         export_path = Path(export_state_to)
@@ -281,6 +295,35 @@ def simulate_compiled_system(
             results["exported_state_path"] = str(export_path)
         except Exception as e:
             logger.warning(f"Failed to export plant state: {e}")
+
+    # Add deterministic metadata (Phase 3C)
+    import datetime
+    try:
+        import qsdsan as qs
+        qsdsan_version = getattr(qs, "__version__", "unknown")
+    except Exception:
+        qsdsan_version = "unknown"
+
+    try:
+        import biosteam as bst
+        biosteam_version = getattr(bst, "__version__", "unknown")
+    except Exception:
+        biosteam_version = "unknown"
+
+    results["metadata"] = {
+        "qsdsan_version": qsdsan_version,
+        "biosteam_version": biosteam_version,
+        "engine_version": "3.0.0",
+        "solver": {
+            "method": method,
+            "duration_days": duration_days,
+            "timestep_hours": timestep_hours,
+            "rtol": 1e-3,
+            "atol": 1e-6,
+        },
+        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+        "model_type": model_type,
+    }
 
     return results
 
@@ -328,10 +371,14 @@ def _create_waste_stream(
 ) -> "WasteStream":
     """Create a WasteStream from StreamConfig.
 
-    Concentrations are specified in mg/L and converted properly using
-    WasteStream's set_flow_by_concentration method.
+    Concentrations can be specified in either mg/L (default) or kg/m3,
+    controlled by config.concentration_units. Internal conversion to mg/L
+    is performed for kg/m3 inputs since QSDsan uses mg/L.
     """
     from qsdsan import WasteStream
+
+    # Get concentration units (default mg/L for backward compatibility)
+    conc_units = getattr(config, 'concentration_units', 'mg/L')
 
     # Build concentration dict (only valid components)
     concentrations = {}
@@ -339,7 +386,11 @@ def _create_waste_stream(
 
     for comp_id, conc in config.concentrations.items():
         if comp_id in valid_ids:
-            concentrations[comp_id] = conc
+            # Convert kg/m3 to mg/L if needed (1 kg/m3 = 1000 mg/L)
+            if conc_units == "kg/m3":
+                concentrations[comp_id] = conc * 1000  # Convert to mg/L
+            else:
+                concentrations[comp_id] = conc  # Already in mg/L
         else:
             logger.warning(f"Stream '{stream_id}': component '{comp_id}' not in model, skipping")
 
@@ -350,9 +401,9 @@ def _create_waste_stream(
     )
 
     # Set flow and concentrations using proper QSDsan method
+    # Note: concentrations are now always in mg/L (converted above if needed)
     if config.flow_m3_d > 0 and concentrations:
         # Use set_flow_by_concentration for correct unit handling
-        # concentrations are in mg/L, flow is in m³/d
         try:
             stream.set_flow_by_concentration(
                 flow_tot=config.flow_m3_d,
@@ -781,6 +832,95 @@ def _wire_connection(
     # Track as recycle stream
     if src_port not in recycle_streams:
         recycle_streams.append(src_port)
+
+
+def _extract_flowsheet_timeseries(
+    system: "System",
+    track: List[str],
+) -> Dict[str, Any]:
+    """
+    Extract time-series data from tracked streams after simulation.
+
+    Args:
+        system: Completed QSDsan System
+        track: List of stream IDs that were tracked
+
+    Returns:
+        Dict with time and component trajectories for each tracked stream
+    """
+    import numpy as np
+
+    result = {
+        "success": False,
+        "time": [],
+        "time_units": "days",
+        "streams": {},
+    }
+
+    try:
+        # Find tracked streams
+        tracked_streams = []
+        for stream_id in track:
+            for stream in system.streams:
+                if stream and stream.ID == stream_id:
+                    tracked_streams.append(stream)
+                    break
+
+        if not tracked_streams:
+            result["message"] = "No tracked streams found"
+            return result
+
+        # Get time array from first tracked stream's scope
+        first_stream = tracked_streams[0]
+        if not hasattr(first_stream, 'scope') or first_stream.scope is None:
+            result["message"] = "No tracking scope available (simulation may not have tracked streams)"
+            return result
+
+        scope = first_stream.scope
+        if not hasattr(scope, 'time_series') or scope.time_series is None:
+            result["message"] = "No time_series attribute on scope"
+            return result
+
+        time_arr = scope.time_series
+        if isinstance(time_arr, np.ndarray):
+            result["time"] = time_arr.tolist()
+        else:
+            result["time"] = list(time_arr)
+
+        # Extract component trajectories for each tracked stream
+        for stream in tracked_streams:
+            stream_data = {}
+            try:
+                if hasattr(stream, 'scope') and stream.scope is not None:
+                    scope = stream.scope
+                    if hasattr(scope, 'record'):
+                        record = scope.record
+                        if record is not None and len(record) > 0:
+                            # Get component IDs
+                            comp_ids = stream.components.IDs
+                            for i, comp_id in enumerate(comp_ids):
+                                if i < record.shape[1]:
+                                    values = record[:, i]
+                                    # Only include non-zero components
+                                    if np.any(values > 0):
+                                        if isinstance(values, np.ndarray):
+                                            stream_data[comp_id] = values.tolist()
+                                        else:
+                                            stream_data[comp_id] = list(values)
+            except Exception as e:
+                logger.warning(f"Error extracting time-series for {stream.ID}: {e}")
+
+            if stream_data:
+                result["streams"][stream.ID] = stream_data
+
+        result["success"] = len(result["streams"]) > 0
+        result["message"] = f"Extracted {len(result['streams'])} streams with {len(result['time'])} time points"
+
+    except Exception as e:
+        result["message"] = f"Error extracting time-series: {str(e)}"
+        logger.error(f"Time-series extraction failed: {e}", exc_info=True)
+
+    return result
 
 
 def _extract_simulation_results(

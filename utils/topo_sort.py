@@ -540,6 +540,92 @@ def validate_flowsheet_connectivity(
     return errors, warnings
 
 
+def detect_cycles(
+    units: Dict[str, any],  # unit_id -> UnitConfig
+    connections: List[any],  # List of ConnectionConfig
+    existing_recycles: Set[str] = None,
+) -> List[Dict[str, any]]:
+    """
+    Detect cycles in the flowsheet graph.
+
+    Args:
+        units: Dict of unit_id -> UnitConfig
+        connections: List of ConnectionConfig
+        existing_recycles: Set of stream IDs already marked as recycles (to exclude)
+
+    Returns:
+        List of cycle info dicts with path and suggested recycle point
+    """
+    if existing_recycles is None:
+        existing_recycles = set()
+
+    # Build unit graph
+    unit_graph = {unit_id: [] for unit_id in units}
+
+    # Add edges from inputs
+    for unit_id, config in units.items():
+        for input_ref in config.inputs:
+            if "-" in input_ref:
+                parts = input_ref.split("-")
+                source_unit = parts[0]
+                if source_unit in units and unit_id not in unit_graph.get(source_unit, []):
+                    unit_graph[source_unit].append(unit_id)
+
+    # Add edges from connections
+    for conn in connections:
+        # Skip connections that are existing recycles
+        if conn.stream_id and conn.stream_id in existing_recycles:
+            continue
+
+        from_port = conn.from_port
+        to_port = conn.to_port
+
+        from_unit = from_port.split("-")[0] if from_port else None
+        to_unit = to_port.split("-")[-1] if to_port else None
+
+        if from_unit in units and to_unit in units:
+            if to_unit not in unit_graph.get(from_unit, []):
+                unit_graph[from_unit].append(to_unit)
+
+    # Find cycles using DFS
+    cycles = []
+    visited = set()
+    rec_stack = []
+
+    def dfs(node):
+        if node in rec_stack:
+            # Found cycle
+            cycle_start = rec_stack.index(node)
+            cycle = rec_stack[cycle_start:] + [node]
+            cycles.append(cycle)
+            return
+
+        if node in visited:
+            return
+
+        visited.add(node)
+        rec_stack.append(node)
+
+        for neighbor in unit_graph.get(node, []):
+            dfs(neighbor)
+
+        rec_stack.pop()
+
+    for node in unit_graph:
+        dfs(node)
+
+    # Format results
+    results = []
+    for cycle in cycles:
+        if len(cycle) > 2:
+            results.append({
+                "cycle_path": cycle,
+                "length": len(cycle) - 1,  # -1 because first and last are same
+            })
+
+    return results
+
+
 # =============================================================================
 # Module exports
 # =============================================================================
@@ -548,4 +634,5 @@ __all__ = [
     'topological_sort',
     'detect_recycle_streams',
     'validate_flowsheet_connectivity',
+    'detect_cycles',
 ]

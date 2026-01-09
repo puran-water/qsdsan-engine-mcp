@@ -2,33 +2,46 @@
 
 A universal wastewater treatment simulation engine exposing [QSDsan](https://github.com/QSD-Group/QSDsan) capabilities through dual adapters for AI agent integration.
 
-## Vision
+## Motivation
 
-Enable AI agents to design, simulate, and optimize wastewater treatment systems using industry-standard biological process models (ASM1, ASM2d, mADM1) without requiring deep domain expertise.
+Commercial wastewater simulation platforms offer sophisticated biological models but impose a significant bottleneck: **GUI-driven workflows** that limit iteration speed, parallelization, and reproducibility. Process engineers spend substantial time navigating interfaces rather than exploring designs.
+
+QSDsan Engine MCP inverts this paradigm by making **natural language the primary interface**. Instead of clicking through dialogs, engineers describe what they want:
+
+> "Build an MLE process with 4000 m3/d influent, simulate for 15 days, and explain why ammonia removal is low"
+
+This enables:
+
+- **Collapsed iteration cycles**: Build -> run -> diagnose -> patch -> rerun without GUI navigation
+- **Massive scenario enumeration**: DOE, Monte Carlo, and optimization workflows become natural since everything is code
+- **Reproducible, diffable runs**: Version-controlled session specs with deterministic metadata
+- **Structured diagnostics**: Validation warnings, model compatibility checks, and actionable error messages surfaced directly to agents
+
+The goal is not to replace domain expertise, but to **remove friction** so engineers can focus on design decisions rather than tool mechanics.
 
 ## Architecture: Dual Adapters
 
-The engine exposes identical functionality through two adapters, enabling integration with different agent runtimes:
+The engine exposes identical functionality through two adapters:
 
 ```
-                    ┌─────────────────────────────────────┐
-                    │       QSDsan Engine Core            │
-                    │  (Templates, Models, Converters)    │
-                    └─────────────┬───────────────────────┘
-                                  │
-              ┌───────────────────┼───────────────────┐
-              │                   │                   │
-              ▼                   ▼                   ▼
-     ┌────────────────┐  ┌────────────────┐  ┌────────────────┐
-     │   MCP Adapter  │  │   CLI Adapter  │  │  Python API    │
-     │   (server.py)  │  │   (cli.py)     │  │  (direct use)  │
-     └────────────────┘  └────────────────┘  └────────────────┘
-              │                   │
-              ▼                   ▼
-     ┌────────────────┐  ┌────────────────┐
-     │  MCP Clients   │  │  Agent Skills  │
-     │  (Claude, etc) │  │  (Claude Code) │
-     └────────────────┘  └────────────────┘
+                    +-------------------------------------+
+                    |       QSDsan Engine Core            |
+                    |  (Templates, Models, Converters)    |
+                    +-----------------+-------------------+
+                                      |
+              +-----------------------+---------------------+
+              |                       |                     |
+              v                       v                     v
+     +----------------+      +----------------+     +----------------+
+     |   MCP Adapter  |      |   CLI Adapter  |     |  Python API    |
+     |   (server.py)  |      |   (cli.py)     |     |  (direct use)  |
+     +----------------+      +----------------+     +----------------+
+              |                       |
+              v                       v
+     +----------------+      +----------------+
+     |  MCP Clients   |      |  Agent Skills  |
+     |  (Claude, etc) |      |  (Claude Code) |
+     +----------------+      +----------------+
 ```
 
 ### MCP Adapter (`server.py`)
@@ -36,7 +49,6 @@ The engine exposes identical functionality through two adapters, enabling integr
 For MCP-compatible clients (Claude Desktop, Cline, etc.):
 
 ```bash
-# Start MCP server
 python server.py
 ```
 
@@ -45,19 +57,19 @@ python server.py
 For CLI-based agent runtimes and Agent Skills:
 
 ```bash
-# List available commands
 python cli.py --help
 ```
 
 ## Tool Surface
 
-### Simulation Tools
+### Core Simulation Tools
 
 | Tool | MCP | CLI | Description |
 |------|-----|-----|-------------|
 | `list_templates` | `list_templates` | `templates` | List available treatment templates |
 | `validate_state` | `validate_state` | `validate` | Validate influent state against model |
-| `run_simulation` | `run_simulation` | `simulate` | Run template-based simulation |
+| `simulate_system` | `simulate_system` | `simulate` | Run template-based simulation |
+| `convert_state` | `convert_state` | `convert` | Convert between ASM2d and mADM1 |
 
 ### Flowsheet Construction Tools
 
@@ -73,18 +85,44 @@ Build custom treatment trains dynamically:
 | `simulate_built_system` | `simulate_built_system` | `flowsheet simulate` | Run simulation |
 | `list_units` | `list_units` | `flowsheet units` | List available unit types |
 
-### State Conversion Tools
+### Session Management Tools
+
+Modify flowsheets without starting over:
 
 | Tool | MCP | CLI | Description |
 |------|-----|-----|-------------|
-| `convert_state` | `convert_state` | `convert` | Convert between ASM2d and mADM1 |
+| `update_stream` | `update_stream` | `flowsheet update-stream` | Modify stream properties |
+| `update_unit` | `update_unit` | `flowsheet update-unit` | Modify unit parameters |
+| `delete_stream` | `delete_stream` | `flowsheet delete-stream` | Remove stream |
+| `delete_unit` | `delete_unit` | `flowsheet delete-unit` | Remove unit and connections |
+| `delete_connection` | `delete_connection` | `flowsheet delete-connection` | Remove specific connection |
+| `clone_session` | `clone_session` | `flowsheet clone` | Fork session for experimentation |
+
+### Discoverability Tools
+
+Explore models and validate configurations before simulation:
+
+| Tool | MCP | CLI | Description |
+|------|-----|-----|-------------|
+| `get_model_components` | `get_model_components` | `models components` | Get component IDs and metadata |
+| `validate_flowsheet` | `validate_flowsheet` | `flowsheet validate` | Pre-compilation validation |
+| `suggest_recycles` | `suggest_recycles` | `flowsheet suggest-recycles` | Detect potential recycle streams |
+
+### Artifact Retrieval Tools
+
+Access simulation outputs programmatically:
+
+| Tool | MCP | CLI | Description |
+|------|-----|-----|-------------|
+| `get_artifact` | `get_artifact` | `flowsheet artifact` | Get diagram/report content |
+| `get_flowsheet_timeseries` | `get_flowsheet_timeseries` | `flowsheet timeseries` | Get time-series trajectories |
 
 ## Supported Models
 
 | Model | Components | Use Case |
 |-------|------------|----------|
-| **ASM1** | 13 | Activated sludge (basic) |
-| **ASM2d** | 19 | Activated sludge with biological P removal |
+| **ASM1** | 13 | Activated sludge (basic nitrification/denitrification) |
+| **ASM2d** | 19 | Activated sludge with biological phosphorus removal |
 | **mADM1** | 63 | Anaerobic digestion with sulfur-reducing bacteria |
 
 ## Pre-built Templates
@@ -174,6 +212,15 @@ Connect units using BioSTEAM pipe notation:
 # Explicit: "U1-0-1-U2" -> U1.outs[0] -> U2.ins[1]
 ```
 
+## Output
+
+Simulations produce:
+
+- **JSON results** with effluent quality, removal efficiencies, and deterministic metadata (solver settings, library versions, timestamps)
+- **SVG flowsheet diagrams** showing unit operations and streams
+- **Quarto reports** (optional) with comprehensive analysis
+- **Time-series data** for tracked streams
+
 ## Installation
 
 ```bash
@@ -196,13 +243,6 @@ pip install -r requirements.txt
 - BioSTEAM 2.40+
 - FastMCP (for MCP adapter)
 - Typer (for CLI adapter)
-
-## Output
-
-Simulations produce:
-- **JSON results** with effluent quality, removal efficiencies, and mass balances
-- **SVG flowsheet diagrams** showing unit operations and streams
-- **Quarto reports** (optional) with comprehensive analysis
 
 ## License
 
