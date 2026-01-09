@@ -84,8 +84,10 @@ class JobManager:
         self.jobs: Dict[str, dict] = {}
         self.jobs_dir = Path(jobs_base_dir)
         self.jobs_dir.mkdir(exist_ok=True)
-        self.semaphore = asyncio.Semaphore(max_concurrent_jobs)
         self.max_concurrent_jobs = max_concurrent_jobs
+        # Counter-based concurrency control (replaces semaphore which released too early)
+        self._running_count = 0
+        self._running_lock = asyncio.Lock()
 
         # Load existing jobs from disk (crash recovery)
         self._load_existing_jobs()
@@ -198,47 +200,72 @@ class JobManager:
         # Save initial metadata
         self._save_job_metadata(job)
 
-        # Start subprocess asynchronously (acquire semaphore for concurrency control)
-        async with self.semaphore:
-            try:
-                # Prepare environment
-                proc_env = os.environ.copy()
-                if env:
-                    proc_env.update(env)
-
-                # Normalize paths for WSL/Windows interoperability
-                cmd_normalized = [normalize_path_for_wsl(arg) for arg in cmd_with_id]
-                cwd_normalized = normalize_path_for_wsl(cwd)
-
-                # Start subprocess
-                proc = await asyncio.create_subprocess_exec(
-                    *cmd_normalized,
-                    cwd=cwd_normalized,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    env=proc_env
-                )
-
-                job["pid"] = proc.pid
-                job["status"] = "running"
-                self.jobs[job_id] = job
-
-                # Update metadata with PID
+        # Check concurrency limit before starting
+        async with self._running_lock:
+            if self._running_count >= self.max_concurrent_jobs:
+                job["status"] = "rejected"
+                job["error"] = f"Max concurrent jobs ({self.max_concurrent_jobs}) reached. Use get_job_status to check running jobs."
                 self._save_job_metadata(job)
+                return job
+            self._running_count += 1
 
-                logger.info(f"Job {job_id} started with PID {proc.pid}")
+        try:
+            # Prepare environment
+            proc_env = os.environ.copy()
+            if env:
+                proc_env.update(env)
 
-                # Monitor in background (fire and forget - don't await!)
-                asyncio.create_task(self._monitor_job(job_id, proc))
+            # Normalize paths for WSL/Windows interoperability
+            cmd_normalized = [normalize_path_for_wsl(arg) for arg in cmd_with_id]
+            cwd_normalized = normalize_path_for_wsl(cwd)
 
-            except Exception as e:
-                job["status"] = "failed"
-                job["error"] = str(e)
-                job["completed_at"] = time.time()
-                self._save_job_metadata(job)
-                logger.error(f"Failed to start job {job_id}: {e}")
+            # Start subprocess
+            proc = await asyncio.create_subprocess_exec(
+                *cmd_normalized,
+                cwd=cwd_normalized,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=proc_env
+            )
+
+            job["pid"] = proc.pid
+            job["status"] = "running"
+            self.jobs[job_id] = job
+
+            # Update metadata with PID
+            self._save_job_metadata(job)
+
+            logger.info(f"Job {job_id} started with PID {proc.pid}")
+
+            # Monitor in background with release-on-completion
+            asyncio.create_task(self._monitor_job_with_release(job_id, proc))
+
+        except Exception as e:
+            # Decrement counter on failure
+            async with self._running_lock:
+                self._running_count -= 1
+
+            job["status"] = "failed"
+            job["error"] = str(e)
+            job["completed_at"] = time.time()
+            self._save_job_metadata(job)
+            logger.error(f"Failed to start job {job_id}: {e}")
 
         return job
+
+    async def _monitor_job_with_release(self, job_id: str, proc: asyncio.subprocess.Process):
+        """
+        Monitor job completion, capture output, and release counter.
+
+        This runs in the background and properly decrements _running_count when complete.
+        """
+        try:
+            await self._monitor_job(job_id, proc)
+        finally:
+            # Always release counter when job completes (success, failure, or exception)
+            async with self._running_lock:
+                self._running_count -= 1
+            logger.debug(f"Job {job_id}: released slot, running={self._running_count}/{self.max_concurrent_jobs}")
 
     async def _monitor_job(self, job_id: str, proc: asyncio.subprocess.Process):
         """
@@ -550,7 +577,7 @@ class JobManager:
             "jobs": jobs_list,
             "total": len(jobs_list),
             "filter": status_filter,
-            "running_jobs": sum(1 for j in self.jobs.values() if j["status"] == "running"),
+            "running_jobs": self._running_count,  # Use counter for accurate tracking
             "max_concurrent": self.max_concurrent_jobs
         }
 
@@ -590,6 +617,10 @@ class JobManager:
             job["completed_at"] = time.time()
             self._save_job_metadata(job)
 
+            # Decrement running count
+            async with self._running_lock:
+                self._running_count = max(0, self._running_count - 1)
+
             logger.info(f"Terminated job {job_id} (PID: {pid})")
 
             return {
@@ -602,6 +633,9 @@ class JobManager:
             job["status"] = "failed"
             job["error"] = "Process no longer exists"
             self._save_job_metadata(job)
+            # Also decrement count for dead processes
+            async with self._running_lock:
+                self._running_count = max(0, self._running_count - 1)
             return {"error": f"Process {pid} no longer exists"}
 
         except Exception as e:

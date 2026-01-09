@@ -297,6 +297,34 @@ def build_and_run(
             },
         }
 
+        # Add deterministic metadata (Phase 3C)
+        import datetime
+        try:
+            qsdsan_version = getattr(qs, "__version__", "unknown")
+        except Exception:
+            qsdsan_version = "unknown"
+
+        try:
+            import biosteam as bst
+            biosteam_version = getattr(bst, "__version__", "unknown")
+        except Exception:
+            biosteam_version = "unknown"
+
+        result["metadata"] = {
+            "qsdsan_version": qsdsan_version,
+            "biosteam_version": biosteam_version,
+            "engine_version": "3.0.0",
+            "template": "mle_mbr_asm2d",
+            "solver": {
+                "method": "RK23",
+                "duration_days": duration_days,
+                "rtol": 1e-3,
+                "atol": 1e-6,
+            },
+            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            "model_type": "ASM2d",
+        }
+
         # Save results if output_dir provided
         if output_dir:
             output_dir = Path(output_dir)

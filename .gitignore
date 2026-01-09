@@ -44,8 +44,7 @@ htmlcov/
 output/
 jobs/
 
-# Claude Code artifacts
-CLAUDE.md
+# Claude Code artifacts (CLAUDE.md is tracked - it contains development context)
 .claude/settings.json
 .claude/*.local.md
 .claude/plans/

@@ -140,6 +140,27 @@ ASM2D_COMPONENTS: Tuple[str, ...] = (
 ASM2D_BIOMASS_IDS: Tuple[str, ...] = ('X_H', 'X_PAO', 'X_AUT', 'X_MeOH')
 
 # =============================================================================
+# ASM1 - Activated Sludge Model 1 (13 components)
+# =============================================================================
+ASM1_COMPONENTS: Tuple[str, ...] = (
+    'S_I',     # Soluble inert organic matter
+    'S_S',     # Readily biodegradable substrate
+    'X_I',     # Particulate inert organic matter
+    'X_S',     # Slowly biodegradable substrate
+    'X_BH',    # Active heterotrophic biomass
+    'X_BA',    # Active autotrophic biomass
+    'X_P',     # Particulate products from biomass decay
+    'S_O',     # Dissolved oxygen
+    'S_NO',    # Nitrate + nitrite nitrogen
+    'S_NH',    # Ammonia nitrogen
+    'S_ND',    # Soluble biodegradable organic nitrogen
+    'X_ND',    # Particulate biodegradable organic nitrogen
+    'S_ALK',   # Alkalinity
+)
+
+ASM1_BIOMASS_IDS: Tuple[str, ...] = ('X_BH', 'X_BA')
+
+# =============================================================================
 # Model Registry
 # =============================================================================
 MODEL_REGISTRY: Dict[ModelType, Dict[str, Any]] = {
@@ -188,12 +209,12 @@ MODEL_REGISTRY: Dict[ModelType, Dict[str, Any]] = {
         'template': 'aerobic/mle_mbr',
     },
     ModelType.ASM1: {
-        'components': None,  # Use upstream QSDsan
-        'n_components': 13,
+        'components': ASM1_COMPONENTS,
+        'n_components': len(ASM1_COMPONENTS),
         'biogas_ids': None,
-        'biomass_ids': ('X_BH', 'X_BA'),
+        'biomass_ids': ASM1_BIOMASS_IDS,
         'n_biogas': 0,
-        'description': 'Activated Sludge Model 1',
+        'description': 'Activated Sludge Model 1 (13 components)',
         'default_temperature_K': 293.15,
         'typical_hrt_days': (0.2, 0.5),
         'template': 'aerobic/mle_mbr',

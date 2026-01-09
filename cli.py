@@ -569,8 +569,9 @@ def flowsheet_add_stream(
     session_id: str = typer.Option(..., "--session", "-s", help="Session ID"),
     stream_id: str = typer.Option(..., "--id", help="Stream identifier (e.g., 'influent', 'RAS')"),
     flow: float = typer.Option(..., "--flow", "-f", help="Flow rate in m³/day"),
-    concentrations: str = typer.Option(..., "--concentrations", "-c", help="Component concentrations as JSON dict (mg/L)"),
+    concentrations: str = typer.Option(..., "--concentrations", "-c", help="Component concentrations as JSON dict"),
     temperature: float = typer.Option(293.15, "--temperature", "-t", help="Temperature in K"),
+    concentration_units: str = typer.Option("mg/L", "--conc-units", "-u", help="Concentration units: mg/L (default) or kg/m3"),
     stream_type: str = typer.Option("influent", "--type", help="Stream type: influent, recycle, intermediate"),
     model_type: Optional[str] = typer.Option(None, "--model", "-m", help="Model type (default: session model)"),
     json_out: bool = typer.Option(False, "--json-out", "-j", help="Output as JSON"),
@@ -581,8 +582,14 @@ def flowsheet_add_stream(
     Example:
         qsdsan-engine flowsheet add-stream --session abc123 --id influent \\
             --flow 4000 --concentrations '{"S_F": 75, "S_A": 20, "S_NH4": 17}'
+        qsdsan-engine flowsheet add-stream --session abc123 --id influent \\
+            --flow 4000 --concentrations '{"S_F": 0.075}' --conc-units kg/m3
     """
     try:
+        # Validate concentration_units
+        if concentration_units not in ("mg/L", "kg/m3"):
+            _error_exit(f"Invalid concentration_units '{concentration_units}'. Must be 'mg/L' or 'kg/m3'.", json_out)
+
         conc_dict = json.loads(concentrations)
 
         config = StreamConfig(
@@ -590,6 +597,7 @@ def flowsheet_add_stream(
             flow_m3_d=flow,
             temperature_K=temperature,
             concentrations=conc_dict,
+            concentration_units=concentration_units,
             stream_type=stream_type,
             model_type=model_type,
         )
@@ -602,7 +610,7 @@ def flowsheet_add_stream(
             console.print(f"[green]Added stream '{stream_id}' to session {session_id}[/green]")
             console.print(f"  Flow: {flow} m³/day")
             console.print(f"  Temperature: {temperature} K")
-            console.print(f"  Components: {len(conc_dict)}")
+            console.print(f"  Components: {len(conc_dict)} ({concentration_units})")
             console.print(f"  Type: {stream_type}")
 
     except Exception as e:
@@ -686,7 +694,7 @@ def flowsheet_add_unit(
 @flowsheet_app.command("connect")
 def flowsheet_connect(
     session_id: str = typer.Option(..., "--session", "-s", help="Session ID"),
-    connections: str = typer.Option(..., "--connections", "-c", help="Connections as JSON list of {from, to, stream_id?}"),
+    connections: str = typer.Option(..., "--connections", "-c", help="Connections as JSON list of {from, to?, stream_id?}"),
     json_out: bool = typer.Option(False, "--json-out", "-j", help="Output as JSON"),
 ):
     """
@@ -695,36 +703,74 @@ def flowsheet_connect(
     Use this after creating units to wire recycle streams that couldn't be
     specified during unit creation.
 
+    Supports both standard and direct notation:
+    - Standard: {"from": "SP-0", "to": "A1-1", "stream_id": "RAS"}
+    - Direct:   {"from": "SP-0-1-A1"} or {"from": "U1-U2"}
+
     Example:
         qsdsan-engine flowsheet connect --session abc123 \\
             --connections '[{"from": "SP-0", "to": "A1-1", "stream_id": "RAS"}]'
+        qsdsan-engine flowsheet connect --session abc123 \\
+            --connections '[{"from": "SP-0-1-A1"}]'
     """
+    from utils.pipe_parser import parse_port_notation
+
     try:
         conn_list = json.loads(connections)
         results = []
 
         for conn in conn_list:
+            if not isinstance(conn, dict) or "from" not in conn:
+                results.append({"error": f"Invalid connection format (missing 'from'): {conn}"})
+                continue
+
+            from_port = conn["from"]
+
+            # Check if direct notation (U1-U2 or U1-0-1-U2) - target embedded in from
+            try:
+                from_ref = parse_port_notation(from_port)
+                if from_ref.port_type == "direct":
+                    # Direct notation: to_port is optional/ignored
+                    to_port = conn.get("to")  # May be None
+                else:
+                    # Standard notation: requires to field
+                    if "to" not in conn:
+                        results.append({"error": f"Standard notation requires 'to' field: {conn}"})
+                        continue
+                    to_port = conn["to"]
+            except ValueError:
+                # If parsing fails, require to field for backward compatibility
+                if "to" not in conn:
+                    results.append({"error": f"Invalid connection format (missing 'to'): {conn}"})
+                    continue
+                to_port = conn["to"]
+
             config = ConnectionConfig(
-                from_port=conn["from"],
-                to_port=conn["to"],
+                from_port=from_port,
+                to_port=to_port,
                 stream_id=conn.get("stream_id"),
             )
             result = session_manager.add_connection(session_id, config)
             results.append(result)
 
+        successful = [r for r in results if "error" not in r]
+        errors = [r for r in results if "error" in r]
+
         output = {
             "session_id": session_id,
-            "connections_added": len(results),
-            "connections": results,
+            "connections_added": len(successful),
+            "results": results,
         }
 
         if json_out:
             print(json.dumps(output, indent=2))
         else:
-            console.print(f"[green]Added {len(results)} connection(s) to session {session_id}[/green]")
-            for r in results:
+            console.print(f"[green]Added {len(successful)} connection(s) to session {session_id}[/green]")
+            for r in successful:
                 stream_info = f" ({r.get('stream_id')})" if r.get('stream_id') else ""
                 console.print(f"  {r['from']} -> {r['to']}{stream_info}")
+            for r in errors:
+                console.print(f"  [red]{r['error']}[/red]")
 
     except Exception as e:
         _error_exit(str(e), json_out)
@@ -1119,18 +1165,23 @@ def flowsheet_show(
             console.print(f"Updated: {summary['updated_at']}")
 
             console.print(f"\n[bold]Streams ({len(summary['streams'])}):[/bold]")
-            for stream_id in summary['streams']:
-                console.print(f"  - {stream_id}")
+            for stream_id, sinfo in summary['streams'].items():
+                n_comps = len(sinfo.get('concentrations', {}))
+                console.print(f"  - {stream_id}: flow={sinfo['flow_m3_d']} m3/d, T={sinfo['temperature_K']} K, {n_comps} components")
 
             console.print(f"\n[bold]Units ({len(summary['units'])}):[/bold]")
             for unit_id, info in summary['units'].items():
                 inputs_str = ", ".join(info['inputs']) if info['inputs'] else "none"
-                console.print(f"  - {unit_id} ({info['type']}): inputs=[{inputs_str}]")
+                params_str = ", ".join(f"{k}={v}" for k, v in (info.get('params') or {}).items())
+                console.print(f"  - {unit_id} ({info['unit_type']}): inputs=[{inputs_str}]")
+                if params_str:
+                    console.print(f"      params: {params_str}")
 
             if summary['connections']:
                 console.print(f"\n[bold]Connections ({len(summary['connections'])}):[/bold]")
                 for conn in summary['connections']:
-                    console.print(f"  - {conn['from']} -> {conn['to']}")
+                    stream_info = f" ({conn['stream_id']})" if conn.get('stream_id') else ""
+                    console.print(f"  - {conn['from']} -> {conn['to']}{stream_info}")
 
     except Exception as e:
         _error_exit(str(e), json_out)
@@ -1223,6 +1274,690 @@ def flowsheet_delete(
                 console.print(f"[green]Deleted session '{session_id}'[/green]")
             else:
                 console.print(f"[yellow]Session '{session_id}' not found[/yellow]")
+
+    except Exception as e:
+        _error_exit(str(e), json_out)
+
+
+@flowsheet_app.command("update-stream")
+def flowsheet_update_stream(
+    session_id: str = typer.Option(..., "--session", "-s", help="Session ID"),
+    stream_id: str = typer.Option(..., "--id", help="Stream identifier to update"),
+    flow: Optional[float] = typer.Option(None, "--flow", "-f", help="New flow rate in m3/day"),
+    concentrations: Optional[str] = typer.Option(None, "--concentrations", "-c", help="Concentrations to update/merge as JSON dict"),
+    temperature: Optional[float] = typer.Option(None, "--temperature", "-t", help="New temperature in K"),
+    stream_type: Optional[str] = typer.Option(None, "--type", help="New stream type"),
+    model_type: Optional[str] = typer.Option(None, "--model", "-m", help="New model type"),
+    json_out: bool = typer.Option(False, "--json-out", "-j", help="Output as JSON"),
+):
+    """
+    Update a stream in the flowsheet session (patch-style).
+
+    Only specified fields are updated. Concentrations are merged, not replaced.
+
+    Example:
+        qsdsan-engine flowsheet update-stream --session abc123 --id influent \\
+            --flow 5000 --concentrations '{"S_F": 100}'
+    """
+    try:
+        updates = {}
+        if flow is not None:
+            updates["flow_m3_d"] = flow
+        if temperature is not None:
+            updates["temperature_K"] = temperature
+        if stream_type is not None:
+            updates["stream_type"] = stream_type
+        if model_type is not None:
+            updates["model_type"] = model_type
+        if concentrations is not None:
+            updates["concentrations"] = json.loads(concentrations)
+
+        if not updates:
+            _error_exit("No updates provided", json_out)
+
+        result = session_manager.update_stream(session_id, stream_id, updates)
+
+        if json_out:
+            print(json.dumps(result, indent=2))
+        else:
+            console.print(f"[green]Updated stream '{stream_id}'[/green]")
+            console.print(f"  Updated fields: {result['updated_fields']}")
+            if result.get("was_compiled"):
+                console.print(f"  [yellow]Session reset to 'building' - rebuild required[/yellow]")
+
+    except Exception as e:
+        _error_exit(str(e), json_out)
+
+
+@flowsheet_app.command("update-unit")
+def flowsheet_update_unit(
+    session_id: str = typer.Option(..., "--session", "-s", help="Session ID"),
+    unit_id: str = typer.Option(..., "--id", help="Unit identifier to update"),
+    params: Optional[str] = typer.Option(None, "--params", "-p", help="Parameters to update/merge as JSON dict"),
+    inputs: Optional[str] = typer.Option(None, "--inputs", "-i", help="New inputs as JSON list"),
+    outputs: Optional[str] = typer.Option(None, "--outputs", "-o", help="New outputs as JSON list"),
+    model_type: Optional[str] = typer.Option(None, "--model", "-m", help="New model type"),
+    json_out: bool = typer.Option(False, "--json-out", "-j", help="Output as JSON"),
+):
+    """
+    Update a unit in the flowsheet session (patch-style).
+
+    Only specified fields are updated. Params are merged, not replaced.
+
+    Example:
+        qsdsan-engine flowsheet update-unit --session abc123 --id A1 \\
+            --params '{"V_max": 1500}'
+    """
+    try:
+        updates = {}
+        if params is not None:
+            updates["params"] = json.loads(params)
+        if inputs is not None:
+            updates["inputs"] = json.loads(inputs)
+        if outputs is not None:
+            updates["outputs"] = json.loads(outputs)
+        if model_type is not None:
+            updates["model_type"] = model_type
+
+        if not updates:
+            _error_exit("No updates provided", json_out)
+
+        result = session_manager.update_unit(session_id, unit_id, updates)
+
+        if json_out:
+            print(json.dumps(result, indent=2))
+        else:
+            console.print(f"[green]Updated unit '{unit_id}'[/green]")
+            console.print(f"  Updated fields: {result['updated_fields']}")
+            if result.get("was_compiled"):
+                console.print(f"  [yellow]Session reset to 'building' - rebuild required[/yellow]")
+
+    except Exception as e:
+        _error_exit(str(e), json_out)
+
+
+@flowsheet_app.command("delete-stream")
+def flowsheet_delete_stream(
+    session_id: str = typer.Option(..., "--session", "-s", help="Session ID"),
+    stream_id: str = typer.Option(..., "--id", help="Stream identifier to delete"),
+    force: bool = typer.Option(False, "--force", "-f", help="Delete even if referenced by units"),
+    json_out: bool = typer.Option(False, "--json-out", "-j", help="Output as JSON"),
+):
+    """
+    Delete a stream from the flowsheet session.
+
+    By default fails if units reference this stream. Use --force to delete anyway.
+
+    Example:
+        qsdsan-engine flowsheet delete-stream --session abc123 --id RAS --force
+    """
+    try:
+        result = session_manager.delete_stream(session_id, stream_id, force)
+
+        if json_out:
+            print(json.dumps(result, indent=2))
+        else:
+            console.print(f"[green]Deleted stream '{stream_id}'[/green]")
+            if result.get("removed_from_units"):
+                console.print(f"  Removed from units: {result['removed_from_units']}")
+
+    except Exception as e:
+        _error_exit(str(e), json_out)
+
+
+@flowsheet_app.command("delete-unit")
+def flowsheet_delete_unit(
+    session_id: str = typer.Option(..., "--session", "-s", help="Session ID"),
+    unit_id: str = typer.Option(..., "--id", help="Unit identifier to delete"),
+    json_out: bool = typer.Option(False, "--json-out", "-j", help="Output as JSON"),
+):
+    """
+    Delete a unit from the flowsheet session.
+
+    Also removes any connections referencing this unit.
+
+    Example:
+        qsdsan-engine flowsheet delete-unit --session abc123 --id SP
+    """
+    try:
+        result = session_manager.delete_unit(session_id, unit_id)
+
+        if json_out:
+            print(json.dumps(result, indent=2))
+        else:
+            console.print(f"[green]Deleted unit '{unit_id}'[/green]")
+            if result.get("removed_connections"):
+                console.print(f"  Removed connections: {result['removed_connections']}")
+
+    except Exception as e:
+        _error_exit(str(e), json_out)
+
+
+@flowsheet_app.command("delete-connection")
+def flowsheet_delete_connection(
+    session_id: str = typer.Option(..., "--session", "-s", help="Session ID"),
+    from_port: str = typer.Option(..., "--from", help="Source port (e.g., 'SP-0')"),
+    to_port: Optional[str] = typer.Option(None, "--to", help="Destination port (optional for direct notation)"),
+    json_out: bool = typer.Option(False, "--json-out", "-j", help="Output as JSON"),
+):
+    """
+    Delete a specific connection from the flowsheet session.
+
+    Example:
+        qsdsan-engine flowsheet delete-connection --session abc123 --from SP-0 --to A1-1
+    """
+    try:
+        result = session_manager.delete_connection(session_id, from_port, to_port)
+
+        if json_out:
+            print(json.dumps(result, indent=2))
+        else:
+            console.print(f"[green]Deleted connection {from_port} -> {to_port}[/green]")
+
+    except Exception as e:
+        _error_exit(str(e), json_out)
+
+
+@flowsheet_app.command("clone")
+def flowsheet_clone(
+    session_id: str = typer.Option(..., "--session", "-s", help="Source session ID to clone"),
+    new_session_id: Optional[str] = typer.Option(None, "--new-id", help="New session ID (auto-generated if not provided)"),
+    json_out: bool = typer.Option(False, "--json-out", "-j", help="Output as JSON"),
+):
+    """
+    Clone a flowsheet session for experimentation.
+
+    Creates a copy reset to 'building' status for modifications.
+
+    Example:
+        qsdsan-engine flowsheet clone --session abc123 --new-id abc123_v2
+    """
+    try:
+        result = session_manager.clone_session(session_id, new_session_id)
+
+        if json_out:
+            print(json.dumps(result, indent=2))
+        else:
+            console.print(f"[green]Cloned session '{session_id}' to '{result['new_session_id']}'[/green]")
+            console.print(f"  Streams: {result['n_streams']}")
+            console.print(f"  Units: {result['n_units']}")
+            console.print(f"  Connections: {result['n_connections']}")
+
+    except Exception as e:
+        _error_exit(str(e), json_out)
+
+
+# =============================================================================
+# Phase 3: Discoverability and Engineering Tools
+# =============================================================================
+
+@flowsheet_app.command("validate")
+def flowsheet_validate(
+    session_id: str = typer.Option(..., "--session", "-s", help="Session ID"),
+    json_out: bool = typer.Option(False, "--json-out", "-j", help="Output as JSON"),
+):
+    """
+    Validate a flowsheet without compiling it.
+
+    Performs pre-compilation validation checks including:
+    - Unit inputs resolve to streams or other units
+    - No orphan units
+    - Recycle streams detection
+
+    Example:
+        qsdsan-engine flowsheet validate --session abc123
+    """
+    try:
+        from utils.topo_sort import validate_flowsheet_connectivity, detect_cycles
+        from core.unit_registry import get_unit_spec
+
+        session = session_manager.get_session(session_id)
+        errors, warnings = validate_flowsheet_connectivity(
+            session.units,
+            session.streams,
+            session.connections,
+        )
+        cycles = detect_cycles(
+            session.units,
+            session.connections,
+        )
+
+        # Model compatibility check across junctions (Phase 3B.2)
+        junction_types = {"ASM2dtoADM1", "ADM1toASM2d", "mADM1toASM2d", "ASM2dtomADM1",
+                         "ASMtoADM", "ADMtoASM", "ADM1ptomASM2d", "mASM2dtoADM1p"}
+        model_compat_warnings = []
+
+        for unit_id, config in session.units.items():
+            unit_type = config.unit_type
+            if unit_type in junction_types:
+                try:
+                    spec = get_unit_spec(unit_type)
+                    junction_models = set(spec.compatible_models) if spec.compatible_models else set()
+                except Exception:
+                    continue
+
+                for input_ref in config.inputs:
+                    upstream_unit_id = None
+                    if "-" in input_ref and not input_ref.startswith("-"):
+                        upstream_unit_id = input_ref.split("-")[0]
+                    elif input_ref in session.units:
+                        upstream_unit_id = input_ref
+
+                    if upstream_unit_id and upstream_unit_id in session.units:
+                        upstream_config = session.units[upstream_unit_id]
+                        upstream_type = upstream_config.unit_type
+                        try:
+                            upstream_spec = get_unit_spec(upstream_type)
+                            upstream_models = set(upstream_spec.compatible_models) if upstream_spec.compatible_models else set()
+                            if upstream_models and junction_models:
+                                common = upstream_models & junction_models
+                                if not common:
+                                    model_compat_warnings.append(
+                                        f"Junction '{unit_id}' ({unit_type}) may be incompatible with upstream "
+                                        f"'{upstream_unit_id}' ({upstream_type})"
+                                    )
+                        except Exception:
+                            pass
+
+        warnings.extend(model_compat_warnings)
+
+        is_valid = len(errors) == 0
+        result = {
+            "session_id": session_id,
+            "is_valid": is_valid,
+            "errors": errors,
+            "warnings": warnings,
+            "detected_cycles": [c["cycle_path"] for c in cycles] if cycles else [],
+            "n_units": len(session.units),
+            "n_streams": len(session.streams),
+            "n_connections": len(session.connections),
+        }
+
+        if json_out:
+            print(json.dumps(result, indent=2))
+        else:
+            status_color = "green" if is_valid else "red"
+            status_text = "VALID" if is_valid else "INVALID"
+            console.print(f"\n[bold]Flowsheet Validation: [{status_color}]{status_text}[/{status_color}][/bold]")
+            console.print(f"Session: {session_id}")
+            console.print(f"Units: {len(session.units)}, Streams: {len(session.streams)}, Connections: {len(session.connections)}")
+
+            if errors:
+                console.print("\n[red]Errors:[/red]")
+                for e in errors:
+                    console.print(f"  - {e}")
+
+            if warnings:
+                console.print("\n[yellow]Warnings:[/yellow]")
+                for w in warnings:
+                    console.print(f"  - {w}")
+
+            if cycles:
+                console.print("\n[cyan]Detected cycles (need recycle_streams):[/cyan]")
+                for c in cycles:
+                    console.print(f"  - {' -> '.join(c['cycle_path'])}")
+
+    except Exception as e:
+        _error_exit(str(e), json_out)
+
+
+@flowsheet_app.command("suggest-recycles")
+def flowsheet_suggest_recycles(
+    session_id: str = typer.Option(..., "--session", "-s", help="Session ID"),
+    json_out: bool = typer.Option(False, "--json-out", "-j", help="Output as JSON"),
+):
+    """
+    Detect potential recycle streams in a flowsheet.
+
+    Analyzes the flowsheet topology to identify cycles that likely
+    represent recycle streams (e.g., RAS, internal recycles).
+
+    Example:
+        qsdsan-engine flowsheet suggest-recycles --session abc123
+    """
+    try:
+        from utils.topo_sort import detect_cycles
+
+        session = session_manager.get_session(session_id)
+        cycles = detect_cycles(
+            session.units,
+            session.connections,
+        )
+
+        # Identify sources (influent streams) and sinks (units with no downstream)
+        sources = [sid for sid, s in session.streams.items() if s.stream_type == "influent"]
+
+        # Find sinks: units that are not in any connection's from_unit
+        all_from_units = set()
+        for conn in session.connections:
+            try:
+                from utils.pipe_parser import parse_port_notation
+                from_ref = parse_port_notation(conn.from_port)
+                all_from_units.add(from_ref.unit_id)
+            except Exception:
+                pass
+        sinks = [uid for uid in session.units.keys() if uid not in all_from_units]
+
+        suggestions = []
+        for c in cycles:
+            # Suggest the last edge in the cycle as the recycle
+            cycle_path = c["cycle_path"]
+            if len(cycle_path) >= 2:
+                from_unit = cycle_path[-2]
+                to_unit = cycle_path[-1]
+                suggestions.append({
+                    "cycle_path": cycle_path,
+                    "suggested_recycle": {
+                        "from": f"{from_unit}-0",
+                        "to": f"{to_unit}-1",
+                        "stream_id": f"recycle_{from_unit}_{to_unit}",
+                    },
+                    "recycle_type": "detected",
+                })
+
+        result = {
+            "session_id": session_id,
+            "n_cycles_detected": len(cycles),
+            "suggestions": suggestions,
+            "topology": {
+                "sources": sources,
+                "sinks": sinks,
+            },
+        }
+
+        if json_out:
+            print(json.dumps(result, indent=2))
+        else:
+            console.print(f"\n[bold]Recycle Detection: {session_id}[/bold]")
+            console.print(f"Cycles detected: {len(cycles)}")
+
+            if suggestions:
+                console.print("\n[cyan]Suggested recycles:[/cyan]")
+                for s in suggestions:
+                    console.print(f"  Cycle: {' -> '.join(s['cycle_path'])}")
+                    sr = s["suggested_recycle"]
+                    console.print(f"    Suggestion: {sr['from']} -> {sr['to']} (stream_id: {sr['stream_id']})")
+            else:
+                console.print("[green]No cycles detected - flowsheet is acyclic[/green]")
+
+            console.print(f"\nSources: {sources}")
+            console.print(f"Sinks: {sinks}")
+
+    except Exception as e:
+        _error_exit(str(e), json_out)
+
+
+@flowsheet_app.command("timeseries")
+def flowsheet_timeseries(
+    job_id: str = typer.Option(..., "--job", "-j", help="Job ID from simulation"),
+    stream_ids: Optional[str] = typer.Option(None, "--streams", help="Comma-separated stream IDs to filter"),
+    components: Optional[str] = typer.Option(None, "--components", help="Comma-separated component IDs to filter"),
+    downsample: int = typer.Option(1, "--downsample", "-d", help="Downsample factor (1 = no downsample)"),
+    output: Optional[Path] = typer.Option(None, "--output", "-o", help="Output file (JSON)"),
+    json_out: bool = typer.Option(False, "--json-out", help="Output as JSON to stdout"),
+):
+    """
+    Get time-series data from a flowsheet simulation.
+
+    Requires a simulation run with --track streams specified.
+
+    Example:
+        qsdsan-engine flowsheet timeseries --job abc123 --streams effluent
+        qsdsan-engine flowsheet timeseries --job abc123 --components S_NH4,S_PO4 --output ts.json
+    """
+    try:
+        from pathlib import Path as P
+        job_dir = P("jobs") / job_id
+        ts_path = job_dir / "timeseries.json"
+
+        if not ts_path.exists():
+            raise ValueError(f"Time-series data not found for job '{job_id}'. "
+                           "Ensure simulation was run with --track parameter.")
+
+        with open(ts_path) as f:
+            ts_data = json.load(f)
+
+        # Filter by streams if specified
+        if stream_ids:
+            filter_streams = set(s.strip() for s in stream_ids.split(","))
+            if "streams" in ts_data:
+                ts_data["streams"] = {
+                    k: v for k, v in ts_data["streams"].items()
+                    if k in filter_streams
+                }
+
+        # Filter by components if specified
+        if components:
+            filter_comps = set(c.strip() for c in components.split(","))
+            if "streams" in ts_data:
+                for stream_id, stream_data in ts_data["streams"].items():
+                    ts_data["streams"][stream_id] = {
+                        k: v for k, v in stream_data.items()
+                        if k in filter_comps
+                    }
+
+        # Downsample
+        if downsample > 1 and "time" in ts_data:
+            ts_data["time"] = ts_data["time"][::downsample]
+            if "streams" in ts_data:
+                for stream_id, stream_data in ts_data["streams"].items():
+                    for comp_id, values in stream_data.items():
+                        if isinstance(values, list):
+                            ts_data["streams"][stream_id][comp_id] = values[::downsample]
+
+        # Output
+        if output:
+            with open(output, "w") as f:
+                json.dump(ts_data, f, indent=2)
+            console.print(f"[green]Time-series saved to {output}[/green]")
+        elif json_out:
+            print(json.dumps(ts_data, indent=2))
+        else:
+            # Summary display
+            console.print(f"\n[bold]Time-series Data: {job_id}[/bold]")
+            if "time" in ts_data:
+                console.print(f"Time points: {len(ts_data['time'])}")
+                console.print(f"Time range: {ts_data['time'][0]:.2f} - {ts_data['time'][-1]:.2f} {ts_data.get('time_units', 'days')}")
+            if "streams" in ts_data:
+                console.print(f"\n[bold]Streams:[/bold]")
+                for stream_id, stream_data in ts_data["streams"].items():
+                    comps = list(stream_data.keys())
+                    console.print(f"  - {stream_id}: {len(comps)} components ({', '.join(comps[:5])}{'...' if len(comps) > 5 else ''})")
+            console.print("\nUse --json-out or --output to get full data")
+
+    except Exception as e:
+        _error_exit(str(e), json_out if 'json_out' in dir() else False)
+
+
+@flowsheet_app.command("artifact")
+def flowsheet_artifact(
+    job_id: str = typer.Option(..., "--job", "-j", help="Job ID"),
+    artifact_type: str = typer.Option(..., "--type", "-t", help="Artifact type: diagram, report, timeseries"),
+    output: Optional[Path] = typer.Option(None, "--output", "-o", help="Output file (required for binary artifacts)"),
+    json_out: bool = typer.Option(False, "--json-out", help="Output metadata as JSON"),
+):
+    """
+    Get simulation artifact content.
+
+    Artifact types:
+    - diagram: SVG flowsheet diagram
+    - report: QMD Quarto report
+    - timeseries: JSON time-series data
+
+    Example:
+        qsdsan-engine flowsheet artifact --job abc123 --type diagram --output flowsheet.svg
+        qsdsan-engine flowsheet artifact --job abc123 --type report --json-out
+    """
+    try:
+        from pathlib import Path as P
+        job_dir = P("jobs") / job_id
+
+        if not job_dir.exists():
+            raise ValueError(f"Job directory not found: {job_id}")
+
+        # Map artifact types to file patterns
+        artifact_files = {
+            "diagram": ["flowsheet.svg", "diagram.svg", "system.svg"],
+            "report": ["report.qmd", "simulation_report.qmd"],
+            "timeseries": ["timeseries.json", "time_series.json"],
+        }
+
+        if artifact_type not in artifact_files:
+            raise ValueError(f"Unknown artifact type: {artifact_type}. "
+                           f"Valid types: {list(artifact_files.keys())}")
+
+        # Find the artifact file
+        artifact_path = None
+        for filename in artifact_files[artifact_type]:
+            candidate = job_dir / filename
+            if candidate.exists():
+                artifact_path = candidate
+                break
+
+        if not artifact_path:
+            raise ValueError(f"Artifact '{artifact_type}' not found in job '{job_id}'")
+
+        # Read content
+        is_binary = artifact_path.suffix in [".png", ".pdf"]
+        if is_binary:
+            if not output:
+                raise ValueError(f"Binary artifact requires --output parameter")
+            import shutil
+            shutil.copy(artifact_path, output)
+            console.print(f"[green]Artifact saved to {output}[/green]")
+            return
+
+        content = artifact_path.read_text(encoding="utf-8")
+
+        if output:
+            with open(output, "w", encoding="utf-8") as f:
+                f.write(content)
+            console.print(f"[green]Artifact saved to {output}[/green]")
+        elif json_out:
+            result = {
+                "job_id": job_id,
+                "artifact_type": artifact_type,
+                "format": artifact_path.suffix[1:] if artifact_path.suffix else "text",
+                "path": str(artifact_path),
+                "size_bytes": len(content.encode("utf-8")),
+            }
+            # Include content for text artifacts in JSON mode
+            if artifact_type in ["report", "timeseries"]:
+                if artifact_type == "timeseries":
+                    result["content"] = json.loads(content)
+                else:
+                    result["content"] = content
+            print(json.dumps(result, indent=2))
+        else:
+            # Display content directly for text artifacts
+            console.print(f"\n[bold]Artifact: {artifact_type} ({artifact_path.name})[/bold]")
+            console.print(f"Size: {len(content)} bytes\n")
+            if artifact_type == "timeseries":
+                data = json.loads(content)
+                console.print(json.dumps(data, indent=2)[:2000])
+                if len(content) > 2000:
+                    console.print("\n... (truncated, use --output to save full content)")
+            else:
+                console.print(content[:3000])
+                if len(content) > 3000:
+                    console.print("\n... (truncated, use --output to save full content)")
+
+    except Exception as e:
+        _error_exit(str(e), json_out if 'json_out' in dir() else False)
+
+
+# =============================================================================
+# Models command group (Phase 3 discoverability)
+# =============================================================================
+
+models_app = typer.Typer(
+    name="models",
+    help="Model discovery and component information",
+)
+app.add_typer(models_app, name="models")
+
+
+@models_app.command("components")
+def models_components(
+    model_type: str = typer.Argument(..., help="Model type: ASM1, ASM2d, mADM1"),
+    include_typical: bool = typer.Option(True, "--typical/--no-typical", help="Include typical domestic values"),
+    json_out: bool = typer.Option(False, "--json-out", "-j", help="Output as JSON"),
+):
+    """
+    Get component IDs and metadata for a process model.
+
+    Example:
+        qsdsan-engine models components ASM2d
+        qsdsan-engine models components mADM1 --json-out
+    """
+    try:
+        from core.model_registry import ModelType, get_model_info, MODEL_REGISTRY
+
+        # Parse model type
+        model_type_upper = model_type.upper()
+        if model_type_upper == "MADM1":
+            model_type_upper = "MADM1"  # Keep original case
+
+        try:
+            mt = ModelType(model_type_upper)
+        except ValueError:
+            # Try alternate names
+            mt_map = {"ADM1": "MADM1", "ASM2D": "ASM2D"}
+            if model_type_upper in mt_map:
+                mt = ModelType(mt_map[model_type_upper])
+            else:
+                raise ValueError(f"Unknown model type: {model_type}. Valid: ASM1, ASM2d, mADM1")
+
+        info = get_model_info(mt)
+        components = info.get("components", [])
+
+        # Component metadata from server.py COMPONENT_METADATA
+        from server import COMPONENT_METADATA
+        metadata = COMPONENT_METADATA.get(model_type_upper, {})
+
+        # Build component list
+        component_list = []
+        for comp_id in components:
+            comp_info = {"id": comp_id}
+            if comp_id in metadata:
+                meta = metadata[comp_id]
+                comp_info.update(meta)
+            component_list.append(comp_info)
+
+        # Organize by category
+        categories = {}
+        for comp in component_list:
+            cat = comp.get("category", "other")
+            if cat not in categories:
+                categories[cat] = []
+            categories[cat].append(comp["id"])
+
+        result = {
+            "model_type": str(mt.value),
+            "n_components": len(components),
+            "concentration_units": "mg/L",
+            "components": component_list,
+            "categories": categories,
+            "description": info.get("description", ""),
+        }
+
+        if json_out:
+            print(json.dumps(result, indent=2))
+        else:
+            console.print(f"\n[bold]{mt.value} Components ({len(components)} total)[/bold]")
+            console.print(f"Units: mg/L (default)\n")
+
+            # Display by category
+            for cat, comp_ids in categories.items():
+                console.print(f"[cyan]{cat.title()}:[/cyan]")
+                for cid in comp_ids:
+                    meta = metadata.get(cid, {})
+                    name = meta.get("name", "")
+                    typical = meta.get("typical_domestic", "")
+                    typical_str = f" (typical: {typical})" if typical and include_typical else ""
+                    name_str = f" - {name}" if name else ""
+                    console.print(f"  {cid}{name_str}{typical_str}")
+                console.print()
 
     except Exception as e:
         _error_exit(str(e), json_out)
