@@ -9,10 +9,11 @@ Per Codex review recommendations, this test suite covers:
 5. Anaerobic Flowsheet - CSTR mADM1
 6. Edge Cases - Zero flow, missing components
 
-Run with: ../venv312/Scripts/python.exe -m pytest tests/test_phase1.py -v
+Run with: python -m pytest tests/test_phase1.py -v
 """
 
 import json
+import sys
 import pytest
 from pathlib import Path
 
@@ -214,7 +215,7 @@ class TestCLIIntegration:
         """CLI templates command should list 4 templates grouped by category."""
         import subprocess
         result = subprocess.run(
-            ['../venv312/Scripts/python.exe', 'cli.py', 'templates', '--json-out'],
+            [sys.executable, 'cli.py', 'templates', '--json-out'],
             capture_output=True, text=True, cwd=Path(__file__).parent.parent
         )
         assert result.returncode == 0, f"CLI failed: {result.stderr}"
@@ -231,7 +232,7 @@ class TestCLIIntegration:
         """CLI validate should pass for valid ASM2d state."""
         import subprocess
         result = subprocess.run(
-            ['../venv312/Scripts/python.exe', 'cli.py', 'validate',
+            [sys.executable, 'cli.py', 'validate',
              '--state', 'tests/test_asm2d_state.json', '--model', 'ASM2d', '--json-out'],
             capture_output=True, text=True, cwd=Path(__file__).parent.parent
         )
@@ -245,7 +246,7 @@ class TestCLIIntegration:
         """CLI validate should pass for valid mADM1 state."""
         import subprocess
         result = subprocess.run(
-            ['../venv312/Scripts/python.exe', 'cli.py', 'validate',
+            [sys.executable, 'cli.py', 'validate',
              '--state', 'tests/test_madm1_state.json', '--model', 'mADM1', '--json-out'],
             capture_output=True, text=True, cwd=Path(__file__).parent.parent
         )
@@ -296,7 +297,7 @@ class TestSimulations:
         """MLE-MBR template should complete without errors."""
         import subprocess
         result = subprocess.run(
-            ['../venv312/Scripts/python.exe', 'cli.py', 'simulate',
+            [sys.executable, 'cli.py', 'simulate',
              '-t', 'mle_mbr_asm2d', '-i', 'tests/test_asm2d_state.json',
              '-d', '1.0', '--json-out'],
             capture_output=True, text=True, cwd=Path(__file__).parent.parent,
@@ -314,7 +315,7 @@ class TestSimulations:
         """A/O-MBR template should complete without errors."""
         import subprocess
         result = subprocess.run(
-            ['../venv312/Scripts/python.exe', 'cli.py', 'simulate',
+            [sys.executable, 'cli.py', 'simulate',
              '-t', 'ao_mbr_asm2d', '-i', 'tests/test_asm2d_state.json',
              '-d', '1.0', '--json-out'],
             capture_output=True, text=True, cwd=Path(__file__).parent.parent,
@@ -330,7 +331,7 @@ class TestSimulations:
         """A2O-MBR template should complete without errors."""
         import subprocess
         result = subprocess.run(
-            ['../venv312/Scripts/python.exe', 'cli.py', 'simulate',
+            [sys.executable, 'cli.py', 'simulate',
              '-t', 'a2o_mbr_asm2d', '-i', 'tests/test_asm2d_state.json',
              '-d', '1.0', '--json-out'],
             capture_output=True, text=True, cwd=Path(__file__).parent.parent,
@@ -346,7 +347,7 @@ class TestSimulations:
         """Anaerobic CSTR template should complete without errors."""
         import subprocess
         result = subprocess.run(
-            ['../venv312/Scripts/python.exe', 'cli.py', 'simulate',
+            [sys.executable, 'cli.py', 'simulate',
              '-t', 'anaerobic_cstr_madm1', '-i', 'tests/test_madm1_state.json',
              '-d', '5.0', '--json-out'],
             capture_output=True, text=True, cwd=Path(__file__).parent.parent,

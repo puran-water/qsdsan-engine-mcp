@@ -923,6 +923,190 @@ def _extract_flowsheet_timeseries(
     return result
 
 
+def _extract_unit_analysis(
+    system: "System",
+    model_type: str = "ASM2d",
+) -> Dict[str, Any]:
+    """
+    Extract per-unit performance data for every SanUnit in the system.
+
+    This provides detailed analysis for each unit including:
+    - Inlet/outlet stream characteristics
+    - Unit-specific parameters (volume, HRT, etc.)
+    - Removal/conversion efficiencies across the unit
+    - Unit type and configuration
+
+    Args:
+        system: Completed QSDsan System
+        model_type: Process model type for component interpretation
+
+    Returns:
+        Dict mapping unit_id -> unit analysis data
+    """
+    from utils.stream_analysis import (
+        analyze_aerobic_stream,
+        analyze_liquid_stream,
+        calculate_removal_efficiency,
+    )
+
+    units_data = {}
+
+    # Normalize model_type
+    mt = getattr(model_type, 'value', model_type) if model_type else "ASM2d"
+    mt = str(mt).upper()
+    is_anaerobic = mt in ("MADM1", "ADM1")
+
+    for unit in system.units:
+        try:
+            unit_id = unit.ID
+            unit_type = type(unit).__name__
+
+            # Basic unit info
+            unit_data = {
+                "unit_id": unit_id,
+                "unit_type": unit_type,
+                "inlet_ids": [s.ID for s in unit.ins if s],
+                "outlet_ids": [s.ID for s in unit.outs if s],
+            }
+
+            # Extract unit-specific parameters
+            params = {}
+
+            # Volume parameters
+            if hasattr(unit, 'V_max'):
+                params['V_max_m3'] = float(unit.V_max) if unit.V_max else None
+            if hasattr(unit, 'V_liq'):
+                params['V_liq_m3'] = float(unit.V_liq) if unit.V_liq else None
+            if hasattr(unit, 'V_gas'):
+                params['V_gas_m3'] = float(unit.V_gas) if unit.V_gas else None
+
+            # HRT calculation
+            if hasattr(unit, 'HRT'):
+                params['HRT_days'] = float(unit.HRT) * 24 if unit.HRT else None  # hr -> days
+            elif hasattr(unit, 'tau'):
+                params['HRT_days'] = float(unit.tau) * 24 if unit.tau else None  # hr -> days
+
+            # Temperature
+            if hasattr(unit, 'T'):
+                params['temperature_K'] = float(unit.T) if unit.T else None
+
+            # Aeration/DO (for aerobic units)
+            if hasattr(unit, 'aeration'):
+                params['aeration_kLa'] = float(unit.aeration) if unit.aeration else None
+            if hasattr(unit, 'DO_ID'):
+                params['DO_component'] = unit.DO_ID
+
+            # Split ratio (for splitters)
+            if hasattr(unit, 'split'):
+                params['split_ratio'] = float(unit.split) if unit.split else None
+
+            unit_data['parameters'] = params
+
+            # Analyze inlet streams
+            inlet_analysis = []
+            for inlet in unit.ins:
+                if inlet:
+                    try:
+                        if is_anaerobic:
+                            analysis = analyze_liquid_stream(inlet)
+                        else:
+                            analysis = analyze_aerobic_stream(inlet)
+                        inlet_analysis.append({
+                            "stream_id": inlet.ID,
+                            "flow_m3_d": float(inlet.F_vol * 24) if hasattr(inlet, 'F_vol') else None,
+                            "COD_mg_L": float(inlet.COD) if hasattr(inlet, 'COD') and inlet.COD else None,
+                            "TSS_mg_L": float(inlet.get_TSS()) if hasattr(inlet, 'get_TSS') else None,
+                            "temperature_K": float(inlet.T) if hasattr(inlet, 'T') else None,
+                            **{k: v for k, v in analysis.items() if k not in ['success', 'stream_id']}
+                        })
+                    except Exception as e:
+                        inlet_analysis.append({
+                            "stream_id": inlet.ID,
+                            "error": str(e),
+                        })
+
+            unit_data['inlets'] = inlet_analysis
+
+            # Analyze outlet streams
+            outlet_analysis = []
+            for outlet in unit.outs:
+                if outlet:
+                    try:
+                        # Check if this is a gas stream (biogas)
+                        is_gas = any(x in outlet.ID.lower() for x in ['biogas', 'gas', 'off_gas'])
+                        if is_gas and is_anaerobic:
+                            from utils.stream_analysis import analyze_gas_stream
+                            analysis = analyze_gas_stream(outlet)
+                            outlet_analysis.append({
+                                "stream_id": outlet.ID,
+                                "stream_type": "gas",
+                                "flow_m3_d": float(outlet.F_vol * 24) if hasattr(outlet, 'F_vol') else None,
+                                **{k: v for k, v in analysis.items() if k not in ['success', 'stream_id']}
+                            })
+                        else:
+                            if is_anaerobic:
+                                analysis = analyze_liquid_stream(outlet)
+                            else:
+                                analysis = analyze_aerobic_stream(outlet)
+                            outlet_analysis.append({
+                                "stream_id": outlet.ID,
+                                "stream_type": "liquid",
+                                "flow_m3_d": float(outlet.F_vol * 24) if hasattr(outlet, 'F_vol') else None,
+                                "COD_mg_L": float(outlet.COD) if hasattr(outlet, 'COD') and outlet.COD else None,
+                                "TSS_mg_L": float(outlet.get_TSS()) if hasattr(outlet, 'get_TSS') else None,
+                                "temperature_K": float(outlet.T) if hasattr(outlet, 'T') else None,
+                                **{k: v for k, v in analysis.items() if k not in ['success', 'stream_id']}
+                            })
+                    except Exception as e:
+                        outlet_analysis.append({
+                            "stream_id": outlet.ID,
+                            "error": str(e),
+                        })
+
+            unit_data['outlets'] = outlet_analysis
+
+            # Calculate removal efficiency across the unit (if applicable)
+            if inlet_analysis and outlet_analysis:
+                # Use first inlet and first liquid outlet
+                first_inlet = inlet_analysis[0] if inlet_analysis else None
+                first_outlet = next(
+                    (o for o in outlet_analysis if o.get('stream_type') != 'gas'),
+                    outlet_analysis[0] if outlet_analysis else None
+                )
+
+                if first_inlet and first_outlet:
+                    removal = {}
+                    inlet_cod = first_inlet.get('COD_mg_L')
+                    outlet_cod = first_outlet.get('COD_mg_L')
+                    if inlet_cod and outlet_cod and inlet_cod > 0:
+                        removal['COD_removal_pct'] = calculate_removal_efficiency(inlet_cod, outlet_cod)
+
+                    inlet_tss = first_inlet.get('TSS_mg_L')
+                    outlet_tss = first_outlet.get('TSS_mg_L')
+                    if inlet_tss and outlet_tss and inlet_tss > 0:
+                        removal['TSS_removal_pct'] = calculate_removal_efficiency(inlet_tss, outlet_tss)
+
+                    # TN removal (for aerobic)
+                    inlet_tn = first_inlet.get('TN_mg_L') or first_inlet.get('TKN_mg_L')
+                    outlet_tn = first_outlet.get('TN_mg_L') or first_outlet.get('TKN_mg_L')
+                    if inlet_tn and outlet_tn and inlet_tn > 0:
+                        removal['TN_removal_pct'] = calculate_removal_efficiency(inlet_tn, outlet_tn)
+
+                    if removal:
+                        unit_data['removal_efficiency'] = removal
+
+            units_data[unit_id] = unit_data
+
+        except Exception as e:
+            logger.warning(f"Failed to analyze unit {unit.ID}: {e}")
+            units_data[unit.ID] = {
+                "unit_id": unit.ID,
+                "error": str(e),
+            }
+
+    return units_data
+
+
 def _extract_simulation_results(
     system: "System",
     model_type: str = "ASM2d",
@@ -952,6 +1136,13 @@ def _extract_simulation_results(
         "units": [u.ID for u in system.units],
         "streams": [s.ID for s in system.streams if s],
     }
+
+    # Extract per-unit analysis (detailed data for every SanUnit)
+    try:
+        results["unit_analysis"] = _extract_unit_analysis(system, model_type)
+    except Exception as e:
+        logger.warning(f"Failed to extract per-unit analysis: {e}")
+        results["unit_analysis"] = {"error": str(e)}
 
     # Include full component breakdown if requested
     if include_components:

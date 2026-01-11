@@ -121,6 +121,58 @@ PO4-P effluent ({{ data.effluent.PO4_mg_P_L | round(2) }} mg/L) exceeds threshol
 {% endfor %}
 {% endif %}
 
+{% if data.unit_analysis %}
+## Per-Unit Analysis
+
+{% for unit_id, unit in data.unit_analysis.items() %}
+### {{ unit.unit_id }} ({{ unit.unit_type }})
+
+{% if unit.parameters %}
+<dl class="spec-block">
+{% if unit.parameters.V_max_m3 %}<dt>Volume</dt><dd>{{ unit.parameters.V_max_m3 | round(0) }} m³</dd>{% endif %}
+{% if unit.parameters.V_liq_m3 %}<dt>Liquid Volume</dt><dd>{{ unit.parameters.V_liq_m3 | round(0) }} m³</dd>{% endif %}
+{% if unit.parameters.HRT_days %}<dt>HRT</dt><dd>{{ unit.parameters.HRT_days | round(2) }} days</dd>{% endif %}
+{% if unit.parameters.temperature_K %}<dt>Temperature</dt><dd>{{ (unit.parameters.temperature_K - 273.15) | round(1) }} °C</dd>{% endif %}
+{% if unit.parameters.aeration_kLa %}<dt>Aeration (kLa)</dt><dd>{{ unit.parameters.aeration_kLa | round(1) }} h⁻¹</dd>{% endif %}
+{% if unit.parameters.split_ratio %}<dt>Split Ratio</dt><dd>{{ unit.parameters.split_ratio | round(2) }}</dd>{% endif %}
+</dl>
+{% endif %}
+
+{% if unit.inlets %}
+**Inlet Streams:**
+
+| Stream | Flow (m³/d) | COD (mg/L) | TSS (mg/L) | NH4-N (mg/L) |
+|:-------|------------:|-----------:|-----------:|-------------:|
+{% for inlet in unit.inlets %}
+| {{ inlet.stream_id }} | {{ inlet.flow_m3_d | round(1) if inlet.flow_m3_d else 'N/A' }} | {{ inlet.COD_mg_L | round(1) if inlet.COD_mg_L else 'N/A' }} | {{ inlet.TSS_mg_L | round(1) if inlet.TSS_mg_L else 'N/A' }} | {{ inlet.S_NH4_mg_L | round(1) if inlet.S_NH4_mg_L else 'N/A' }} |
+{% endfor %}
+{% endif %}
+
+{% if unit.outlets %}
+**Outlet Streams:**
+
+| Stream | Flow (m³/d) | COD (mg/L) | TSS (mg/L) | NH4-N (mg/L) |
+|:-------|------------:|-----------:|-----------:|-------------:|
+{% for outlet in unit.outlets %}
+| {{ outlet.stream_id }} | {{ outlet.flow_m3_d | round(1) if outlet.flow_m3_d else 'N/A' }} | {{ outlet.COD_mg_L | round(1) if outlet.COD_mg_L else 'N/A' }} | {{ outlet.TSS_mg_L | round(1) if outlet.TSS_mg_L else 'N/A' }} | {{ outlet.S_NH4_mg_L | round(1) if outlet.S_NH4_mg_L else 'N/A' }} |
+{% endfor %}
+{% endif %}
+
+{% if unit.removal_efficiency %}
+**Removal Efficiency:**
+
+| Parameter | Removal |
+|:----------|--------:|
+{% if unit.removal_efficiency.COD_removal_pct %}| COD | {{ unit.removal_efficiency.COD_removal_pct | round(1) }}% |{% endif %}
+{% if unit.removal_efficiency.TSS_removal_pct %}| TSS | {{ unit.removal_efficiency.TSS_removal_pct | round(1) }}% |{% endif %}
+{% if unit.removal_efficiency.TN_removal_pct %}| TN | {{ unit.removal_efficiency.TN_removal_pct | round(1) }}% |{% endif %}
+{% endif %}
+
+---
+
+{% endfor %}
+{% endif %}
+
 ## Nitrogen Removal
 
 <div class="two-col">

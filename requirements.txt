@@ -1,0 +1,41 @@
+# QSDsan Engine MCP - Python Dependencies
+#
+# Install with: pip install -r requirements.txt
+# Or: pip install -e .
+
+# Core simulation
+qsdsan>=1.3.0
+biosteam>=2.38
+
+# Data validation
+pydantic>=2.0
+
+# MCP server
+fastmcp>=0.5
+
+# Numerical
+numpy>=1.24
+scipy>=1.10
+
+# CLI interface
+typer>=0.9
+rich>=13.0
+
+# Report generation
+jinja2>=3.0
+matplotlib>=3.7
+
+# Job management
+psutil>=5.9
+
+# =============================================================================
+# External dependencies (not pip-installable):
+# =============================================================================
+#
+# Graphviz: Required for flowsheet diagrams
+#   Linux:   sudo apt install graphviz
+#   macOS:   brew install graphviz
+#   Windows: https://graphviz.org/download/
+#
+# Quarto CLI (optional): For rendering .qmd reports to HTML/PDF
+#   Install from: https://quarto.org/docs/get-started/

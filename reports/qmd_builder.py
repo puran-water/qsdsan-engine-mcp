@@ -17,11 +17,14 @@ Templates:
 """
 
 import json
+import logging
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from copy import deepcopy
+
+logger = logging.getLogger(__name__)
 
 try:
     from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -29,11 +32,27 @@ try:
 except ImportError:
     JINJA2_AVAILABLE = False
 
+try:
+    from utils.report_plots import (
+        generate_convergence_plot,
+        generate_nutrient_plot,
+        generate_biogas_plot,
+        generate_cod_plot,
+        MATPLOTLIB_AVAILABLE,
+    )
+except ImportError:
+    MATPLOTLIB_AVAILABLE = False
+    generate_convergence_plot = None
+    generate_nutrient_plot = None
+    generate_biogas_plot = None
+    generate_cod_plot = None
+
 
 __all__ = [
     'build_anaerobic_report',
     'build_aerobic_report',
     'build_report',
+    'generate_report',
     'render_template',
 ]
 
@@ -99,11 +118,175 @@ def _get_kpi_class(status: str) -> str:
     }.get(status, 'kpi-ok')
 
 
-def _prepare_anaerobic_data(result: Dict[str, Any]) -> Dict[str, Any]:
+def _generate_anaerobic_plots(
+    data: Dict[str, Any],
+    output_path: Optional[Path] = None,
+) -> Dict[str, str]:
+    """
+    Generate time-series plots for anaerobic reports.
+
+    Parameters
+    ----------
+    data : dict
+        Simulation result data (may include 'timeseries' key)
+    output_path : Path, optional
+        Report output path. Plots saved to plots/ subdirectory.
+
+    Returns
+    -------
+    dict
+        Dictionary with markdown image references or placeholders
+    """
+    default_plots = {
+        'convergence_plot': '[No timeseries data available]',
+        'state_variables_plot': '[No timeseries data available]',
+    }
+
+    if not MATPLOTLIB_AVAILABLE:
+        default_plots['convergence_plot'] = '[matplotlib not available]'
+        default_plots['state_variables_plot'] = '[matplotlib not available]'
+        return default_plots
+
+    timeseries = data.get('timeseries', {})
+    if not timeseries or not output_path:
+        return default_plots
+
+    output_path = Path(output_path)
+    plots_dir = output_path.parent / "plots"
+
+    plots = {}
+
+    # Generate convergence plot
+    try:
+        convergence_path = generate_convergence_plot(
+            timeseries,
+            plots_dir / "convergence.png",
+            title="Simulation Convergence",
+            components=["COD_mg_L", "S_ac", "S_pro", "S_ch4"],
+        )
+        if convergence_path:
+            plots['convergence_plot'] = f"![Convergence](plots/{convergence_path.name})"
+        else:
+            plots['convergence_plot'] = default_plots['convergence_plot']
+    except Exception as e:
+        logger.warning(f"Could not generate convergence plot: {e}")
+        plots['convergence_plot'] = f"[Plot generation failed: {e}]"
+
+    # Generate biogas plot as state variables
+    try:
+        biogas_path = generate_biogas_plot(
+            timeseries,
+            plots_dir / "biogas.png",
+            title="Biogas Production",
+        )
+        if biogas_path:
+            plots['state_variables_plot'] = f"![Biogas Production](plots/{biogas_path.name})"
+        else:
+            # Fall back to COD plot
+            cod_path = generate_cod_plot(
+                timeseries,
+                plots_dir / "cod.png",
+                title="COD Trajectory",
+            )
+            if cod_path:
+                plots['state_variables_plot'] = f"![COD Trajectory](plots/{cod_path.name})"
+            else:
+                plots['state_variables_plot'] = default_plots['state_variables_plot']
+    except Exception as e:
+        logger.warning(f"Could not generate state variables plot: {e}")
+        plots['state_variables_plot'] = f"[Plot generation failed: {e}]"
+
+    return plots
+
+
+def _generate_aerobic_plots(
+    data: Dict[str, Any],
+    output_path: Optional[Path] = None,
+) -> Dict[str, str]:
+    """
+    Generate time-series plots for aerobic reports.
+
+    Parameters
+    ----------
+    data : dict
+        Simulation result data (may include 'timeseries' key)
+    output_path : Path, optional
+        Report output path. Plots saved to plots/ subdirectory.
+
+    Returns
+    -------
+    dict
+        Dictionary with markdown image references or placeholders
+    """
+    default_plots = {
+        'nutrient_plot': '[No timeseries data available]',
+        'reactor_state_plot': '[No timeseries data available]',
+    }
+
+    if not MATPLOTLIB_AVAILABLE:
+        default_plots['nutrient_plot'] = '[matplotlib not available]'
+        default_plots['reactor_state_plot'] = '[matplotlib not available]'
+        return default_plots
+
+    timeseries = data.get('timeseries', {})
+    if not timeseries or not output_path:
+        return default_plots
+
+    output_path = Path(output_path)
+    plots_dir = output_path.parent / "plots"
+
+    plots = {}
+
+    # Generate nutrient plot
+    try:
+        nutrient_path = generate_nutrient_plot(
+            timeseries,
+            plots_dir / "nutrients.png",
+            title="Nutrient Trajectories",
+        )
+        if nutrient_path:
+            plots['nutrient_plot'] = f"![Nutrients](plots/{nutrient_path.name})"
+        else:
+            plots['nutrient_plot'] = default_plots['nutrient_plot']
+    except Exception as e:
+        logger.warning(f"Could not generate nutrient plot: {e}")
+        plots['nutrient_plot'] = f"[Plot generation failed: {e}]"
+
+    # Generate reactor state plot (convergence)
+    try:
+        convergence_path = generate_convergence_plot(
+            timeseries,
+            plots_dir / "convergence.png",
+            title="Reactor State Convergence",
+            components=["S_NH4", "S_NO3", "S_O2", "COD_mg_L", "TSS_mg_L"],
+        )
+        if convergence_path:
+            plots['reactor_state_plot'] = f"![Reactor State](plots/{convergence_path.name})"
+        else:
+            plots['reactor_state_plot'] = default_plots['reactor_state_plot']
+    except Exception as e:
+        logger.warning(f"Could not generate reactor state plot: {e}")
+        plots['reactor_state_plot'] = f"[Plot generation failed: {e}]"
+
+    return plots
+
+
+def _prepare_anaerobic_data(
+    result: Dict[str, Any],
+    output_path: Optional[Path] = None,
+) -> Dict[str, Any]:
     """
     Prepare anaerobic simulation data for template rendering.
 
     Transforms raw simulation output into template-friendly structure.
+    Generates time-series plots if output_path provided and timeseries data available.
+
+    Parameters
+    ----------
+    result : dict
+        Simulation result dictionary
+    output_path : Path, optional
+        If provided, generate plots in plots/ subdirectory
     """
     data = deepcopy(result)
 
@@ -174,6 +357,9 @@ def _prepare_anaerobic_data(result: Dict[str, Any]) -> Dict[str, Any]:
         'has_diagram': flowsheet.get('diagram_path') is not None,
     }
 
+    # Extract per-unit analysis data
+    unit_analysis = data.get('unit_analysis', {})
+
     return {
         'influent': influent,
         'effluent': effluent,
@@ -186,24 +372,33 @@ def _prepare_anaerobic_data(result: Dict[str, Any]) -> Dict[str, Any]:
         'thresholds': thresholds,
         'stream_comparison': stream_comparison,
         'flowsheet': flowsheet_data,
+        'unit_analysis': unit_analysis,
         'simulation': {
             'status': data.get('status', 'unknown'),
             'converged_at_days': data.get('converged_at_days', 0),
             'duration_days': data.get('duration_days', 0),
             'tolerance': data.get('tolerance', '1e-3'),
         },
-        'time_series': {
-            'convergence_plot': '[Convergence plot placeholder]',
-            'state_variables_plot': '[State variables plot placeholder]',
-        },
+        'time_series': _generate_anaerobic_plots(data, output_path),
     }
 
 
-def _prepare_aerobic_data(result: Dict[str, Any]) -> Dict[str, Any]:
+def _prepare_aerobic_data(
+    result: Dict[str, Any],
+    output_path: Optional[Path] = None,
+) -> Dict[str, Any]:
     """
     Prepare aerobic simulation data for template rendering.
 
     Transforms raw simulation output into template-friendly structure.
+    Generates time-series plots if output_path provided and timeseries data available.
+
+    Parameters
+    ----------
+    result : dict
+        Simulation result dictionary
+    output_path : Path, optional
+        If provided, generate plots in plots/ subdirectory
     """
     data = deepcopy(result)
 
@@ -277,6 +472,9 @@ def _prepare_aerobic_data(result: Dict[str, Any]) -> Dict[str, Any]:
         'has_diagram': flowsheet.get('diagram_path') is not None,
     }
 
+    # Extract per-unit analysis data
+    unit_analysis = data.get('unit_analysis', {})
+
     return {
         'influent': influent,
         'effluent': effluent,
@@ -287,16 +485,14 @@ def _prepare_aerobic_data(result: Dict[str, Any]) -> Dict[str, Any]:
         'thresholds': thresholds,
         'stream_comparison': stream_comparison,
         'flowsheet': flowsheet_data,
+        'unit_analysis': unit_analysis,
         'simulation': {
             'status': data.get('status', 'unknown'),
             'converged_at_days': data.get('converged_at_days', 0),
             'duration_days': data.get('duration_days', 0),
             'method': data.get('method', 'RK23'),
         },
-        'time_series': {
-            'nutrient_plot': '[Nutrient time series placeholder]',
-            'reactor_state_plot': '[Reactor state plot placeholder]',
-        },
+        'time_series': _generate_aerobic_plots(data, output_path),
     }
 
 
@@ -368,7 +564,7 @@ def build_anaerobic_report(
         Complete Quarto Markdown content
     """
     if use_template and JINJA2_AVAILABLE:
-        data = _prepare_anaerobic_data(result)
+        data = _prepare_anaerobic_data(result, output_path)
         meta = {
             'template_name': result.get('template', 'anaerobic_cstr_madm1'),
         }
@@ -408,7 +604,7 @@ def build_aerobic_report(
         Complete Quarto Markdown content
     """
     if use_template and JINJA2_AVAILABLE:
-        data = _prepare_aerobic_data(result)
+        data = _prepare_aerobic_data(result, output_path)
         meta = {
             'template_name': result.get('template', 'mle_mbr_asm2d'),
         }
@@ -457,6 +653,51 @@ def build_report(
         return build_aerobic_report(result, output_path, use_template)
     else:
         return build_aerobic_report(result, output_path, use_template)
+
+
+def generate_report(
+    session_id: str,
+    model_type: str,
+    results: Dict[str, Any],
+    output_dir: Path,
+) -> Path:
+    """
+    Generate report for flowsheet simulation results.
+
+    This function is called by cli.py flowsheet simulate --report to generate
+    Quarto Markdown reports from simulation results.
+
+    Parameters
+    ----------
+    session_id : str
+        Flowsheet session identifier
+    model_type : str
+        Process model type (e.g., "ASM2d", "mADM1", "ASM1")
+    results : dict
+        Simulation results dictionary
+    output_dir : Path
+        Directory to write report file
+
+    Returns
+    -------
+    Path
+        Path to the generated report.qmd file
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / "report.qmd"
+
+    # Normalize model_type for comparison
+    model_type_lower = model_type.lower() if model_type else ""
+
+    # Determine template based on model_type
+    if model_type_lower in ("madm1", "adm1", "modified_adm1"):
+        build_anaerobic_report(results, output_path=output_path)
+    else:
+        # ASM2d, ASM1, and others use aerobic report format
+        build_aerobic_report(results, output_path=output_path)
+
+    return output_path
 
 
 # =============================================================================
