@@ -27,6 +27,8 @@ __all__ = [
     'create_junction_unit',
     'extract_component_coefficients',
     'get_coefficients',
+    'validate_mass_balance',
+    'validate_charge_balance',
 ]
 
 # =============================================================================
@@ -225,6 +227,16 @@ def convert_asm2d_to_madm1(
     This performs a stoichiometric mapping from ASM2d components to mADM1
     components while preserving mass balance (COD, TKN, TP).
 
+    WARNING: This uses heuristic component mappings that approximate
+    QSDsan junction unit behavior but may not be stoichiometrically
+    exact. For critical applications, validate mass/charge balance
+    using validate_mass_balance() and validate_charge_balance().
+
+    Key approximations:
+    - X_S split evenly to X_ch, X_pr, X_li
+    - X_H mapped to proportional biomass groups
+    - S_ALK <-> S_IC (bicarbonate assumption)
+
     Parameters
     ----------
     input_state : PlantState
@@ -405,6 +417,17 @@ def convert_madm1_to_asm2d(
     This performs a stoichiometric mapping from mADM1 components to ASM2d
     components while preserving mass balance (COD, TKN, TP).
 
+    WARNING: This uses heuristic component mappings that approximate
+    QSDsan junction unit behavior but may not be stoichiometrically
+    exact. For critical applications, validate mass/charge balance
+    using validate_mass_balance() and validate_charge_balance().
+
+    Key approximations:
+    - S_ac/S_va/S_bu/S_pro -> S_A
+    - X_ch/X_pr/X_li -> X_S
+    - All biomass (X_su, X_aa, etc.) -> X_H
+    - S_IC -> S_ALK (bicarbonate assumption)
+
     Parameters
     ----------
     input_state : PlantState
@@ -538,6 +561,7 @@ def convert_madm1_to_asm2d(
 def convert_state(
     input_state: PlantState,
     target_model: ModelType,
+    validate: bool = False,
     **kwargs,
 ) -> Tuple[PlantState, Dict[str, Any]]:
     """
@@ -545,12 +569,20 @@ def convert_state(
 
     Dispatcher function that routes to appropriate conversion function.
 
+    WARNING: This uses heuristic component mappings that approximate
+    QSDsan junction unit behavior but may not be stoichiometrically
+    exact. For critical applications, use validate=True to run
+    mass/charge balance validation.
+
     Parameters
     ----------
     input_state : PlantState
         Input state to convert
     target_model : ModelType
         Target model type (ASM2D, MASM2D, MADM1, ADM1)
+    validate : bool
+        If True, run mass and charge balance validation and add results
+        to metadata. Logs warnings if balances exceed tolerances.
     **kwargs
         Conversion parameters passed to specific converter
 
@@ -559,7 +591,8 @@ def convert_state(
     output_state : PlantState
         Converted state
     metadata : dict
-        Conversion metadata
+        Conversion metadata. If validate=True, includes 'mass_balance'
+        and 'charge_balance' keys.
 
     Raises
     ------
@@ -572,21 +605,47 @@ def convert_state(
     if source_model == target_model:
         return input_state, {"success": True, "conversion": "none", "message": "No conversion needed"}
 
+    output_state = None
+    metadata = None
+
     # ASM2d/mASM2d -> mADM1/ADM1
     if source_model in (ModelType.ASM2D, ModelType.MASM2D):
         if target_model in (ModelType.MADM1, ModelType.ADM1):
-            return convert_asm2d_to_madm1(input_state, **kwargs)
+            output_state, metadata = convert_asm2d_to_madm1(input_state, **kwargs)
 
     # mADM1/ADM1 -> ASM2d/mASM2d
     if source_model in (ModelType.MADM1, ModelType.ADM1):
         if target_model in (ModelType.ASM2D, ModelType.MASM2D):
-            return convert_madm1_to_asm2d(input_state, **kwargs)
+            output_state, metadata = convert_madm1_to_asm2d(input_state, **kwargs)
 
     # Unsupported conversion
-    raise ValueError(
-        f"Conversion {source_model.value} -> {target_model.value} is not supported. "
-        f"Supported paths: ASM2d<->mADM1"
-    )
+    if output_state is None:
+        raise ValueError(
+            f"Conversion {source_model.value} -> {target_model.value} is not supported. "
+            f"Supported paths: ASM2d<->mADM1"
+        )
+
+    # Run validation if requested
+    if validate:
+        mass_balance = validate_mass_balance(input_state, output_state)
+        charge_balance = validate_charge_balance(output_state)
+
+        metadata["mass_balance"] = mass_balance
+        metadata["charge_balance"] = charge_balance
+
+        # Log warnings for failed balances
+        if not mass_balance["all_passed"]:
+            logger.warning(
+                f"Mass balance error: COD {mass_balance['cod_balance']['error_pct']:.1f}%, "
+                f"N {mass_balance['nitrogen_balance']['error_pct']:.1f}%, "
+                f"P {mass_balance['phosphorus_balance']['error_pct']:.1f}%"
+            )
+        if not charge_balance["passed"]:
+            logger.warning(
+                f"Charge imbalance: {charge_balance['imbalance_meq_L']:.2f} meq/L"
+            )
+
+    return output_state, metadata
 
 
 def create_junction_unit(
@@ -626,3 +685,243 @@ def create_junction_unit(
         raise ValueError(
             f"Unknown direction '{direction}'. Use 'asm2d_to_madm1' or 'madm1_to_asm2d'."
         )
+
+
+# =============================================================================
+# Mass and Charge Balance Validation (Phase 4)
+# =============================================================================
+
+# Component charge valences for electroneutrality calculations (meq/mg)
+# Positive = cation, Negative = anion
+_COMPONENT_CHARGES: Dict[str, float] = {
+    # ASM2d ionic species
+    'S_NH4': 1.0 / 14.0,      # NH4+ -> meq/mg-N
+    'S_NO3': -1.0 / 14.0,     # NO3- -> meq/mg-N
+    'S_PO4': -2.0 / 31.0,     # HPO4^2- at neutral pH -> meq/mg-P
+    'S_ALK': 1.0 / 12.0,      # HCO3- approx -> meq/mg-C (alkalinity)
+    # mADM1 ionic species
+    'S_IN': 1.0 / 14.0,       # NH4+ (inorganic N)
+    'S_IP': -2.0 / 31.0,      # HPO4^2- (inorganic P)
+    'S_IC': 1.0 / 12.0,       # Bicarbonate
+    'S_ac': -1.0 / 60.0,      # Acetate
+    'S_pro': -1.0 / 74.0,     # Propionate
+    'S_bu': -1.0 / 88.0,      # Butyrate
+    'S_va': -1.0 / 102.0,     # Valerate
+    'S_SO4': -2.0 / 32.0,     # Sulfate -> meq/mg-S
+    'S_IS': -2.0 / 32.0,      # Sulfide (HS- at neutral pH)
+    # ASM1 ionic species
+    'S_NH': 1.0 / 14.0,       # NH4+ in ASM1
+    'S_NO': -1.0 / 14.0,      # NO3- in ASM1
+}
+
+
+def validate_mass_balance(
+    input_state: PlantState,
+    output_state: PlantState,
+    rtol: float = 0.01,
+    use_component_props: bool = False,
+) -> Dict[str, Any]:
+    """
+    Validate mass balance between input and output states.
+
+    Checks conservation of COD, total nitrogen, and total phosphorus
+    between two states, typically before and after conversion.
+
+    Parameters
+    ----------
+    input_state : PlantState
+        Input state (e.g., before conversion)
+    output_state : PlantState
+        Output state (e.g., after conversion)
+    rtol : float
+        Relative tolerance for balance check (default 1%)
+    use_component_props : bool
+        If True, extract coefficients dynamically from component objects
+
+    Returns
+    -------
+    dict
+        Validation result with:
+        - cod_balance: COD balance details and pass/fail
+        - nitrogen_balance: TKN balance details and pass/fail
+        - phosphorus_balance: TP balance details and pass/fail
+        - all_passed: True if all balances within tolerance
+
+    Examples
+    --------
+    >>> input_state = PlantState(model_type=ModelType.ASM2D, concentrations={...})
+    >>> output_state, _ = convert_asm2d_to_madm1(input_state)
+    >>> result = validate_mass_balance(input_state, output_state)
+    >>> print(f"COD balanced: {result['cod_balance']['passed']}")
+
+    Notes
+    -----
+    This function uses heuristic component mappings that approximate
+    mass balance. For critical applications, verify results against
+    QSDsan junction unit calculations.
+    """
+    # Get model types as strings
+    input_model = getattr(input_state.model_type, 'value', str(input_state.model_type))
+    output_model = getattr(output_state.model_type, 'value', str(output_state.model_type))
+
+    # Get coefficients for both models
+    in_i_cod, in_i_n, in_i_p = get_coefficients(input_model, use_component_props)
+    out_i_cod, out_i_n, out_i_p = get_coefficients(output_model, use_component_props)
+
+    # Calculate input totals
+    cod_in = sum(
+        conc * in_i_cod.get(comp_id, 0.0)
+        for comp_id, conc in input_state.concentrations.items()
+        if conc > 0
+    )
+    tkn_in = sum(
+        conc * in_i_n.get(comp_id, 0.0)
+        for comp_id, conc in input_state.concentrations.items()
+        if conc > 0
+    )
+    tp_in = sum(
+        conc * in_i_p.get(comp_id, 0.0)
+        for comp_id, conc in input_state.concentrations.items()
+        if conc > 0
+    )
+
+    # Calculate output totals
+    cod_out = sum(
+        conc * out_i_cod.get(comp_id, 0.0)
+        for comp_id, conc in output_state.concentrations.items()
+        if conc > 0
+    )
+    tkn_out = sum(
+        conc * out_i_n.get(comp_id, 0.0)
+        for comp_id, conc in output_state.concentrations.items()
+        if conc > 0
+    )
+    tp_out = sum(
+        conc * out_i_p.get(comp_id, 0.0)
+        for comp_id, conc in output_state.concentrations.items()
+        if conc > 0
+    )
+
+    # Calculate relative errors (avoid division by zero)
+    cod_error = abs(cod_out - cod_in) / max(cod_in, 1e-6) if cod_in > 1e-6 else 0.0
+    tkn_error = abs(tkn_out - tkn_in) / max(tkn_in, 1e-6) if tkn_in > 1e-6 else 0.0
+    tp_error = abs(tp_out - tp_in) / max(tp_in, 1e-6) if tp_in > 1e-6 else 0.0
+
+    cod_passed = cod_error <= rtol
+    tkn_passed = tkn_error <= rtol
+    tp_passed = tp_error <= rtol
+
+    result = {
+        "cod_balance": {
+            "input_mg_L": cod_in,
+            "output_mg_L": cod_out,
+            "error_pct": cod_error * 100,
+            "passed": cod_passed,
+        },
+        "nitrogen_balance": {
+            "input_mg_L": tkn_in,
+            "output_mg_L": tkn_out,
+            "error_pct": tkn_error * 100,
+            "passed": tkn_passed,
+        },
+        "phosphorus_balance": {
+            "input_mg_L": tp_in,
+            "output_mg_L": tp_out,
+            "error_pct": tp_error * 100,
+            "passed": tp_passed,
+        },
+        "all_passed": cod_passed and tkn_passed and tp_passed,
+        "tolerance_pct": rtol * 100,
+    }
+
+    if not result["all_passed"]:
+        logger.warning(
+            f"Mass balance validation failed: "
+            f"COD {cod_error*100:.1f}%, TKN {tkn_error*100:.1f}%, TP {tp_error*100:.1f}%"
+        )
+
+    return result
+
+
+def validate_charge_balance(
+    state: PlantState,
+    atol: float = 0.1,
+) -> Dict[str, Any]:
+    """
+    Validate electroneutrality of a state.
+
+    Checks that the sum of cation charges equals the sum of anion charges.
+    This is important for ensuring chemical consistency of converted states.
+
+    Parameters
+    ----------
+    state : PlantState
+        State to validate
+    atol : float
+        Absolute tolerance in meq/L (default 0.1 meq/L)
+
+    Returns
+    -------
+    dict
+        Validation result with:
+        - cation_meq_L: Total positive charges
+        - anion_meq_L: Total negative charges (absolute value)
+        - imbalance_meq_L: Absolute difference
+        - passed: True if imbalance <= atol
+        - ionic_species: Dict of species contributing to charge
+
+    Examples
+    --------
+    >>> state = PlantState(model_type=ModelType.ASM2D, concentrations={...})
+    >>> result = validate_charge_balance(state)
+    >>> if not result['passed']:
+    ...     print(f"Charge imbalance: {result['imbalance_meq_L']:.2f} meq/L")
+
+    Notes
+    -----
+    Charge balance calculations assume typical pH (6.5-8.0) speciation.
+    Actual speciation depends on pH and may differ from these assumptions.
+    """
+    cation_charge = 0.0
+    anion_charge = 0.0
+    ionic_species = {}
+
+    for comp_id, conc in state.concentrations.items():
+        if conc <= 0:
+            continue
+
+        charge_factor = _COMPONENT_CHARGES.get(comp_id)
+        if charge_factor is None:
+            continue
+
+        charge_meq = conc * charge_factor
+        ionic_species[comp_id] = {
+            "concentration_mg_L": conc,
+            "charge_meq_L": charge_meq,
+        }
+
+        if charge_factor > 0:
+            cation_charge += charge_meq
+        else:
+            anion_charge += abs(charge_meq)
+
+    imbalance = abs(cation_charge - anion_charge)
+    passed = imbalance <= atol
+
+    result = {
+        "cation_meq_L": cation_charge,
+        "anion_meq_L": anion_charge,
+        "imbalance_meq_L": imbalance,
+        "passed": passed,
+        "tolerance_meq_L": atol,
+        "ionic_species": ionic_species,
+    }
+
+    if not passed:
+        logger.warning(
+            f"Charge balance validation failed: "
+            f"cations {cation_charge:.2f} meq/L, anions {anion_charge:.2f} meq/L, "
+            f"imbalance {imbalance:.2f} meq/L"
+        )
+
+    return result

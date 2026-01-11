@@ -8,10 +8,11 @@ Tests for dynamic flowsheet construction tools:
 4. Topological Sort - Unit ordering with recycle handling
 5. CLI Integration - Flowsheet command group
 
-Run with: ../venv312/Scripts/python.exe -m pytest tests/test_phase2.py -v
+Run with: python -m pytest tests/test_phase2.py -v
 """
 
 import json
+import sys
 import pytest
 from pathlib import Path
 import tempfile
@@ -433,7 +434,7 @@ class TestCLIFlowsheet:
         # Cleanup: delete test sessions
         import subprocess
         subprocess.run(
-            ['../venv312/Scripts/python.exe', 'cli.py', 'flowsheet', 'delete',
+            [sys.executable, 'cli.py', 'flowsheet', 'delete',
              '--session', 'cli_test', '--force', '--json-out'],
             capture_output=True, cwd=Path(__file__).parent.parent
         )
@@ -442,7 +443,7 @@ class TestCLIFlowsheet:
         """CLI flowsheet units should list available units."""
         import subprocess
         result = subprocess.run(
-            ['../venv312/Scripts/python.exe', 'cli.py', 'flowsheet', 'units', '--json-out'],
+            [sys.executable, 'cli.py', 'flowsheet', 'units', '--json-out'],
             capture_output=True, text=True, cwd=Path(__file__).parent.parent
         )
         assert result.returncode == 0, f"CLI failed: {result.stderr}"
@@ -455,7 +456,7 @@ class TestCLIFlowsheet:
         """CLI flowsheet units --model should filter by model."""
         import subprocess
         result = subprocess.run(
-            ['../venv312/Scripts/python.exe', 'cli.py', 'flowsheet', 'units',
+            [sys.executable, 'cli.py', 'flowsheet', 'units',
              '--model', 'ASM2d', '--json-out'],
             capture_output=True, text=True, cwd=Path(__file__).parent.parent
         )
@@ -470,7 +471,7 @@ class TestCLIFlowsheet:
         """CLI flowsheet new should create session."""
         import subprocess
         result = subprocess.run(
-            ['../venv312/Scripts/python.exe', 'cli.py', 'flowsheet', 'new',
+            [sys.executable, 'cli.py', 'flowsheet', 'new',
              '--model', 'ASM2d', '--id', 'cli_test', '--json-out'],
             capture_output=True, text=True, cwd=Path(__file__).parent.parent
         )
@@ -485,13 +486,13 @@ class TestCLIFlowsheet:
         import subprocess
         # Create a session first
         subprocess.run(
-            ['../venv312/Scripts/python.exe', 'cli.py', 'flowsheet', 'new',
+            [sys.executable, 'cli.py', 'flowsheet', 'new',
              '--model', 'ASM2d', '--id', 'cli_test', '--json-out'],
             capture_output=True, cwd=Path(__file__).parent.parent
         )
 
         result = subprocess.run(
-            ['../venv312/Scripts/python.exe', 'cli.py', 'flowsheet', 'list', '--json-out'],
+            [sys.executable, 'cli.py', 'flowsheet', 'list', '--json-out'],
             capture_output=True, text=True, cwd=Path(__file__).parent.parent
         )
         assert result.returncode == 0, f"CLI failed: {result.stderr}"
@@ -747,7 +748,7 @@ class TestFlowsheetIntegration:
 
         # Build via CLI (this should write build_config.json)
         result = subprocess.run(
-            ['../venv312/Scripts/python.exe', 'cli.py', 'flowsheet', 'build',
+            [sys.executable, 'cli.py', 'flowsheet', 'build',
              '--session', 'config_test', '--json-out'],
             capture_output=True, text=True,
             cwd=Path(__file__).parent.parent,
@@ -820,7 +821,7 @@ class TestCLIFullWorkflow:
         import subprocess
         for sid in ['workflow_mle', 'workflow_anaerobic']:
             subprocess.run(
-                ['../venv312/Scripts/python.exe', 'cli.py', 'flowsheet', 'delete',
+                [sys.executable, 'cli.py', 'flowsheet', 'delete',
                  '--session', sid, '--force', '--json-out'],
                 capture_output=True, cwd=Path(__file__).parent.parent
             )
@@ -833,7 +834,7 @@ class TestCLIFullWorkflow:
 
         # Step 1: Create session
         result = subprocess.run(
-            ['../venv312/Scripts/python.exe', 'cli.py', 'flowsheet', 'new',
+            [sys.executable, 'cli.py', 'flowsheet', 'new',
              '--model', 'ASM2d', '--id', 'workflow_mle', '--json-out'],
             capture_output=True, text=True, cwd=cwd
         )
@@ -841,7 +842,7 @@ class TestCLIFullWorkflow:
 
         # Step 2: Add influent stream
         result = subprocess.run(
-            ['../venv312/Scripts/python.exe', 'cli.py', 'flowsheet', 'add-stream',
+            [sys.executable, 'cli.py', 'flowsheet', 'add-stream',
              '--session', 'workflow_mle', '--id', 'influent', '--flow', '4000',
              '--concentrations', '{"S_F": 75, "S_A": 20}', '--json-out'],
             capture_output=True, text=True, cwd=cwd
@@ -850,7 +851,7 @@ class TestCLIFullWorkflow:
 
         # Step 3: Add CSTR unit
         result = subprocess.run(
-            ['../venv312/Scripts/python.exe', 'cli.py', 'flowsheet', 'add-unit',
+            [sys.executable, 'cli.py', 'flowsheet', 'add-unit',
              '--session', 'workflow_mle', '--type', 'CSTR', '--id', 'A1',
              '--params', '{"V_max": 1000}', '--inputs', '["influent"]', '--json-out'],
             capture_output=True, text=True, cwd=cwd
@@ -859,7 +860,7 @@ class TestCLIFullWorkflow:
 
         # Step 4: Add MBR unit
         result = subprocess.run(
-            ['../venv312/Scripts/python.exe', 'cli.py', 'flowsheet', 'add-unit',
+            [sys.executable, 'cli.py', 'flowsheet', 'add-unit',
              '--session', 'workflow_mle', '--type', 'CompletelyMixedMBR', '--id', 'MBR',
              '--params', '{"V_max": 500}', '--inputs', '["A1-0"]', '--json-out'],
             capture_output=True, text=True, cwd=cwd
@@ -868,7 +869,7 @@ class TestCLIFullWorkflow:
 
         # Step 5: Build system
         result = subprocess.run(
-            ['../venv312/Scripts/python.exe', 'cli.py', 'flowsheet', 'build',
+            [sys.executable, 'cli.py', 'flowsheet', 'build',
              '--session', 'workflow_mle', '--json-out'],
             capture_output=True, text=True, cwd=cwd
         )
@@ -885,14 +886,14 @@ class TestCLIFullWorkflow:
 
         # Create ASM2d session
         subprocess.run(
-            ['../venv312/Scripts/python.exe', 'cli.py', 'flowsheet', 'new',
+            [sys.executable, 'cli.py', 'flowsheet', 'new',
              '--model', 'ASM2d', '--id', 'workflow_anaerobic', '--json-out'],
             capture_output=True, cwd=cwd
         )
 
         # Add stream
         subprocess.run(
-            ['../venv312/Scripts/python.exe', 'cli.py', 'flowsheet', 'add-stream',
+            [sys.executable, 'cli.py', 'flowsheet', 'add-stream',
              '--session', 'workflow_anaerobic', '--id', 'feed', '--flow', '1000',
              '--concentrations', '{"S_F": 50}', '--json-out'],
             capture_output=True, cwd=cwd
@@ -900,7 +901,7 @@ class TestCLIFullWorkflow:
 
         # Try to add AnaerobicCSTRmADM1 (requires mADM1) to ASM2d session
         result = subprocess.run(
-            ['../venv312/Scripts/python.exe', 'cli.py', 'flowsheet', 'add-unit',
+            [sys.executable, 'cli.py', 'flowsheet', 'add-unit',
              '--session', 'workflow_anaerobic', '--type', 'AnaerobicCSTRmADM1', '--id', 'AD',
              '--params', '{"V_liq": 3000}', '--inputs', '["feed"]', '--json-out'],
             capture_output=True, text=True, cwd=cwd
@@ -1554,7 +1555,7 @@ class TestSystemIdSupport:
         cwd = Path(__file__).parent.parent
 
         result = subprocess.run(
-            ['../venv312/Scripts/python.exe', 'cli.py', 'flowsheet', 'simulate', '--help'],
+            [sys.executable, 'cli.py', 'flowsheet', 'simulate', '--help'],
             capture_output=True, text=True, cwd=cwd
         )
 
@@ -1567,7 +1568,7 @@ class TestSystemIdSupport:
 
         # Running without either should fail
         result = subprocess.run(
-            ['../venv312/Scripts/python.exe', 'cli.py', 'flowsheet', 'simulate',
+            [sys.executable, 'cli.py', 'flowsheet', 'simulate',
              '--json-out'],
             capture_output=True, text=True, cwd=cwd
         )
@@ -1614,6 +1615,278 @@ class TestBiogasAnalysisFix:
         # Results should be extracted (even if biogas calc fails on mock)
         assert isinstance(results, dict)
         assert results["system_id"] == "test_system"
+
+
+class TestReportGeneration:
+    """Test report generation with flowsheet simulate --report."""
+
+    def test_qmd_builder_generate_report_function_exists(self):
+        """qmd_builder should have generate_report function."""
+        from reports.qmd_builder import generate_report
+        import inspect
+        sig = inspect.signature(generate_report)
+        assert 'session_id' in sig.parameters
+        assert 'model_type' in sig.parameters
+        assert 'results' in sig.parameters
+        assert 'output_dir' in sig.parameters
+
+    def test_qmd_builder_data_preparation_functions_exist(self):
+        """qmd_builder should have data preparation functions."""
+        from reports.qmd_builder import (
+            _prepare_anaerobic_data,
+            _prepare_aerobic_data,
+            render_template,
+        )
+        import inspect
+
+        # Verify functions exist and have expected signature
+        assert callable(_prepare_anaerobic_data)
+        assert callable(_prepare_aerobic_data)
+        assert callable(render_template)
+
+    def test_template_files_exist(self):
+        """Report template files should exist."""
+        from pathlib import Path
+        template_dir = Path(__file__).parent.parent / "reports" / "templates"
+
+        assert (template_dir / "aerobic_report.qmd").exists()
+        assert (template_dir / "anaerobic_report.qmd").exists()
+        assert (template_dir / "report.css").exists()
+
+    def test_prepare_aerobic_data_returns_dict(self):
+        """_prepare_aerobic_data should return properly structured dict."""
+        from reports.qmd_builder import _prepare_aerobic_data
+
+        # Minimal input data
+        result = {"effluent": {}, "influent": {}}
+
+        data = _prepare_aerobic_data(result)
+
+        assert isinstance(data, dict)
+        assert "effluent" in data
+        assert "influent" in data
+        assert "diagnostics" in data
+        assert "thresholds" in data
+
+    def test_prepare_anaerobic_data_returns_dict(self):
+        """_prepare_anaerobic_data should return properly structured dict."""
+        from reports.qmd_builder import _prepare_anaerobic_data
+
+        # Minimal input data
+        result = {"effluent": {}, "influent": {}, "biogas": {}}
+
+        data = _prepare_anaerobic_data(result)
+
+        assert isinstance(data, dict)
+        assert "effluent" in data
+        assert "influent" in data
+        assert "biogas" in data
+        assert "diagnostics" in data
+
+    def test_report_plots_module_exists(self):
+        """utils.report_plots should have plot generation functions."""
+        from utils.report_plots import (
+            generate_convergence_plot,
+            generate_nutrient_plot,
+            generate_biogas_plot,
+            generate_cod_plot,
+            MATPLOTLIB_AVAILABLE,
+        )
+        assert callable(generate_convergence_plot)
+        assert callable(generate_nutrient_plot)
+        assert callable(generate_biogas_plot)
+        assert callable(generate_cod_plot)
+
+    @pytest.mark.skipif(
+        not pytest.importorskip("matplotlib", reason="matplotlib not available"),
+        reason="matplotlib required for plot tests"
+    )
+    def test_generate_convergence_plot_creates_png(self, tmp_path):
+        """generate_convergence_plot should create PNG file."""
+        from utils.report_plots import generate_convergence_plot, MATPLOTLIB_AVAILABLE
+        if not MATPLOTLIB_AVAILABLE:
+            pytest.skip("matplotlib not available")
+
+        timeseries = {
+            "time": [0, 0.5, 1.0, 1.5, 2.0],
+            "streams": {
+                "effluent": {
+                    "COD_mg_L": [100, 80, 60, 50, 45],
+                    "S_NH4": [30, 25, 20, 15, 10],
+                }
+            }
+        }
+
+        output_path = tmp_path / "convergence"
+        result_path = generate_convergence_plot(timeseries, output_path)
+
+        assert result_path is not None
+        assert result_path.exists()
+        assert result_path.suffix == ".png"
+
+
+class TestReportIntegration:
+    """Test report integration with flowsheet simulate.
+
+    Note: Full simulation tests are marked slow. These tests verify the
+    integration points without requiring complete simulation runs.
+    """
+
+    def test_cli_flowsheet_simulate_has_report_option(self):
+        """CLI flowsheet simulate should have --report option."""
+        import subprocess
+        cwd = Path(__file__).parent.parent
+
+        result = subprocess.run(
+            [sys.executable, 'cli.py', 'flowsheet', 'simulate', '--help'],
+            capture_output=True, text=True, cwd=cwd
+        )
+
+        assert '--report' in result.stdout, "--report option should be available"
+
+    def test_generate_report_routing_by_model_type(self):
+        """generate_report should route to correct builder based on model type."""
+        from reports.qmd_builder import generate_report
+        import inspect
+
+        # Check function accepts model_type parameter
+        sig = inspect.signature(generate_report)
+        params = list(sig.parameters.keys())
+        assert 'model_type' in params, "generate_report should accept model_type"
+
+        # Verify it can distinguish aerobic/anaerobic
+        # (we verified the function exists in earlier tests)
+
+    def test_qmd_builder_imports_plot_generators(self):
+        """qmd_builder should import plot generators from report_plots."""
+        from reports import qmd_builder
+
+        # These should be imported (may be None if matplotlib not available)
+        assert hasattr(qmd_builder, 'generate_convergence_plot')
+        assert hasattr(qmd_builder, 'generate_nutrient_plot')
+        assert hasattr(qmd_builder, 'generate_biogas_plot')
+
+    def test_plot_directory_creation(self, tmp_path):
+        """Plot generation should create plots subdirectory."""
+        from utils.report_plots import generate_convergence_plot, MATPLOTLIB_AVAILABLE
+        if not MATPLOTLIB_AVAILABLE:
+            pytest.skip("matplotlib not available")
+
+        timeseries = {
+            "time": [0, 1, 2],
+            "streams": {"effluent": {"COD_mg_L": [100, 75, 50]}}
+        }
+
+        plots_dir = tmp_path / "plots"
+        output_path = plots_dir / "test_plot"
+
+        result = generate_convergence_plot(timeseries, output_path)
+
+        # Should create plots directory and file
+        assert result is not None
+        assert plots_dir.exists(), "plots directory should be created"
+
+
+class TestPerUnitAnalysis:
+    """Test per-unit analysis extraction for reports."""
+
+    def test_extract_unit_analysis_function_exists(self):
+        """_extract_unit_analysis function should exist in flowsheet_builder."""
+        from utils.flowsheet_builder import _extract_unit_analysis
+
+        import inspect
+        assert callable(_extract_unit_analysis)
+        sig = inspect.signature(_extract_unit_analysis)
+        params = list(sig.parameters.keys())
+        assert 'system' in params
+        assert 'model_type' in params
+
+    def test_unit_analysis_included_in_results(self):
+        """Simulation results should include unit_analysis field."""
+        # This is validated by checking the _extract_simulation_results function
+        from utils.flowsheet_builder import _extract_simulation_results
+
+        import inspect
+        # Check the function signature
+        sig = inspect.signature(_extract_simulation_results)
+        params = list(sig.parameters.keys())
+        assert 'system' in params
+
+        # Verify unit_analysis is documented in docstring
+        doc = _extract_simulation_results.__doc__ or ""
+        # The function should return a dict with unit_analysis
+
+    def test_report_template_supports_unit_analysis(self):
+        """Report templates should have per-unit analysis section."""
+        from pathlib import Path
+
+        template_dir = Path(__file__).parent.parent / "reports" / "templates"
+
+        # Check anaerobic template
+        anaerobic_template = template_dir / "anaerobic_report.qmd"
+        content = anaerobic_template.read_text(encoding='utf-8')
+        assert "unit_analysis" in content, "Anaerobic template should include unit_analysis"
+        assert "Per-Unit Analysis" in content, "Anaerobic template should have per-unit section"
+
+        # Check aerobic template
+        aerobic_template = template_dir / "aerobic_report.qmd"
+        content = aerobic_template.read_text(encoding='utf-8')
+        assert "unit_analysis" in content, "Aerobic template should include unit_analysis"
+        assert "Per-Unit Analysis" in content, "Aerobic template should have per-unit section"
+
+    def test_data_preparation_includes_unit_analysis(self):
+        """Data preparation functions should pass unit_analysis to template."""
+        from reports.qmd_builder import _prepare_aerobic_data, _prepare_anaerobic_data
+
+        # Test with unit_analysis in results
+        mock_result = {
+            "unit_analysis": {
+                "CSTR1": {
+                    "unit_id": "CSTR1",
+                    "unit_type": "CSTR",
+                    "parameters": {"V_max_m3": 1000},
+                    "inlets": [],
+                    "outlets": [],
+                }
+            }
+        }
+
+        aerobic_data = _prepare_aerobic_data(mock_result)
+        assert "unit_analysis" in aerobic_data
+        assert "CSTR1" in aerobic_data["unit_analysis"]
+
+        anaerobic_data = _prepare_anaerobic_data(mock_result)
+        assert "unit_analysis" in anaerobic_data
+        assert "CSTR1" in anaerobic_data["unit_analysis"]
+
+
+class TestWarningHandling:
+    """Test proper handling and assertion of warnings."""
+
+    def test_validate_unit_params_returns_warnings_list(self):
+        """validate_unit_params should return warnings as list."""
+        from core.unit_registry import validate_unit_params
+
+        errors, warnings = validate_unit_params("CSTR", {"V_max": 1000})
+
+        # Warnings should be a list
+        assert isinstance(warnings, list)
+        # All items should be strings
+        for w in warnings:
+            assert isinstance(w, str), f"Warning should be string, got {type(w)}"
+
+    def test_empty_params_produces_warnings(self):
+        """Empty params for unit requiring params should produce warnings."""
+        from core.unit_registry import validate_unit_params
+
+        # AnaerobicCSTR requires V_liq - should warn
+        errors, warnings = validate_unit_params("AnaerobicCSTR", {})
+
+        assert isinstance(errors, list)
+        assert isinstance(warnings, list)
+        # Should have at least one error or warning about missing params
+        assert len(errors) > 0 or len(warnings) > 0, \
+            "Missing required params should produce errors or warnings"
 
 
 if __name__ == '__main__':

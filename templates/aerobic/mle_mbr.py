@@ -325,10 +325,46 @@ def build_and_run(
             "model_type": "ASM2d",
         }
 
+        # Generate diagram and mass balance data
+        try:
+            from utils.diagram import (
+                save_system_diagram,
+                generate_mass_balance_table,
+                generate_unit_summary,
+            )
+
+            # Generate mass balance data (always, for report)
+            streams_data = generate_mass_balance_table(sys, model_type="ASM2d")
+            units_data = generate_unit_summary(sys)
+
+            result["flowsheet"] = {
+                "streams": streams_data,
+                "units": units_data,
+            }
+        except Exception as e:
+            logger.warning(f"Could not generate flowsheet data: {e}")
+            result["flowsheet"] = None
+
         # Save results if output_dir provided
         if output_dir:
             output_dir = Path(output_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
+
+            # Generate and save diagram
+            if result.get("flowsheet") is not None:
+                try:
+                    diagram_path = save_system_diagram(
+                        sys,
+                        output_path=output_dir / "flowsheet",
+                        kind="thorough",
+                        format="svg",
+                        title=f"MLE-MBR - {Q:.0f} m3/d",
+                    )
+                    if diagram_path:
+                        result["flowsheet"]["diagram_path"] = str(diagram_path)
+                        logger.info(f"Diagram saved to: {diagram_path}")
+                except Exception as e:
+                    logger.warning(f"Could not generate diagram: {e}")
 
             with open(output_dir / "simulation_results.json", "w") as f:
                 json.dump(result, f, indent=2, default=str)

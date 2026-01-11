@@ -13,6 +13,7 @@ Universal wastewater simulation engine supporting anaerobic (mADM1, 63 component
 | Phase 2 Plan | `docs/completed-plans/bright-snacking-prism.md` | ✅ Complete |
 | Phase 2B Bug Fixes | `docs/completed-plans/phase2b-bug-fixes.md` | ✅ Complete |
 | Phase 3 Plan | `docs/completed-plans/phase3-llm-accessibility.md` | ✅ Complete |
+| Phase 4 Plan | `docs/completed-plans/phase4-production-readiness.md` | ✅ Complete |
 
 **Master Plan** covers Phase 1A-1F: Foundation, mADM1 simulation, aerobic MBR templates, state converters, Quarto reports, and skills extraction.
 
@@ -21,6 +22,8 @@ Universal wastewater simulation engine supporting anaerobic (mADM1, 63 component
 **Phase 2B Bug Fixes** covers model-aware analysis dispatch, ASM1 support, Unicode arrow replacement, and biogas detection improvements.
 
 **Phase 3 Plan** covers LLM accessibility: native type parameters, session mutation, deep introspection, validation warnings, and discoverability tools.
+
+**Phase 4 Plan** covers production readiness: critical bug fixes, packaging configuration, report time-series plots, per-unit analysis, mass/charge balance validation, and test hygiene.
 
 ---
 
@@ -36,11 +39,13 @@ Universal wastewater simulation engine supporting anaerobic (mADM1, 63 component
 | 1F | Skills extraction | ✅ Complete |
 | **2** | **Flowsheet Construction** | ✅ **COMPLETE** |
 | **3** | **LLM Accessibility Enhancement** | ✅ **COMPLETE** |
+| **4** | **Production Readiness** | ✅ **COMPLETE** |
 
 **Phase 1 Validation:** Codex-verified 2026-01-06 - all files present, 27 tests passing
 **Phase 2 Validation:** Codex-verified 2026-01-08 - 118 tests passing (27 Phase 1 + 91 Phase 2), all plan items complete
 **Phase 2B Bug Fixes:** Codex-verified 2026-01-08 - 7 bugs fixed, Unicode arrows replaced with ASCII
 **Phase 3 Validation:** Codex-verified 2026-01-09 - 163 tests passing (27 Phase 1 + 91 Phase 2 + 45 Phase 3)
+**Phase 4 Validation:** Codex-verified 2026-01-11 - 201 tests passing, all 12 tasks complete
 
 ---
 
@@ -378,17 +383,18 @@ streams_data = generate_mass_balance_table(system, model_type="mADM1")
 qsdsan-engine-mcp/
 ├── server.py              # MCP Adapter (FastMCP) - 29 tools total
 ├── cli.py                 # CLI Adapter (typer) - flowsheet command group
+├── requirements.txt       # [Phase 4] Runtime dependencies
 ├── core/
 │   ├── plant_state.py     # PlantState dataclass
 │   ├── model_registry.py  # Component definitions (mADM1: 63, ASM2d: 19)
 │   ├── template_registry.py
-│   ├── converters.py      # State conversion (ASM2d <-> mADM1, ASM1 support)
+│   ├── converters.py      # State conversion + mass/charge validation [Phase 4]
 │   ├── junction_components.py  # Component alignment for junctions
 │   ├── junction_units.py  # Custom junction classes with _compile_reactions override
 │   └── unit_registry.py   # [Phase 2] 49 SanUnit specs with validation
 ├── templates/
-│   ├── anaerobic/cstr.py  # mADM1 CSTR
-│   └── aerobic/           # mle_mbr.py, ao_mbr.py, a2o_mbr.py
+│   ├── anaerobic/cstr.py  # mADM1 CSTR with diagram generation
+│   └── aerobic/           # mle_mbr.py, ao_mbr.py, a2o_mbr.py (all with diagrams)
 ├── models/
 │   ├── madm1.py           # 63-component process model
 │   ├── asm2d.py           # 19-component (wraps QSDsan pc.create_asm2d_cmps)
@@ -400,17 +406,20 @@ qsdsan-engine-mcp/
 │   ├── diagram.py         # Flowsheet diagram & mass balance
 │   ├── pipe_parser.py     # [Phase 2] BioSTEAM notation parser
 │   ├── flowsheet_session.py # [Phase 2] Session state management
+│   ├── flowsheet_builder.py # System compilation + per-unit analysis [Phase 4]
 │   ├── topo_sort.py       # [Phase 2] Topological sort with recycle handling
+│   ├── report_plots.py    # [Phase 4] Time-series plot generation
 │   └── stream_analysis.py # Result extraction
 ├── reports/
-│   ├── qmd_builder.py     # Quarto Markdown generator (Jinja2)
-│   └── templates/         # anaerobic_report.qmd, aerobic_report.qmd, report.css
+│   ├── qmd_builder.py     # Quarto Markdown generator (Jinja2) + generate_report()
+│   └── templates/         # anaerobic_report.qmd, aerobic_report.qmd (with per-unit sections)
 ├── jobs/
 │   └── flowsheets/        # [Phase 2] Session storage directory
 └── tests/
     ├── test_phase1.py     # 27 tests
-    ├── test_phase2.py     # 91 flowsheet construction tests
-    └── test_phase3.py     # 45 LLM accessibility tests
+    ├── test_phase2.py     # 121 tests (flowsheet + report + per-unit)
+    ├── test_phase3.py     # 53 tests (LLM accessibility + MCP behavior)
+    └── test_converters.py # [Phase 4] 12 validation tests
 ```
 
 ---
@@ -497,20 +506,23 @@ from core.junction_components import get_asm2d_to_madm1_mapping, get_madm1_to_as
 ## Testing
 
 ```bash
-# Run all tests (163 total)
-../venv312/Scripts/python.exe -m pytest tests/ -v
+# Run all tests (201 total)
+python -m pytest tests/ -v
 
 # Phase 1 tests only (27)
-../venv312/Scripts/python.exe -m pytest tests/test_phase1.py -v
+python -m pytest tests/test_phase1.py -v
 
-# Phase 2 tests only (91)
-../venv312/Scripts/python.exe -m pytest tests/test_phase2.py -v
+# Phase 2 tests only (121 - includes report/per-unit tests)
+python -m pytest tests/test_phase2.py -v
 
-# Phase 3 tests only (45)
-../venv312/Scripts/python.exe -m pytest tests/test_phase3.py -v
+# Phase 3 tests only (53 - includes MCP behavior tests)
+python -m pytest tests/test_phase3.py -v
+
+# Converter validation tests (12)
+python -m pytest tests/test_converters.py -v
 
 # Skip slow simulation tests
-../venv312/Scripts/python.exe -m pytest tests/ -v -m "not slow"
+python -m pytest tests/ -v -m "not slow"
 ```
 
 ---
@@ -538,3 +550,89 @@ Seven bugs were identified during mADM1 CSTR workflow testing and fixed:
 - `core/converters.py` - ASM1 component loading and coefficients
 - `utils/diagram.py` - Correct mADM1 component IDs
 - Multiple files - Unicode arrow replacement (cli.py, server.py, templates, utils)
+
+---
+
+## Phase 4: Production Readiness (2026-01-11)
+
+Phase 4 addressed critical bugs and quality gaps to make the codebase production-ready.
+
+### Critical Fixes (Tasks 1-3)
+
+| Task | Issue | Fix |
+|------|-------|-----|
+| 1 | `generate_report` import bug | Added `generate_report()` wrapper function to `reports/qmd_builder.py` |
+| 2 | README CLI examples wrong | Fixed `--duration-days` flag, file-based `--influent` |
+| 3 | Tests hardcode Windows paths | Replaced all hardcoded paths with `sys.executable` |
+
+### Feature Additions (Tasks 4, 8)
+
+| Task | Feature | Implementation |
+|------|---------|----------------|
+| 4 | Aerobic diagram generation | Added `save_system_diagram()` calls to `mle_mbr.py`, `ao_mbr.py`, `a2o_mbr.py` |
+| 8 | Report time-series plots | Created `utils/report_plots.py` with matplotlib plot generators |
+
+### Packaging & Dependencies (Tasks 5-7)
+
+- **pyproject.toml**: Added `psutil`, `jinja2`, `matplotlib` to dependencies; fixed wheel packaging for `cli.py`, `server.py`, and report templates
+- **requirements.txt**: Created with all runtime deps + Graphviz/Quarto external dependency notes
+- **Version**: Aligned to `3.0.0` across all files
+
+### Per-Unit Analysis (NEW)
+
+Reports now include detailed analysis for **every SanUnit** in the flowsheet:
+
+```python
+# Extracted by _extract_unit_analysis() in utils/flowsheet_builder.py
+{
+    "CSTR1": {
+        "unit_id": "CSTR1",
+        "unit_type": "CSTR",
+        "parameters": {"V_max_m3": 1000, "HRT_days": 0.5},
+        "inlets": [{"stream_id": "influent", "COD_mg_L": 500, ...}],
+        "outlets": [{"stream_id": "eff1", "COD_mg_L": 150, ...}],
+        "removal_efficiency": {"COD_removal_pct": 70.0}
+    }
+}
+```
+
+Templates (`anaerobic_report.qmd`, `aerobic_report.qmd`) display per-unit tables with parameters, inlet/outlet streams, and removal efficiencies.
+
+### Validation Enhancements (Task 11)
+
+Mass and charge balance validation added to `core/converters.py`:
+
+```python
+from core.converters import convert_state, validate_mass_balance, validate_charge_balance
+
+# Run conversion with validation
+output_state, metadata = convert_state(input_state, target_model, validate=True)
+# metadata["mass_balance"]["cod_balance"]["passed"] -> True/False
+# metadata["charge_balance"]["passed"] -> True/False
+```
+
+### Test Improvements (Tasks 9, 10, 12)
+
+| Test Class | Tests | Purpose |
+|------------|-------|---------|
+| `TestReportIntegration` | 4 | CLI `--report` option, report routing |
+| `TestPerUnitAnalysis` | 4 | Per-unit extraction and template support |
+| `TestMCPToolBehavior` | 8 | Tool behavior validation (not just existence) |
+| `TestWarningHandling` | 2 | Explicit warning assertions |
+| `TestConverterValidation` | 12 | Mass/charge balance validation |
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `reports/qmd_builder.py` | Added `generate_report()`, plot integration, `unit_analysis` pass-through |
+| `utils/report_plots.py` | **NEW** - Time-series plot generation with matplotlib |
+| `utils/flowsheet_builder.py` | Added `_extract_unit_analysis()` for per-unit data |
+| `reports/templates/*.qmd` | Added Per-Unit Analysis section |
+| `core/converters.py` | Added `validate_mass_balance()`, `validate_charge_balance()`, `validate` param |
+| `tests/test_phase2.py` | Added 30 new tests (report, per-unit, warning handling) |
+| `tests/test_phase3.py` | Added 8 behavior tests |
+| `tests/test_converters.py` | **NEW** - 12 validation tests |
+| `pyproject.toml` | Fixed packaging, added dependencies |
+| `requirements.txt` | **NEW** - All runtime dependencies |
+| `README.md` | Fixed CLI examples |

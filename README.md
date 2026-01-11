@@ -142,11 +142,20 @@ Access simulation outputs programmatically:
 # List templates
 python cli.py templates --json-out
 
-# Run MLE-MBR simulation
+# Create influent file
+cat > influent.json << 'EOF'
+{
+  "flow_m3_d": 4000,
+  "temperature_K": 293.15,
+  "concentrations": {"S_F": 75, "S_A": 20, "S_NH4": 35, "S_PO4": 9}
+}
+EOF
+
+# Run MLE-MBR simulation (use file path for --influent, --duration-days not --duration)
 python cli.py simulate \
   --template mle_mbr_asm2d \
-  --influent '{"flow_m3_d": 4000, "concentrations": {"S_F": 75, "S_NH4": 35}}' \
-  --duration 15 \
+  --influent influent.json \
+  --duration-days 15 \
   --report
 
 # Build custom flowsheet
@@ -232,17 +241,30 @@ cd qsdsan-engine-mcp
 python -m venv venv
 source venv/bin/activate  # or venv\Scripts\activate on Windows
 
-# Install dependencies
+# Install dependencies (either method works)
 pip install -r requirements.txt
+# OR
+pip install -e .
 ```
 
 ### Dependencies
 
+**Python packages** (installed automatically):
 - Python 3.10+
 - QSDsan 1.3+
 - BioSTEAM 2.40+
 - FastMCP (for MCP adapter)
-- Typer (for CLI adapter)
+- Typer + Rich (for CLI adapter)
+- Jinja2 (for report generation)
+- Matplotlib (for time-series plots)
+
+**External tools** (install separately):
+- **Graphviz**: Required for flowsheet diagrams
+  - Linux: `sudo apt install graphviz`
+  - macOS: `brew install graphviz`
+  - Windows: https://graphviz.org/download/
+- **Quarto CLI** (optional): For rendering `.qmd` reports to HTML/PDF
+  - https://quarto.org/docs/get-started/
 
 ## License
 
