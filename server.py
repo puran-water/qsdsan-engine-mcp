@@ -296,15 +296,29 @@ async def validate_state(
         if negative:
             errors.append(f"Negative concentrations: {negative}")
 
-        # Charge balance check (simplified - full implementation in engine)
+        # Mass balance check - single-state consistency (COD, TKN, TP totals)
+        consistency_result = None
+        if check_mass_balance:
+            from core.converters import validate_state_consistency
+            consistency_result = validate_state_consistency(plant_state)
+            if not consistency_result.get("passed", True):
+                warnings.extend(consistency_result.get("warnings", []))
+
+        # Charge balance check - real electroneutrality for mADM1
         charge_balance = None
         if check_charge_balance and mt == ModelType.MADM1:
-            # Simplified check - actual implementation uses full speciation
-            s_cat = plant_state.concentrations.get('S_Na', 0) + plant_state.concentrations.get('S_K', 0)
-            s_an = plant_state.concentrations.get('S_Cl', 0)
-            if s_cat == 0 and s_an == 0:
-                warnings.append("Charge balance species (S_Na, S_Cl, S_K) not set")
-            charge_balance = {"S_cat_approx": s_cat, "S_an_approx": s_an}
+            from core.converters import validate_charge_balance
+            charge_result = validate_charge_balance(plant_state)
+            charge_balance = {
+                "cation_meq_L": charge_result.get("cation_meq_L", 0),
+                "anion_meq_L": charge_result.get("anion_meq_L", 0),
+                "imbalance_meq_L": charge_result.get("imbalance_meq_L", 0),
+                "passed": charge_result.get("passed", True),
+            }
+            if not charge_balance["passed"]:
+                warnings.append(
+                    f"Charge balance error: imbalance {charge_balance['imbalance_meq_L']:.2f} meq/L"
+                )
 
         result = ValidationResult(
             is_valid=len(errors) == 0,
@@ -312,6 +326,7 @@ async def validate_state(
             errors=errors,
             warnings=warnings,
             charge_balance=charge_balance,
+            mass_balance=consistency_result,  # COD/TKN/TP totals
             missing_components=missing,
             extra_components=extra,
         )

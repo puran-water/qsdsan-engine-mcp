@@ -42,6 +42,7 @@ def compile_system(
     system_id: str,
     unit_order: Optional[List[str]] = None,
     recycle_stream_ids: Optional[Set[str]] = None,
+    strict: bool = True,
 ) -> Tuple["System", BuildInfo]:
     """
     Compile a flowsheet session into a QSDsan System.
@@ -61,12 +62,15 @@ def compile_system(
         system_id: Name for the compiled system
         unit_order: Optional execution order. If None, uses topological sort.
         recycle_stream_ids: Stream IDs known to be recycles
+        strict: If True (default), raise errors on connection failures and cycles.
+                If False, add warnings but continue with best-effort compilation.
 
     Returns:
         Tuple of (System, BuildInfo)
 
     Raises:
         ValueError: If session is invalid or units/streams can't be created
+        RuntimeError: If strict=True and connection wiring fails or non-recycle cycle detected
     """
     import qsdsan as qs
     from qsdsan import sanunits, WasteStream, System
@@ -141,6 +145,10 @@ def compile_system(
             _wire_connection(conn, unit_registry, stream_registry, recycle_streams)
             logger.debug(f"Wired connection {conn.from_port} -> {conn.to_port}")
         except Exception as e:
+            if strict:
+                raise RuntimeError(
+                    f"Connection {conn.from_port} -> {conn.to_port} failed: {e}"
+                ) from e
             warnings.append(f"Connection {conn.from_port} -> {conn.to_port} failed: {e}")
 
     # Determine unit order
@@ -149,6 +157,7 @@ def compile_system(
             session.units,
             session.connections,
             recycle_stream_ids=recycle_stream_ids or set(),
+            fail_on_cycle=strict,
         )
         unit_order = topo_result.unit_order
         recycle_edges = topo_result.recycle_edges

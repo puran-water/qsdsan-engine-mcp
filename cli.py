@@ -74,9 +74,9 @@ def simulate(
     influent: Path = typer.Option(..., "--influent", "-i", help="Path to influent PlantState JSON"),
     output_dir: Path = typer.Option(None, "--output-dir", "-o", help="Output directory for results"),
     duration_days: float = typer.Option(1.0, "--duration-days", "-d", help="Simulation duration in days"),
-    timestep_hours: float = typer.Option(1.0, "--timestep-hours", help="Output timestep in hours"),
+    timestep_hours: Optional[float] = typer.Option(None, "--timestep-hours", help="Output timestep in hours (aerobic templates only)"),
     reactor_config: Optional[str] = typer.Option(None, "--reactor-config", help="Reactor config JSON"),
-    parameters: Optional[str] = typer.Option(None, "--parameters", help="Kinetic parameters JSON"),
+    parameters: Optional[str] = typer.Option(None, "--parameters", "-p", help="Kinetic parameter overrides as JSON (aerobic templates only). Example: '{\"mu_H\": 6.0}'"),
     report: bool = typer.Option(False, "--report", "-r", help="Generate Quarto report (.qmd)"),
     json_out: bool = typer.Option(False, "--json-out", "-j", help="Output results as JSON"),
 ):
@@ -121,6 +121,7 @@ def simulate(
                 reactor_config=reactor_cfg,
                 parameters=params,
                 output_dir=output_dir,
+                timestep_hours=timestep_hours,
             )
         elif template == "ao_mbr_asm2d":
             result = _run_ao_mbr_asm2d(
@@ -129,6 +130,7 @@ def simulate(
                 reactor_config=reactor_cfg,
                 parameters=params,
                 output_dir=output_dir,
+                timestep_hours=timestep_hours,
             )
         elif template == "a2o_mbr_asm2d":
             result = _run_a2o_mbr_asm2d(
@@ -137,6 +139,7 @@ def simulate(
                 reactor_config=reactor_cfg,
                 parameters=params,
                 output_dir=output_dir,
+                timestep_hours=timestep_hours,
             )
         else:
             result = {"error": f"Unknown template: {template}. Available: anaerobic_cstr_madm1, mle_mbr_asm2d, ao_mbr_asm2d, a2o_mbr_asm2d"}
@@ -180,7 +183,7 @@ def simulate(
 def _run_anaerobic_cstr_madm1(
     state: PlantState,
     duration_days: float,
-    timestep_hours: float,
+    timestep_hours: Optional[float],
     reactor_config: dict,
     parameters: dict,
     output_dir: Path,
@@ -214,6 +217,7 @@ def _run_mle_mbr_asm2d(
     reactor_config: dict,
     parameters: dict,
     output_dir: Path,
+    timestep_hours: Optional[float] = None,
 ) -> dict:
     """Run MLE-MBR simulation with ASM2d."""
     from templates.aerobic.mle_mbr import build_and_run
@@ -232,6 +236,7 @@ def _run_mle_mbr_asm2d(
         kinetic_params=parameters if parameters else None,
         duration_days=duration_days,
         output_dir=output_dir,
+        timestep_hours=timestep_hours,
     )
 
     return result
@@ -243,6 +248,7 @@ def _run_ao_mbr_asm2d(
     reactor_config: dict,
     parameters: dict,
     output_dir: Path,
+    timestep_hours: Optional[float] = None,
 ) -> dict:
     """Run A/O-MBR simulation with ASM2d."""
     from templates.aerobic.ao_mbr import build_and_run
@@ -261,6 +267,7 @@ def _run_ao_mbr_asm2d(
         kinetic_params=parameters if parameters else None,
         duration_days=duration_days,
         output_dir=output_dir,
+        timestep_hours=timestep_hours,
     )
 
     return result
@@ -272,6 +279,7 @@ def _run_a2o_mbr_asm2d(
     reactor_config: dict,
     parameters: dict,
     output_dir: Path,
+    timestep_hours: Optional[float] = None,
 ) -> dict:
     """Run A2O-MBR simulation with ASM2d (EBPR)."""
     from templates.aerobic.a2o_mbr import build_and_run
@@ -290,6 +298,7 @@ def _run_a2o_mbr_asm2d(
         kinetic_params=parameters if parameters else None,
         duration_days=duration_days,
         output_dir=output_dir,
+        timestep_hours=timestep_hours,
     )
 
     return result
