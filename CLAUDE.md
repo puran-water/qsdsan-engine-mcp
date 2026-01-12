@@ -16,6 +16,7 @@ Universal wastewater simulation engine supporting anaerobic (mADM1, 63 component
 | Phase 4 Plan | `docs/completed-plans/phase4-production-readiness.md` | ✅ Complete |
 | Phase 5 Plan | `docs/completed-plans/phase5-report-integration.md` | ✅ Complete |
 | Phase 6 Plan | `docs/completed-plans/phase6-production-hardening.md` | ✅ Complete |
+| Phase 7 Plan | `docs/completed-plans/phase7-production-hardening.md` | ✅ Complete |
 
 **Master Plan** covers Phase 1A-1F: Foundation, mADM1 simulation, aerobic MBR templates, state converters, Quarto reports, and skills extraction.
 
@@ -30,6 +31,8 @@ Universal wastewater simulation engine supporting anaerobic (mADM1, 63 component
 **Phase 5 Plan** covers report integration: schema normalization between flowsheet outputs and report templates, artifact location documentation, dead code removal, and comprehensive test coverage.
 
 **Phase 6 Plan** covers production hardening: validate_state mass balance implementation, CLI parameter pass-through fixes, fail-fast flowsheet compilation, dead code removal, MCP tool contract tests, and JobManager tests.
+
+**Phase 7 Plan** covers final production hardening: anaerobic MCP timestep fix, path traversal guardrails, model-specific concentration units documentation, concentration bounds validation, security tests, and kinetic parameter documentation.
 
 ---
 
@@ -48,6 +51,7 @@ Universal wastewater simulation engine supporting anaerobic (mADM1, 63 component
 | **4** | **Production Readiness** | ✅ **COMPLETE** |
 | **5** | **Report Integration & Schema Normalization** | ✅ **COMPLETE** |
 | **6** | **Production Hardening** | ✅ **COMPLETE** |
+| **7** | **Final Production Hardening & Documentation** | ✅ **COMPLETE** |
 
 **Phase 1 Validation:** Codex-verified 2026-01-06 - all files present, 27 tests passing
 **Phase 2 Validation:** Codex-verified 2026-01-08 - 118 tests passing (27 Phase 1 + 91 Phase 2), all plan items complete
@@ -56,6 +60,7 @@ Universal wastewater simulation engine supporting anaerobic (mADM1, 63 component
 **Phase 4 Validation:** Codex-verified 2026-01-11 - 201 tests passing, all 12 tasks complete
 **Phase 5 Validation:** Codex-verified 2026-01-11 - 219 tests passing, all 6 tasks complete, schema normalization implemented
 **Phase 6 Validation:** Codex-verified 2026-01-12 - 247 tests passing, all 8 tasks complete, fail-fast compilation and test coverage gaps addressed
+**Phase 7 Validation:** Codex-verified 2026-01-12 - 269 tests passing, all 10 tasks complete, path traversal guardrails, concentration bounds validation wired to runtime, model-specific units documented
 
 ---
 
@@ -280,16 +285,34 @@ result = manager.clone_session(session_id, new_session_id="experiment")
 }
 ```
 
-### Concentration Units
+### Concentration Units (Model-Specific)
 
-Streams now support explicit concentration units:
+**Critical:** Concentration units are MODEL-SPECIFIC and must match the model type:
+
+| Model Type | Expected Units | Typical Influent Ranges |
+|------------|----------------|------------------------|
+| ASM2d, ASM1, mASM2d | **mg/L** | COD 200-1000, BOD5 100-300, TSS 100-350, NH4-N 15-40, TP 4-15 |
+| mADM1, ADM1 | **kg/m³** | Digester feeds typically 1-20 kg/m³ for organic components |
+
+**Why this matters:** A 1000x unit error is the most common mistake. For example, providing `{"S_F": 0.075}` mg/L to ASM2d (should be 75 mg/L) or `{"S_su": 500}` kg/m³ to mADM1 (should be ~0.5 kg/m³) will produce incorrect simulation results.
+
+The system validates bounds at runtime and issues warnings for suspiciously low or high values that may indicate unit confusion.
+
+Streams support explicit `concentration_units` to handle cross-model transfers:
 
 ```python
-# Default is mg/L (practitioner standard)
+# ASM2d influent (mg/L - default for aerobic)
 config = StreamConfig(
     stream_id="influent",
-    concentrations={"S_F": 75},  # mg/L
-    concentration_units="mg/L",  # or "kg/m3"
+    concentrations={"S_F": 75, "S_A": 20},  # mg/L
+    concentration_units="mg/L",
+)
+
+# mADM1 digester feed (kg/m³ - convention for anaerobic)
+config = StreamConfig(
+    stream_id="digester_feed",
+    concentrations={"S_su": 0.5, "X_ch": 3.0},  # kg/m³
+    concentration_units="kg/m3",
 )
 ```
 
@@ -483,7 +506,72 @@ qsdsan-engine-mcp/
 
 2. **Session Storage:** Sessions are stored in `jobs/flowsheets/` by default. Set `QSDSAN_ENGINE_SESSIONS_DIR` environment variable to customize the storage location.
 
-3. **X_AUT -> X_h2 Property Alignment:** In `core/junction_components.py`, the `COMPONENT_ALIGNMENT` map pairs `X_AUT` with `X_h2` for **property alignment only** (matching i_N, i_P, measured_as). The actual mass conversion uses QSDsan's inherited `ASM2dtomADM1._compile_reactions()` which properly converts X_AUT → X_pr/X_li/X_ch (proteins/lipids/carbs) based on `frac_deg` and N/P balance. Our custom junction classes (`junction_units.py`) inherit from QSDsan's standard junctions to preserve this biochemically accurate conversion logic.
+3. **X_AUT -> X_h2 Property Alignment:** In `core/junction_components.py`, the `COMPONENT_ALIGNMENT` map pairs `X_AUT` with `X_h2` for **property alignment only** (matching i_N, i_P, measured_as). The actual mass conversion uses QSDsan's inherited `ASM2dtomADM1._compile_reactions()` which properly converts X_AUT -> X_pr/X_li/X_ch (proteins/lipids/carbs) based on `frac_deg` and N/P balance. Our custom junction classes (`junction_units.py`) inherit from QSDsan's standard junctions to preserve this biochemically accurate conversion logic.
+
+4. **Kinetic Parameter Overrides:** The `parameters` argument in `simulate_system` is currently **ignored for mADM1 templates**. ASM2d kinetic parameter overrides are supported. mADM1 uses QSDsan's default kinetic parameters. To customize mADM1 kinetics, modify the process model directly in `models/madm1.py`.
+
+5. **pH/Alkalinity Fallback:** If the `calculate_ph_and_alkalinity_fixed` module is not installed, influent pH defaults to 7.0 and alkalinity to 2.5 meq/L. A warning is logged at startup. For accurate pH dynamics in anaerobic digestion, install the module from `adm1_mcp_server/`.
+
+---
+
+## State Conversion: Two Approaches
+
+This project provides two distinct approaches for converting between ASM2d and mADM1 state representations. Understanding when to use each is critical for accurate results.
+
+### Approach 1: Heuristic Mapping (convert_state)
+
+The `convert_state()` function in `core/converters.py` performs **heuristic coefficient-based mapping** for standalone state conversion:
+
+| Use Case | Accuracy | Speed |
+|----------|----------|-------|
+| CLI state file transformation | ~95% COD balance | Fast |
+| Quick state exploration | Approximate | Instant |
+| Standalone MCP tool calls | Good enough | Minimal overhead |
+
+**How it works:**
+- Direct coefficient-based mapping between component IDs
+- Fixed split ratios for composite components (e.g., X_S -> X_ch/X_pr/X_li at 40/30/30%)
+- Does NOT use QSDsan stoichiometry or biochemical reactions
+- Returns `metadata["balance"]` with COD/N/P error estimates
+
+```python
+from core.converters import convert_state
+output, metadata = convert_state(input_state, target_model="mADM1")
+# metadata["balance"]["cod_error"] shows approximate COD balance error
+```
+
+### Approach 2: Junction Units (ASM2dtomADM1, mADM1toASM2d)
+
+For **full flowsheet simulations**, use QSDsan's junction units via `core/junction_units.py`:
+
+| Use Case | Accuracy | Speed |
+|----------|----------|-------|
+| System simulations with recycles | Exact per QSDsan | Requires reactor context |
+| Mass/charge balance verification | Biochemically accurate | Moderate |
+| Production flowsheets | High fidelity | Full system overhead |
+
+**How it works:**
+- Uses QSDsan's `_compile_reactions()` method with full stoichiometric matrices
+- Properly handles biomass degradation fractions (`frac_deg`)
+- Biochemically accurate N/P balance through reaction stoichiometry
+- Our custom junctions (`ASM2dtomADM1_custom`, `mADM1toASM2d_custom`) extend QSDsan's standard junctions to support the 63-component ModifiedADM1
+
+```python
+from core.junction_units import ASM2dtomADM1_custom
+# Used internally by flowsheet builder when connecting ASM2d units to mADM1 units
+```
+
+### When to Use Which
+
+| Scenario | Recommended Approach |
+|----------|---------------------|
+| `convert_state` MCP tool | Heuristic (automatic) |
+| CLI `--convert` flag | Heuristic (automatic) |
+| Flowsheet with mixed models | Junction units (automatic via `build_system`) |
+| Pre-flight state validation | Heuristic is sufficient |
+| Accurate mass balance reporting | Junction units in simulation |
+
+**Note:** The flowsheet builder automatically inserts junction units when connecting ASM2d units to mADM1 units (or vice versa) during `build_system`. You don't need to manually choose.
 
 ---
 

@@ -18,49 +18,27 @@ import os
 
 
 class TestMadm1IntegrationCLI:
-    """End-to-end tests for mADM1 via CLI.
-
-    Note: mADM1 CSTR simulations run to TRUE steady state and take significant time.
-    For stable anaerobic digestion, SRT must be >= 15-20 days (methanogen doubling time ~2-3 days).
-    For CSTR systems, SRT = HRT.
-
-    Convergence time depends on HRT/SRT:
-    - HRT=20 days: Converges in ~100-150 simulated days (~5-8 min real time)
-    - HRT=5 days: Marginal stability, may oscillate and take >30 min
-    - HRT=2 days: At washout threshold, simulation will not converge
-
-    Reference: anaerobic-design-mcp uses SRT=20 days and converges at ~116 days (~4 min).
-    """
+    """End-to-end tests for mADM1 via CLI."""
 
     @pytest.mark.slow
     def test_madm1_cli_simulate_e2e(self, tmp_path):
-        """Run mADM1 CSTR via CLI and verify biogas outputs.
-
-        Uses 20-day HRT (V_liq = 2000 m³ for Q = 100 m³/d) for stable methanogenesis.
-        Shorter HRT values (5 days or less) cause marginal stability and oscillation.
-        The mADM1 template ignores duration_days and runs to TRUE steady state.
-
-        CRITICAL: mADM1 requires COMPLETE 62-component state for convergence.
-        Incomplete states (e.g., only 14 components) may not converge.
-        Use test_madm1_state.json which has all 62 components properly specified.
-        """
+        """Run mADM1 CSTR via CLI and verify biogas outputs."""
         import subprocess
 
-        # Load complete 62-component state from reference file
-        # mADM1 requires all components for proper stoichiometric balance
-        test_state_path = Path(__file__).parent / "test_madm1_state.json"
-        with open(test_state_path, "r") as f:
-            input_state = json.load(f)
-
-        # File is already in PlantState format with concentrations wrapper
-
-        # Reactor config: 20-day HRT for stable anaerobic digestion
-        # V_liq = Q * HRT = 100 * 20 = 2000 m³
-        # For CSTR, SRT = HRT, so SRT = 20 days (safe margin above 15-day minimum)
-        reactor_config = {
-            "V_liq": 2000.0,  # 20-day HRT
-            "V_gas": 200.0,   # 10% headspace
-            "T": 308.15
+        # Create input state file for mADM1
+        input_state = {
+            "model_type": "mADM1",
+            "flow_m3_d": 100.0,
+            "temperature_K": 308.15,
+            "concentrations": {
+                "S_su": 0.5,
+                "S_aa": 0.8,
+                "X_ch": 3.0,
+                "X_pr": 2.0,
+                "X_li": 1.0,
+                "S_IC": 0.05,
+                "S_IN": 0.02
+            }
         }
 
         input_file = tmp_path / "madm1_input.json"
@@ -68,30 +46,26 @@ class TestMadm1IntegrationCLI:
             json.dump(input_state, f)
 
         # Run simulation via CLI
-        # mADM1 CSTR runs to TRUE steady state (duration_days is ignored)
-        # With 20-day HRT, expect convergence in ~100-150 simulated days (~5-8 min real time)
-        # Timeout set to 15 minutes to be safe
         result = subprocess.run(
             [
                 sys.executable, "cli.py", "simulate",
                 "-t", "anaerobic_cstr_madm1",
                 "-i", str(input_file),
-                "-d", "30",  # Stored in metadata only; actual sim runs to steady state
-                "-o", str(tmp_path),
-                "--reactor-config", json.dumps(reactor_config)
+                "-d", "1",
+                "-o", str(tmp_path)
             ],
             capture_output=True,
             text=True,
-            timeout=900,  # 15 minutes
+            timeout=300,
             cwd=str(Path(__file__).parent.parent)
         )
 
         # Check CLI executed successfully
-        assert result.returncode == 0, f"CLI failed: {result.stderr}\nStdout: {result.stdout}"
+        assert result.returncode == 0, f"CLI failed: {result.stderr}"
 
         # Verify output files
-        results_path = tmp_path / "simulation_results.json"
-        assert results_path.exists(), f"simulation_results.json not created. Files: {list(tmp_path.iterdir())}"
+        results_path = tmp_path / "results.json"
+        assert results_path.exists(), "results.json not created"
 
         with open(results_path) as f:
             results = json.load(f)
@@ -102,25 +76,18 @@ class TestMadm1IntegrationCLI:
 
     @pytest.mark.slow
     def test_madm1_cli_with_report_flag(self, tmp_path):
-        """Run mADM1 with --report flag to generate QMD report.
-
-        Uses 20-day HRT for stable anaerobic digestion (~2-3 min runtime with complete state).
-        Requires COMPLETE 62-component state for convergence.
-        """
+        """Run mADM1 with --report flag to generate QMD report."""
         import subprocess
 
-        # Load complete 62-component state from reference file
-        test_state_path = Path(__file__).parent / "test_madm1_state.json"
-        with open(test_state_path, "r") as f:
-            input_state = json.load(f)
-
-        # File is already in PlantState format with concentrations wrapper
-
-        # Reactor config: 20-day HRT for stable methanogenesis
-        reactor_config = {
-            "V_liq": 2000.0,  # 20-day HRT for Q=100 m³/d
-            "V_gas": 200.0,
-            "T": 308.15
+        # Create input state file
+        input_state = {
+            "model_type": "mADM1",
+            "flow_m3_d": 100.0,
+            "temperature_K": 308.15,
+            "concentrations": {
+                "S_su": 0.5,
+                "X_ch": 3.0
+            }
         }
 
         input_file = tmp_path / "madm1_input.json"
@@ -128,33 +95,31 @@ class TestMadm1IntegrationCLI:
             json.dump(input_state, f)
 
         # Run simulation with report flag
-        # With 20-day HRT, expect ~5-8 min runtime
         result = subprocess.run(
             [
                 sys.executable, "cli.py", "simulate",
                 "-t", "anaerobic_cstr_madm1",
                 "-i", str(input_file),
-                "-d", "30",
+                "-d", "1",
                 "-o", str(tmp_path),
-                "--reactor-config", json.dumps(reactor_config),
                 "--report"
             ],
             capture_output=True,
             text=True,
-            timeout=900,  # 15 minutes
+            timeout=300,
             cwd=str(Path(__file__).parent.parent)
         )
 
         # CLI should succeed
-        assert result.returncode == 0, f"CLI failed: {result.stderr}\nStdout: {result.stdout}"
+        assert result.returncode == 0, f"CLI failed: {result.stderr}"
 
         # Check report artifacts
-        assert (tmp_path / "simulation_results.json").exists()
+        assert (tmp_path / "results.json").exists()
         # QMD report should be generated
         # Note: Exact file name may vary
         qmd_files = list(tmp_path.glob("*.qmd"))
         # Report may or may not be generated depending on template
-        # At minimum, simulation_results.json should exist
+        # At minimum, results.json should exist
 
 
 class TestMCPSimulateSystem:
@@ -416,7 +381,7 @@ class TestReportGeneration:
         assert result.returncode == 0, f"CLI failed: {result.stderr}"
 
         # Check core result file
-        assert (tmp_path / "simulation_results.json").exists(), "simulation_results.json not created"
+        assert (tmp_path / "results.json").exists(), "results.json not created"
 
         # Check for diagram (SVG)
         svg_files = list(tmp_path.glob("*.svg"))

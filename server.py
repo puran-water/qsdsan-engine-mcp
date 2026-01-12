@@ -90,7 +90,7 @@ async def simulate_system(
     template: str,
     influent: Dict[str, Any],
     duration_days: float = 1.0,
-    timestep_hours: float = 1.0,
+    timestep_hours: Optional[float] = None,
     reactor_config: Optional[Dict[str, Any]] = None,
     parameters: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
@@ -105,9 +105,11 @@ async def simulate_system(
         influent: PlantState dict for influent with keys: model_type, flow_m3_d,
                   temperature_K, concentrations
         duration_days: Simulation duration in days (default 1.0)
-        timestep_hours: Output timestep in hours (default 1.0)
+        timestep_hours: Output timestep in hours (aerobic templates only, optional)
         reactor_config: Optional reactor configuration overrides
-        parameters: Optional kinetic parameter overrides
+        parameters: Optional kinetic parameter overrides. Note: Currently supported
+                    for ASM2d/aerobic templates only. mADM1 template uses QSDsan
+                    defaults and ignores this parameter.
 
     Returns:
         Dict with job_id, status, and instructions for monitoring
@@ -159,8 +161,11 @@ async def simulate_system(
             "--influent", str(job_dir / "influent.json"),
             "--output-dir", str(job_dir),
             "--duration-days", str(duration_days),
-            "--timestep-hours", str(timestep_hours),
         ]
+
+        # Only pass timestep_hours for aerobic templates (anaerobic raises if provided)
+        if timestep_hours is not None:
+            cmd.extend(["--timestep-hours", str(timestep_hours)])
 
         if reactor_config:
             cmd.extend(["--reactor-config", json.dumps(reactor_config)])
@@ -1418,8 +1423,12 @@ async def get_flowsheet_timeseries(
         >>> # result["time"] = [0, 0.5, 1.0, ...]
         >>> # result["streams"]["effluent"]["S_NH4"] = [17.0, 15.2, ...]
     """
+    from utils.path_utils import validate_safe_path, validate_id
+
     try:
-        job_dir = Path("jobs") / job_id
+        # Validate job_id format and prevent path traversal
+        validate_id(job_id, "job_id")
+        job_dir = validate_safe_path(Path("jobs"), job_id, "job_id")
         ts_path = job_dir / "timeseries.json"
 
         if not ts_path.exists():
@@ -1897,8 +1906,12 @@ async def get_artifact(
         >>> result = await get_artifact(job_id="abc123", artifact_type="diagram")
         >>> svg_content = result["content"]
     """
+    from utils.path_utils import validate_safe_path, validate_id
+
     try:
-        job_dir = Path("jobs") / job_id
+        # Validate job_id format and prevent path traversal
+        validate_id(job_id, "job_id")
+        job_dir = validate_safe_path(Path("jobs"), job_id, "job_id")
 
         if not job_dir.exists():
             return {"error": f"Job {job_id} not found"}
