@@ -41,12 +41,18 @@ try:
     sys.path.insert(0, adm1_dir)
     from calculate_ph_and_alkalinity_fixed import update_ph_and_alkalinity
 except ImportError:
-    logging.warning("pH calculation module not found. Using default pH values.")
+    logging.warning(
+        "pH/alkalinity calculation module not available. "
+        "Using fixed defaults (pH=7.0, SAlk=2.5 meq/L). "
+        "For accurate pH prediction, install calculate_ph_and_alkalinity_fixed module "
+        "from adm1_mcp_server. Simulation will proceed with degraded pH accuracy."
+    )
     def update_ph_and_alkalinity(stream):
+        """Fallback pH/alkalinity setter when calculation module unavailable."""
         if hasattr(stream, '_pH'):
             stream._pH = 7.0
         if hasattr(stream, '_SAlk'):
-            stream._SAlk = 2.5
+            stream._SAlk = 2.5  # meq/L
         return stream
 
 # Constants

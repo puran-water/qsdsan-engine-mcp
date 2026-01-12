@@ -8,8 +8,13 @@ paths need to be converted from Windows format (C:/Users/...) to WSL format
 
 import sys
 import os
+import re
 from pathlib import Path
 from typing import Union
+
+
+# Pattern for safe IDs: alphanumeric, underscore, hyphen only
+ID_PATTERN = re.compile(r'^[a-zA-Z0-9_-]+$')
 
 
 def is_wsl() -> bool:
@@ -84,3 +89,65 @@ def normalize_command(cmd: list) -> list:
         List with all Windows paths converted to WSL format
     """
     return [normalize_path_for_wsl(arg) for arg in cmd]
+
+
+def validate_safe_path(
+    base_dir: Path,
+    user_path: str,
+    path_type: str = "path"
+) -> Path:
+    """
+    Validate that a user-provided path stays within the base directory.
+
+    Prevents path traversal attacks like "../../../etc/passwd".
+
+    Args:
+        base_dir: The base directory that should contain the path
+        user_path: User-provided path component (e.g., job_id, session_id)
+        path_type: Description of the path type for error messages
+
+    Returns:
+        Resolved absolute path if valid
+
+    Raises:
+        ValueError: If path contains traversal sequences or escapes base_dir
+    """
+    # Resolve base to absolute path
+    base = base_dir.resolve()
+
+    # Build full path and resolve (this handles .., symlinks, etc.)
+    full = (base / user_path).resolve()
+
+    # Check if resolved path is under base directory
+    try:
+        full.relative_to(base)
+    except ValueError:
+        raise ValueError(f"Invalid {path_type}: path traversal detected")
+
+    return full
+
+
+def validate_id(id_value: str, id_type: str = "ID", max_length: int = 64) -> None:
+    """
+    Validate that an ID contains only safe characters.
+
+    Prevents injection attacks via malformed job_id/session_id values.
+
+    Args:
+        id_value: The ID string to validate
+        id_type: Description for error messages (e.g., "job_id", "session_id")
+        max_length: Maximum allowed length (default 64)
+
+    Raises:
+        ValueError: If ID is empty, too long, or contains unsafe characters
+    """
+    if not id_value:
+        raise ValueError(f"Invalid {id_type}: cannot be empty")
+
+    if len(id_value) > max_length:
+        raise ValueError(f"Invalid {id_type}: max {max_length} characters")
+
+    if not ID_PATTERN.match(id_value):
+        raise ValueError(
+            f"Invalid {id_type}: must contain only alphanumeric, underscore, hyphen"
+        )

@@ -208,8 +208,12 @@ class FlowsheetSessionManager:
         self.flowsheets_dir.mkdir(parents=True, exist_ok=True)
 
     def _get_session_dir(self, session_id: str) -> Path:
-        """Get directory for a session."""
-        return self.flowsheets_dir / session_id
+        """Get directory for a session with ID and path traversal protection."""
+        from utils.path_utils import validate_safe_path, validate_id
+        # First validate ID contains only safe characters
+        validate_id(session_id, "session_id")
+        # Then validate path doesn't escape base directory
+        return validate_safe_path(self.flowsheets_dir, session_id, "session_id")
 
     def _get_session_file(self, session_id: str) -> Path:
         """Get session.json path for a session."""

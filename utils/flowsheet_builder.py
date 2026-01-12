@@ -23,6 +23,8 @@ from dataclasses import dataclass
 import json
 import logging
 
+from core.plant_state import validate_concentration_bounds
+
 logger = logging.getLogger(__name__)
 
 
@@ -110,7 +112,7 @@ def compile_system(
             # Set thermo for this stream's model
             qs.set_thermo(stream_cmps)
 
-            stream = _create_waste_stream(stream_id, config, stream_cmps)
+            stream = _create_waste_stream(stream_id, config, stream_cmps, stream_model)
             stream_registry[stream_id] = stream
             logger.debug(f"Created stream '{stream_id}' (model: {stream_model})")
         except Exception as e:
@@ -377,17 +379,28 @@ def _create_waste_stream(
     stream_id: str,
     config: "StreamConfig",
     cmps: "CompiledComponents",
+    model_type: str = "ASM2d",
 ) -> "WasteStream":
     """Create a WasteStream from StreamConfig.
 
     Concentrations can be specified in either mg/L (default) or kg/m3,
     controlled by config.concentration_units. Internal conversion to mg/L
     is performed for kg/m3 inputs since QSDsan uses mg/L.
+
+    Validates concentration bounds and warns if values suggest unit confusion
+    (e.g., providing kg/m3 values when mg/L is expected or vice versa).
     """
     from qsdsan import WasteStream
 
     # Get concentration units (default mg/L for backward compatibility)
     conc_units = getattr(config, 'concentration_units', 'mg/L')
+
+    # Validate concentration bounds for likely unit confusion
+    bound_warnings = validate_concentration_bounds(
+        config.concentrations, model_type, conc_units
+    )
+    for warning in bound_warnings:
+        logger.warning(f"Stream '{stream_id}': {warning}")
 
     # Build concentration dict (only valid components)
     concentrations = {}
