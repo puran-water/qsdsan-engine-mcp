@@ -29,6 +29,7 @@ __all__ = [
     'get_coefficients',
     'validate_mass_balance',
     'validate_charge_balance',
+    'validate_state_consistency',
 ]
 
 # =============================================================================
@@ -922,6 +923,100 @@ def validate_charge_balance(
             f"Charge balance validation failed: "
             f"cations {cation_charge:.2f} meq/L, anions {anion_charge:.2f} meq/L, "
             f"imbalance {imbalance:.2f} meq/L"
+        )
+
+    return result
+
+
+def validate_state_consistency(
+    state: PlantState,
+    use_component_props: bool = False,
+) -> Dict[str, Any]:
+    """
+    Validate internal consistency of a single PlantState.
+
+    Computes COD, TKN, and TP totals and checks for implausible values.
+    This is a single-state sanity check, unlike validate_mass_balance()
+    which compares input vs output states.
+
+    Parameters
+    ----------
+    state : PlantState
+        State to validate
+    use_component_props : bool
+        If True, extract coefficients dynamically from component objects
+
+    Returns
+    -------
+    dict
+        Validation result with:
+        - cod_mg_L: Total COD
+        - tkn_mg_L: Total Kjeldahl Nitrogen
+        - tp_mg_L: Total Phosphorus
+        - passed: True if all values are reasonable
+        - warnings: List of warning messages
+
+    Notes
+    -----
+    Reasonableness thresholds:
+    - COD: 0 to 100,000 mg/L
+    - TKN: 0 to 10,000 mg/L
+    - TP: 0 to 5,000 mg/L
+
+    These are generous bounds that should catch data entry errors
+    without rejecting unusual but valid industrial wastewaters.
+    """
+    # Get model type as string
+    model_type_str = getattr(state.model_type, 'value', str(state.model_type))
+
+    # Get coefficients for this model
+    i_cod, i_n, i_p = get_coefficients(model_type_str, use_component_props)
+
+    # Calculate totals
+    cod_total = sum(
+        conc * i_cod.get(comp_id, 0.0)
+        for comp_id, conc in state.concentrations.items()
+    )
+    tkn_total = sum(
+        conc * i_n.get(comp_id, 0.0)
+        for comp_id, conc in state.concentrations.items()
+    )
+    tp_total = sum(
+        conc * i_p.get(comp_id, 0.0)
+        for comp_id, conc in state.concentrations.items()
+    )
+
+    warnings = []
+
+    # Check COD bounds
+    if cod_total < 0:
+        warnings.append(f"Negative COD total: {cod_total:.1f} mg/L")
+    elif cod_total > 100000:
+        warnings.append(f"Implausibly high COD: {cod_total:.1f} mg/L (> 100,000)")
+
+    # Check TKN bounds
+    if tkn_total < 0:
+        warnings.append(f"Negative TKN total: {tkn_total:.1f} mg/L")
+    elif tkn_total > 10000:
+        warnings.append(f"Implausibly high TKN: {tkn_total:.1f} mg/L (> 10,000)")
+
+    # Check TP bounds
+    if tp_total < 0:
+        warnings.append(f"Negative TP total: {tp_total:.1f} mg/L")
+    elif tp_total > 5000:
+        warnings.append(f"Implausibly high TP: {tp_total:.1f} mg/L (> 5,000)")
+
+    result = {
+        "cod_mg_L": cod_total,
+        "tkn_mg_L": tkn_total,
+        "tp_mg_L": tp_total,
+        "passed": len(warnings) == 0,
+        "warnings": warnings,
+    }
+
+    if not result["passed"]:
+        logger.warning(
+            f"State consistency validation failed: {'; '.join(warnings)}"
         )
 
     return result

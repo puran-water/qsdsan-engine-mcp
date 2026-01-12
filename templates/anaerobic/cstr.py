@@ -29,7 +29,7 @@ def build_and_run(
     reactor_config: Optional[Dict[str, Any]] = None,
     kinetic_params: Optional[Dict[str, Any]] = None,
     duration_days: float = 30.0,
-    timestep_hours: float = 1.0,
+    timestep_hours: Optional[float] = None,
     output_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """
@@ -41,9 +41,9 @@ def build_and_run(
             - temperature_K: Temperature in K
             - concentrations: Dict of component concentrations (kg/m3)
         reactor_config: Reactor configuration (V_liq, V_gas, T, etc.)
-        kinetic_params: Optional kinetic parameter overrides (not used yet)
-        duration_days: Not used - simulation runs to steady state
-        timestep_hours: Not used - simulation runs to steady state
+        kinetic_params: Optional kinetic parameter overrides (not yet implemented)
+        duration_days: Stored in metadata but simulation runs to steady state
+        timestep_hours: Not supported - raises ValueError if provided
         output_dir: Directory to save results
 
     Returns:
@@ -54,7 +54,23 @@ def build_and_run(
         - performance: Performance metrics
         - inhibition: Inhibition analysis
         - time_series: Time series data
+
+    Raises:
+        ValueError: If timestep_hours is provided (not supported for steady-state)
     """
+    # Validate unsupported parameters
+    if timestep_hours is not None:
+        raise ValueError(
+            "timestep_hours not supported for steady-state anaerobic simulation. "
+            "The mADM1 CSTR template runs to convergence, not time-domain simulation."
+        )
+
+    if kinetic_params:
+        logger.warning(
+            "kinetic_params not yet implemented for mADM1 - using default parameters. "
+            f"Ignored parameters: {list(kinetic_params.keys())}"
+        )
+
     # Import simulation module (triggers QSDsan load)
     from utils.simulate_madm1 import run_simulation_sulfur
     from utils.stream_analysis import (

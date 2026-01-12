@@ -22,6 +22,7 @@ import logging
 from pathlib import Path
 from typing import Dict, Any, Optional
 
+import numpy as np
 import qsdsan as qs
 from qsdsan import processes as pc, sanunits as su
 
@@ -84,6 +85,7 @@ def build_and_run(
     reactor_config: Optional[Dict[str, Any]] = None,
     kinetic_params: Optional[Dict[str, Any]] = None,
     duration_days: float = 15.0,
+    timestep_hours: Optional[float] = None,
     output_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """
@@ -99,9 +101,11 @@ def build_and_run(
     reactor_config : dict, optional
         Reactor configuration overrides
     kinetic_params : dict, optional
-        ASM2d kinetic parameter overrides
+        ASM2d kinetic parameter overrides (e.g., {"mu_H": 6.0, "K_F": 10.0})
     duration_days : float
         Simulation duration in days
+    timestep_hours : float, optional
+        Output timestep in hours. If provided, generates t_eval array for simulation.
     output_dir : Path, optional
         Directory to save results
 
@@ -141,6 +145,22 @@ def build_and_run(
 
         # Create ASM2d process model
         asm2d = pc.ASM2d(**asm_kwargs)
+
+        # Apply kinetic parameter overrides after creation
+        applied_params = {}
+        if kinetic_params:
+            asm2d.set_parameters(**kinetic_params)
+            # Extract applied params from both stoichiometry and kinetics
+            stoichio_params = getattr(asm2d, '_parameters', {})
+            kinetic_rate_params = getattr(asm2d.rate_function, 'params', {}) if hasattr(asm2d, 'rate_function') else {}
+            for k in kinetic_params:
+                if k in stoichio_params:
+                    applied_params[k] = stoichio_params[k]
+                elif k in kinetic_rate_params:
+                    applied_params[k] = kinetic_rate_params[k]
+                else:
+                    applied_params[k] = None  # Parameter not found/applied
+            logger.info(f"Applied kinetic params: {applied_params}")
 
         # Extract configuration
         V_an = config['V_anoxic_m3']
@@ -233,12 +253,28 @@ def build_and_run(
 
         logger.info(f"Simulating for {duration_days} days...")
 
+        # Build simulation kwargs
+        sim_kwargs = {
+            'state_reset_hook': 'reset_cache',
+            't_span': (0, duration_days),
+            'method': 'RK23',
+        }
+
+        # Add t_eval if timestep_hours is specified
+        if timestep_hours is not None and timestep_hours > 0:
+            dt = timestep_hours / 24  # Convert hours to days
+            # Use epsilon to avoid floating-point overshoot
+            t_eval = np.arange(0, duration_days + 1e-9, dt)
+            # Clamp to duration_days
+            t_eval = t_eval[t_eval <= duration_days + 1e-9]
+            # Ensure final point is included
+            if len(t_eval) == 0 or t_eval[-1] < duration_days - 1e-9:
+                t_eval = np.append(t_eval, duration_days)
+            sim_kwargs['t_eval'] = t_eval
+            logger.info(f"Using timestep {timestep_hours}h -> {len(t_eval)} evaluation points")
+
         # Run simulation
-        sys.simulate(
-            state_reset_hook='reset_cache',
-            t_span=(0, duration_days),
-            method='RK23',
-        )
+        sys.simulate(**sim_kwargs)
 
         logger.info("Simulation completed, analyzing results...")
 
@@ -318,11 +354,13 @@ def build_and_run(
             "solver": {
                 "method": "RK23",
                 "duration_days": duration_days,
+                "timestep_hours": timestep_hours,
                 "rtol": 1e-3,
                 "atol": 1e-6,
             },
             "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
             "model_type": "ASM2d",
+            "applied_kinetic_params": applied_params if applied_params else None,
         }
 
         # Generate diagram and mass balance data

@@ -52,8 +52,15 @@ COMPONENT_ALIGNMENT: Dict[Tuple[str, str], Dict[str, Any]] = {
     ('X_PHA', 'X_PHA'): {'measured_as': 'COD'},
 
     # Biomass (ASM2d X_H -> mADM1 multiple biomass)
-    ('X_H', 'X_su'): {'measured_as': 'COD'},  # Heterotrophs -> degrader biomass
-    ('X_AUT', 'X_h2'): {'measured_as': 'COD'},  # Autotrophs (placeholder)
+    # NOTE: This map is for PROPERTY ALIGNMENT only, not mass conversion.
+    # Actual biomass conversion (X_H, X_AUT, X_PAO -> X_pr, X_li, X_ch) uses
+    # QSDsan's inherited ASM2dtomADM1._compile_reactions() which properly splits
+    # biomass into proteins/lipids/carbs based on frac_deg and N/P balance.
+    ('X_H', 'X_su'): {'measured_as': 'COD'},  # Heterotrophs -> degrader biomass (property alignment)
+    # X_AUT property alignment: pairs with X_h2 for COD property matching.
+    # The actual mass conversion in QSDsan junction converts X_AUT -> X_pr/X_li/X_ch
+    # (see QSD-Group/QSDsan sanunits/_junction.py ASM2dtomADM1 class).
+    ('X_AUT', 'X_h2'): {'measured_as': 'COD'},
 }
 
 
@@ -187,17 +194,18 @@ def build_junction_components(
         except Exception as e:
             logger.warning(f"Failed to align {asm_id} <-> {adm_id}: {e}")
 
-    # Compile with relaxed validation
+    # Compile components - fail-fast on errors
     try:
         asm_cmps.compile()
-    except Exception:
-        # Force compilation with ignore flags
-        pass
+    except Exception as e:
+        logger.error(f"ASM component compilation failed: {e}")
+        raise RuntimeError(f"ASM component compilation failed: {e}") from e
 
     try:
         adm_cmps.compile()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error(f"ADM component compilation failed: {e}")
+        raise RuntimeError(f"ADM component compilation failed: {e}") from e
 
     if set_thermo:
         import qsdsan as qs

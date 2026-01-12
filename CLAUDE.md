@@ -15,6 +15,7 @@ Universal wastewater simulation engine supporting anaerobic (mADM1, 63 component
 | Phase 3 Plan | `docs/completed-plans/phase3-llm-accessibility.md` | ✅ Complete |
 | Phase 4 Plan | `docs/completed-plans/phase4-production-readiness.md` | ✅ Complete |
 | Phase 5 Plan | `docs/completed-plans/phase5-report-integration.md` | ✅ Complete |
+| Phase 6 Plan | `docs/completed-plans/phase6-production-hardening.md` | ✅ Complete |
 
 **Master Plan** covers Phase 1A-1F: Foundation, mADM1 simulation, aerobic MBR templates, state converters, Quarto reports, and skills extraction.
 
@@ -27,6 +28,8 @@ Universal wastewater simulation engine supporting anaerobic (mADM1, 63 component
 **Phase 4 Plan** covers production readiness: critical bug fixes, packaging configuration, report time-series plots, per-unit analysis, mass/charge balance validation, and test hygiene.
 
 **Phase 5 Plan** covers report integration: schema normalization between flowsheet outputs and report templates, artifact location documentation, dead code removal, and comprehensive test coverage.
+
+**Phase 6 Plan** covers production hardening: validate_state mass balance implementation, CLI parameter pass-through fixes, fail-fast flowsheet compilation, dead code removal, MCP tool contract tests, and JobManager tests.
 
 ---
 
@@ -44,6 +47,7 @@ Universal wastewater simulation engine supporting anaerobic (mADM1, 63 component
 | **3** | **LLM Accessibility Enhancement** | ✅ **COMPLETE** |
 | **4** | **Production Readiness** | ✅ **COMPLETE** |
 | **5** | **Report Integration & Schema Normalization** | ✅ **COMPLETE** |
+| **6** | **Production Hardening** | ✅ **COMPLETE** |
 
 **Phase 1 Validation:** Codex-verified 2026-01-06 - all files present, 27 tests passing
 **Phase 2 Validation:** Codex-verified 2026-01-08 - 118 tests passing (27 Phase 1 + 91 Phase 2), all plan items complete
@@ -51,6 +55,7 @@ Universal wastewater simulation engine supporting anaerobic (mADM1, 63 component
 **Phase 3 Validation:** Codex-verified 2026-01-09 - 163 tests passing (27 Phase 1 + 91 Phase 2 + 45 Phase 3)
 **Phase 4 Validation:** Codex-verified 2026-01-11 - 201 tests passing, all 12 tasks complete
 **Phase 5 Validation:** Codex-verified 2026-01-11 - 219 tests passing, all 6 tasks complete, schema normalization implemented
+**Phase 6 Validation:** Codex-verified 2026-01-12 - 247 tests passing, all 8 tasks complete, fail-fast compilation and test coverage gaps addressed
 
 ---
 
@@ -477,6 +482,8 @@ qsdsan-engine-mcp/
 1. **QSDsan Import Time:** ~18s cold start. Use `utils/qsdsan_loader.py` for async loading.
 
 2. **Session Storage:** Sessions are stored in `jobs/flowsheets/` by default. Set `QSDSAN_ENGINE_SESSIONS_DIR` environment variable to customize the storage location.
+
+3. **X_AUT -> X_h2 Property Alignment:** In `core/junction_components.py`, the `COMPONENT_ALIGNMENT` map pairs `X_AUT` with `X_h2` for **property alignment only** (matching i_N, i_P, measured_as). The actual mass conversion uses QSDsan's inherited `ASM2dtomADM1._compile_reactions()` which properly converts X_AUT → X_pr/X_li/X_ch (proteins/lipids/carbs) based on `frac_deg` and N/P balance. Our custom junction classes (`junction_units.py`) inherit from QSDsan's standard junctions to preserve this biochemically accurate conversion logic.
 
 ---
 

@@ -303,9 +303,6 @@ def create_madm1_cmps(set_thermo=True, ASF_L=0.31, ASF_H=1.2):
 #     }
 # =============================================================================
 
-def calc_pH():
-    pass
-
 def calc_biogas(state_arr, params, pH):
     """
     Calculate dissolved molecular H2S concentration.
@@ -1038,21 +1035,6 @@ def rhos_madm1(state_arr, params, T_op, h=None):
 #%% modified ADM1 class
 _load_components = settings.get_default_chemicals
 
-def fun(q_aging_H=450.0, q_aging_L=0.1, q_Pcoprec=360, q_Pbinding=0.3, q_diss_H=36.0, q_diss_L=36.0,
-        K_Pbind=37.2, K_Pdiss=0.93):
-    '''
-    
-
-    Parameters
-    ----------
-
-    Returns
-    -------
-    None.
-
-    '''
-    pass    
-    
 @chemicals_user
 class ModifiedADM1(CompiledProcesses):
     """

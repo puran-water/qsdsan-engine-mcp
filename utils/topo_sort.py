@@ -228,6 +228,7 @@ def topological_sort(
     connections: List[any],  # List of ConnectionConfig
     recycle_stream_ids: Optional[Set[str]] = None,
     manual_order: Optional[List[str]] = None,
+    fail_on_cycle: bool = True,
 ) -> TopoSortResult:
     """
     Topological sort of units with recycle handling.
@@ -244,9 +245,14 @@ def topological_sort(
         connections: List of ConnectionConfig
         recycle_stream_ids: Stream IDs known to be recycles
         manual_order: If provided, validate and use this order instead
+        fail_on_cycle: If True (default), raise ValueError on non-recycle cycles.
+                       If False, add cycle units at end with warning.
 
     Returns:
         TopoSortResult with unit order and detected recycle edges
+
+    Raises:
+        ValueError: If fail_on_cycle=True and non-recycle cycle is detected
 
     Example:
         # MLE flowsheet: A1 -> O1 -> MBR -> SP
@@ -320,12 +326,18 @@ def topological_sort(
 
     if has_cycle:
         remaining = [uid for uid in units if uid not in order]
+
+        if fail_on_cycle:
+            raise ValueError(
+                f"Non-recycle cycle detected involving units: {remaining}. "
+                "Add these streams to recycle_stream_ids or fix connections."
+            )
+
+        # Permissive mode: warn and add remaining units at end
         warnings.append(
             f"Non-recycle cycle detected involving units: {remaining}. "
             "Check connections or add to recycle_stream_ids."
         )
-
-        # Add remaining units at end (best effort)
         order.extend(remaining)
 
     return TopoSortResult(
