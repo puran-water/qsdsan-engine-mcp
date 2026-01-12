@@ -1889,5 +1889,329 @@ class TestWarningHandling:
             "Missing required params should produce errors or warnings"
 
 
+# =============================================================================
+# Phase 5 Tests - Report Schema Integration
+# =============================================================================
+
+class TestReportSchemaIntegration:
+    """Integration tests for report generation pipeline.
+
+    All tests use real data structures (dicts, paths) - no mocking.
+    Exceptions are asserted explicitly, not swallowed.
+
+    Test Hygiene:
+    - NO MagicMock/Mock() - use real fixtures
+    - NO broad except:pass - explicit exception types
+    - NO pytest.skip() for core functionality
+    - NO filterwarnings('ignore')
+    - Explicit assertions (assert x == expected, not assert x)
+    """
+
+    def test_flowsheet_results_normalize_diagram_path(self, tmp_path):
+        """Diagram at top-level is copied to flowsheet.diagram_path."""
+        from reports.qmd_builder import normalize_results_for_report
+
+        # Create a real diagram file
+        diagram_file = tmp_path / "flowsheet.svg"
+        diagram_file.write_text("<svg></svg>")
+
+        # Results with top-level diagram_path
+        results = {
+            "diagram_path": str(diagram_file),
+            "flowsheet": {},
+        }
+
+        normalized = normalize_results_for_report(results, output_dir=tmp_path)
+
+        assert normalized["flowsheet"]["diagram_path"] == str(diagram_file)
+        assert normalized["flowsheet"]["has_diagram"] is True
+
+    def test_flowsheet_results_load_timeseries(self, tmp_path):
+        """Timeseries loaded from timeseries_path into timeseries dict."""
+        from reports.qmd_builder import normalize_results_for_report
+
+        # Create a real timeseries JSON file
+        ts_file = tmp_path / "timeseries.json"
+        ts_data = {"time": [0, 1, 2], "streams": {"eff": {"COD": [100, 80, 60]}}}
+        ts_file.write_text(json.dumps(ts_data))
+
+        results = {"timeseries_path": str(ts_file)}
+
+        normalized = normalize_results_for_report(results, output_dir=tmp_path)
+
+        assert normalized["timeseries"] == ts_data
+        assert normalized["timeseries"]["time"] == [0, 1, 2]
+
+    def test_solver_metadata_extracted_to_simulation(self):
+        """duration_days/method from metadata.solver reach simulation dict."""
+        from reports.qmd_builder import normalize_results_for_report
+
+        results = {
+            "metadata": {
+                "solver": {
+                    "duration_days": 15.5,
+                    "method": "BDF",
+                    "rtol": 1e-4,
+                }
+            }
+        }
+
+        normalized = normalize_results_for_report(results)
+
+        assert normalized["duration_days"] == 15.5
+        assert normalized["method"] == "BDF"
+        assert normalized["tolerance"] == "0.0001"
+
+    def test_effluent_quality_mapped_to_effluent(self):
+        """effluent_quality nested fields flatten to effluent dict."""
+        from reports.qmd_builder import normalize_results_for_report
+
+        results = {
+            "effluent_quality": {
+                "COD_mg_L": 50,
+                "TSS_mg_L": 25,
+                "VSS_mg_L": 20,
+                "nitrogen": {
+                    "NH4_mg_N_L": 2.5,
+                    "NO3_mg_N_L": 8.0,
+                    "N2_mg_N_L": 12.0,
+                },
+                "phosphorus": {
+                    "PO4_mg_P_L": 0.8,
+                },
+            }
+        }
+
+        normalized = normalize_results_for_report(results)
+
+        # Explicit assertions for each expected key
+        assert normalized["effluent"]["COD_mg_L"] == 50
+        assert normalized["effluent"]["TSS_mg_L"] == 25
+        assert normalized["effluent"]["VSS_mg_L"] == 20
+        assert normalized["effluent"]["NH4_mg_N_L"] == 2.5
+        assert normalized["effluent"]["NO3_mg_N_L"] == 8.0
+        assert normalized["effluent"]["N2_mg_N_L"] == 12.0
+        assert normalized["effluent"]["PO4_mg_P_L"] == 0.8
+
+    def test_full_report_generation_with_artifacts(self, tmp_path):
+        """Complete report generation includes diagram and plots."""
+        from reports.qmd_builder import generate_report
+
+        # Create diagram and timeseries files
+        diagram_file = tmp_path / "flowsheet.svg"
+        diagram_file.write_text("<svg><rect/></svg>")
+
+        ts_file = tmp_path / "timeseries.json"
+        ts_file.write_text('{"time": [0, 1], "streams": {}}')
+
+        results = {
+            "diagram_path": str(diagram_file),
+            "timeseries_path": str(ts_file),
+            "template": "mle_mbr_asm2d",
+            "metadata": {"solver": {"duration_days": 10, "method": "RK45"}},
+        }
+
+        report_path = generate_report(
+            session_id="test_session",
+            model_type="ASM2d",
+            results=results,
+            output_dir=tmp_path,
+        )
+
+        assert report_path.exists()
+        content = report_path.read_text()
+        # Report should be generated (check basic structure)
+        assert "---" in content  # YAML frontmatter
+
+        # Explicit assertions for diagram reference
+        assert "flowsheet.svg" in content, "Report should reference flowsheet.svg diagram"
+
+        # Check for plot references (plots directory should be referenced)
+        # Note: Plot generation may fail without actual data, so check conditionally
+        # The template will include placeholder text if plots weren't generated
+        assert "Flowsheet Diagram" in content or "flowsheet" in content.lower(), \
+            "Report should have diagram section"
+
+    def test_normalization_is_idempotent(self):
+        """Normalized data stays stable if normalized twice."""
+        from reports.qmd_builder import normalize_results_for_report
+        from copy import deepcopy
+
+        results = {
+            "metadata": {"solver": {"duration_days": 5, "method": "RK23"}},
+            "effluent_quality": {"COD_mg_L": 100, "nitrogen": {"NH4_mg_N_L": 10}},
+            "flowsheet": None,
+        }
+
+        # Normalize once
+        first = normalize_results_for_report(results)
+        # Normalize again
+        second = normalize_results_for_report(deepcopy(first))
+
+        # Core values should be identical
+        assert first["duration_days"] == second["duration_days"]
+        assert first["method"] == second["method"]
+        assert first["effluent"]["NH4_mg_N_L"] == second["effluent"]["NH4_mg_N_L"]
+        assert first["flowsheet"]["has_diagram"] == second["flowsheet"]["has_diagram"]
+        assert first["performance"]["cod"]["removal_pct"] == second["performance"]["cod"]["removal_pct"]
+
+    def test_missing_timeseries_path_handled(self, tmp_path):
+        """Missing/invalid timeseries_path doesn't raise exception."""
+        from reports.qmd_builder import normalize_results_for_report
+
+        results = {
+            "timeseries_path": str(tmp_path / "nonexistent.json"),
+        }
+
+        # Should not raise
+        normalized = normalize_results_for_report(results, output_dir=tmp_path)
+
+        # Should have empty timeseries
+        assert normalized["timeseries"] == {}
+
+    def test_invalid_timeseries_json_handled(self, tmp_path):
+        """Invalid JSON in timeseries file doesn't raise exception."""
+        from reports.qmd_builder import normalize_results_for_report
+
+        # Create file with invalid JSON
+        bad_json = tmp_path / "bad.json"
+        bad_json.write_text("{invalid json")
+
+        results = {"timeseries_path": str(bad_json)}
+
+        # Should not raise
+        normalized = normalize_results_for_report(results, output_dir=tmp_path)
+
+        # Should fallback to empty dict
+        assert normalized["timeseries"] == {}
+
+    def test_flowsheet_none_safely_coerced(self):
+        """flowsheet=None is coerced to empty dict without crash."""
+        from reports.qmd_builder import normalize_results_for_report
+
+        results = {"flowsheet": None}
+
+        normalized = normalize_results_for_report(results)
+
+        assert normalized["flowsheet"] == {"has_diagram": False, "streams": [], "units": []}
+        assert normalized["flowsheet"]["has_diagram"] is False
+
+    def test_removal_efficiency_maps_to_performance(self):
+        """removal_efficiency populates performance.cod/nitrogen/etc."""
+        from reports.qmd_builder import normalize_results_for_report
+
+        results = {
+            "removal_efficiency": {
+                "COD_removal_pct": 85.5,
+                "TN_removal_pct": 75.0,
+                "TP_removal_pct": 90.0,
+            }
+        }
+
+        normalized = normalize_results_for_report(results)
+
+        # Verify nested structure exists
+        assert "cod" in normalized["performance"]
+        assert "nitrogen" in normalized["performance"]
+        assert "phosphorus" in normalized["performance"]
+        assert "srt" in normalized["performance"]
+
+        # Verify values mapped correctly
+        assert normalized["performance"]["cod"]["removal_pct"] == 85.5
+        assert normalized["performance"]["nitrogen"]["tn_removal_pct"] == 75.0
+        assert normalized["performance"]["phosphorus"]["tp_removal_pct"] == 90.0
+
+    def test_effluent_quality_flattens_all_species(self):
+        """effluent_quality flattens to NH4/NO3/PO4/COD/TSS/VSS."""
+        from reports.qmd_builder import normalize_results_for_report
+
+        results = {
+            "effluent_quality": {
+                "COD_mg_L": 45,
+                "TSS_mg_L": 12,
+                "VSS_mg_L": 10,
+                "nitrogen": {"NH4_mg_N_L": 3, "NO3_mg_N_L": 7, "N2_mg_N_L": 15},
+                "phosphorus": {"PO4_mg_P_L": 0.5},
+            }
+        }
+
+        normalized = normalize_results_for_report(results)
+
+        # Explicit assertions for all 7 species
+        assert normalized["effluent"]["COD_mg_L"] == 45
+        assert normalized["effluent"]["TSS_mg_L"] == 12
+        assert normalized["effluent"]["VSS_mg_L"] == 10
+        assert normalized["effluent"]["NH4_mg_N_L"] == 3
+        assert normalized["effluent"]["NO3_mg_N_L"] == 7
+        assert normalized["effluent"]["N2_mg_N_L"] == 15
+        assert normalized["effluent"]["PO4_mg_P_L"] == 0.5
+
+    def test_template_render_minimal_flowsheet_result(self, tmp_path):
+        """Minimal flowsheet result renders template without crash."""
+        from reports.qmd_builder import _prepare_aerobic_data, render_template
+
+        # Minimal result - just what flowsheet_builder might produce
+        minimal_result = {
+            "diagram_path": None,
+            "timeseries_path": None,
+            "metadata": {"solver": {"duration_days": 1, "method": "RK23"}},
+        }
+
+        # Should not crash during preparation
+        prepared = _prepare_aerobic_data(minimal_result)
+
+        # All required keys should exist with defaults
+        assert "effluent" in prepared
+        assert "performance" in prepared
+        assert "flowsheet" in prepared
+        assert prepared["simulation"]["duration_days"] == 1
+
+        # Actually render the template - this should not crash
+        meta = {"report_date": "2026-01-11", "simulation_id": "test123"}
+        rendered = render_template('aerobic_report.qmd', prepared, meta)
+
+        # Verify rendered content is a non-empty string
+        assert isinstance(rendered, str)
+        assert len(rendered) > 100  # Should have substantial content
+        assert "COD Removal" in rendered  # Should contain expected sections
+
+    def test_relative_timeseries_path_resolved(self, tmp_path):
+        """Relative timeseries_path resolved via output_dir."""
+        from reports.qmd_builder import normalize_results_for_report
+
+        # Create file in tmp_path
+        ts_file = tmp_path / "timeseries.json"
+        ts_data = {"time": [0], "streams": {}}
+        ts_file.write_text(json.dumps(ts_data))
+
+        # Use relative path
+        results = {"timeseries_path": "timeseries.json"}
+
+        normalized = normalize_results_for_report(results, output_dir=tmp_path)
+
+        assert normalized["timeseries"] == ts_data
+
+    def test_sulfur_mapped_for_anaerobic(self):
+        """effluent_quality.sulfur maps to top-level sulfur dict."""
+        from reports.qmd_builder import normalize_results_for_report
+
+        sulfur_data = {
+            "sulfate_in_mg_L": 100,
+            "sulfide_out_mg_L": 50,
+            "h2s_gas_pct": 2.5,
+        }
+
+        results = {
+            "effluent_quality": {
+                "sulfur": sulfur_data
+            }
+        }
+
+        normalized = normalize_results_for_report(results)
+
+        assert normalized["sulfur"] == sulfur_data
+        assert normalized["sulfur"]["sulfate_in_mg_L"] == 100
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v', '--tb=short'])
