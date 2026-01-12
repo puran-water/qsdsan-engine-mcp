@@ -624,39 +624,6 @@ def pcm(state_arr, params):
 
     return pH, nh3, co2, activities
 
-def saturation_index(acts, Ksp):
-    """
-    Calculate saturation indices for mineral precipitation.
-
-    Computes the ratio of ionic activity product (IAP) to solubility product (Ksp)
-    for each mineral.
-
-    Parameters
-    ----------
-    acts : ndarray
-        Array of ionic activities (placeholder - currently unity)
-    Ksp : ndarray
-        Solubility products for each mineral
-
-    Returns
-    -------
-    ndarray
-        Saturation indices (IAP/Ksp) for each mineral
-
-    Notes
-    -----
-    SI > 1: supersaturated (precipitation likely)
-    SI = 1: at equilibrium
-    SI < 1: undersaturated (no precipitation)
-
-    This is a placeholder implementation that returns unity (no precipitation)
-    Future: implement proper IAP calculation from activities
-    """
-    # Placeholder: return all minerals at equilibrium (SI = 1.0)
-    # Future: compute IAP from activities (e.g., IAP_calcite = a_Ca2+ * a_CO32-)
-    # Then return IAP / Ksp
-    return np.ones_like(Ksp)
-
 
 # H2 tracking for Newton solver - required by AnaerobicCSTR
 _H2_EPS = 1e-8

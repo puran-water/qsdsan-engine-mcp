@@ -53,6 +53,7 @@ __all__ = [
     'build_aerobic_report',
     'build_report',
     'generate_report',
+    'normalize_results_for_report',
     'render_template',
 ]
 
@@ -116,6 +117,279 @@ def _get_kpi_class(status: str) -> str:
         'yellow': 'kpi-warn',
         'red': 'kpi-crit',
     }.get(status, 'kpi-ok')
+
+
+def normalize_results_for_report(
+    results: Dict[str, Any],
+    output_dir: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """
+    Normalize simulation results to match template expectations.
+
+    This function bridges the gap between various result producers
+    (flowsheet_builder, anaerobic/aerobic templates) and the QMD template
+    requirements. MUST be idempotent - safe to call multiple times.
+
+    Handles:
+    1. diagram_path -> flowsheet.diagram_path (verify file exists)
+    2. timeseries_path -> timeseries (load JSON, handle relative paths)
+    3. metadata.solver.* -> top-level duration_days, method
+    4. effluent_quality -> effluent with expected field names
+    5. removal_efficiency -> performance (with nested cod/nitrogen/phosphorus/srt)
+    6. effluent_quality.sulfur -> sulfur (top-level for anaerobic)
+    7. Default values for all template-required fields
+    8. Guard flowsheet = None -> {}
+
+    Parameters
+    ----------
+    results : dict
+        Raw simulation results from any source
+    output_dir : Path, optional
+        Output directory for resolving relative paths (e.g., timeseries.json)
+
+    Returns
+    -------
+    dict
+        Normalized results ready for template rendering
+    """
+    # Work on a copy to avoid mutating original
+    data = deepcopy(results)
+
+    # 1. Guard against None flowsheet and normalize diagram_path
+    if data.get("flowsheet") is None:
+        data["flowsheet"] = {}
+    flowsheet = data["flowsheet"]
+
+    # Copy diagram_path from top-level to flowsheet if present
+    if data.get("diagram_path") and not flowsheet.get("diagram_path"):
+        diagram_path = Path(data["diagram_path"])
+        # Resolve relative path against output_dir
+        if not diagram_path.is_absolute() and output_dir:
+            diagram_path = Path(output_dir) / diagram_path.name
+        # Only set if file actually exists
+        if diagram_path.exists():
+            flowsheet["diagram_path"] = str(diagram_path)
+
+    flowsheet["has_diagram"] = flowsheet.get("diagram_path") is not None
+    flowsheet.setdefault("streams", [])
+    flowsheet.setdefault("units", [])
+
+    # 2. Load timeseries from path if not already loaded
+    if data.get("timeseries_path") and not data.get("timeseries"):
+        try:
+            ts_path = Path(data["timeseries_path"])
+            # Resolve relative path against output_dir
+            if not ts_path.is_absolute() and output_dir:
+                ts_path = Path(output_dir) / ts_path.name
+            if ts_path.exists():
+                with open(ts_path, "r") as f:
+                    data["timeseries"] = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(f"Failed to load timeseries from {data.get('timeseries_path')}: {e}")
+            data["timeseries"] = {}
+
+    # Ensure timeseries exists
+    data.setdefault("timeseries", {})
+
+    # 3. Extract solver metadata to top-level
+    solver = data.get("metadata", {}).get("solver", {})
+    data.setdefault("duration_days", solver.get("duration_days", 0))
+    data.setdefault("method", solver.get("method", "RK23"))
+    data.setdefault("tolerance", str(solver.get("rtol", 1e-3)))
+
+    # 4. Map effluent_quality to effluent with flattened structure
+    effluent = data.setdefault("effluent", {})
+    if "effluent_quality" in data:
+        eq = data["effluent_quality"]
+        # Basic stream properties
+        effluent.setdefault("COD_mg_L", eq.get("COD_mg_L", 0))
+        effluent.setdefault("TSS_mg_L", eq.get("TSS_mg_L", 0))
+        effluent.setdefault("VSS_mg_L", eq.get("VSS_mg_L", 0))
+
+        # Flatten nested nitrogen dict
+        if "nitrogen" in eq:
+            n = eq["nitrogen"]
+            effluent.setdefault("NH4_mg_N_L", n.get("NH4_mg_N_L", 0))
+            effluent.setdefault("NO3_mg_N_L", n.get("NO3_mg_N_L", 0))
+            effluent.setdefault("N2_mg_N_L", n.get("N2_mg_N_L", 0))
+
+        # Flatten nested phosphorus dict
+        if "phosphorus" in eq:
+            p = eq["phosphorus"]
+            effluent.setdefault("PO4_mg_P_L", p.get("PO4_mg_P_L", 0))
+
+        # 6. Map sulfur to top-level for anaerobic reports
+        if "sulfur" in eq and "sulfur" not in data:
+            data["sulfur"] = eq["sulfur"]
+
+    # Ensure effluent defaults exist
+    effluent.setdefault("NH4_mg_N_L", 0)
+    effluent.setdefault("NO3_mg_N_L", 0)
+    effluent.setdefault("PO4_mg_P_L", 0)
+    effluent.setdefault("N2_mg_N_L", 0)
+    effluent.setdefault("COD_mg_L", 0)
+    effluent.setdefault("TSS_mg_L", 0)
+    effluent.setdefault("VSS_mg_L", 0)
+
+    # 5. Map removal_efficiency to performance with nested structure
+    performance = data.setdefault("performance", {})
+    if "removal_efficiency" in data:
+        re = data["removal_efficiency"]
+        # Map to nested structure expected by templates
+        if "COD_removal_pct" in re and "cod" not in performance:
+            performance["cod"] = {"removal_pct": re.get("COD_removal_pct", 0)}
+        if "TN_removal_pct" in re and "nitrogen" not in performance:
+            performance["nitrogen"] = {
+                "tn_removal_pct": re.get("TN_removal_pct", 0),
+                "nh4_removal_pct": re.get("NH4_removal_pct", 0),
+                "no3_removal_pct": re.get("NO3_removal_pct", 0),
+                "tn_in_mg_L": 0,
+                "tn_out_mg_L": 0,
+                "nh4_in_mg_L": 0,
+                "nh4_out_mg_L": 0,
+                "no3_in_mg_L": 0,
+                "no3_out_mg_L": 0,
+                "nitrification_rate": 0,
+                "denitrification_rate": 0,
+            }
+        if "TP_removal_pct" in re and "phosphorus" not in performance:
+            performance["phosphorus"] = {
+                "tp_removal_pct": re.get("TP_removal_pct", 0),
+                "tp_in_mg_L": 0,
+                "tp_out_mg_L": 0,
+                "po4_in_mg_L": 0,
+                "po4_out_mg_L": 0,
+                "po4_removal_pct": 0,
+            }
+
+    # Ensure performance nested defaults exist
+    performance.setdefault("cod", {"removal_pct": 0})
+    performance.setdefault("nitrogen", {
+        "tn_removal_pct": 0,
+        "nh4_removal_pct": 0,
+        "no3_removal_pct": 0,
+        "tn_in_mg_L": 0,
+        "tn_out_mg_L": 0,
+        "nh4_in_mg_L": 0,
+        "nh4_out_mg_L": 0,
+        "no3_in_mg_L": 0,
+        "no3_out_mg_L": 0,
+        "nitrification_rate": 0,
+        "denitrification_rate": 0,
+    })
+    performance.setdefault("phosphorus", {
+        "tp_removal_pct": 0,
+        "tp_in_mg_L": 0,
+        "tp_out_mg_L": 0,
+        "po4_in_mg_L": 0,
+        "po4_out_mg_L": 0,
+        "po4_removal_pct": 0,
+    })
+    performance.setdefault("srt", {"SRT_days": 0})
+
+    # Ensure performance nested keys have defaults
+    performance["cod"].setdefault("removal_pct", 0)
+    performance["nitrogen"].setdefault("tn_removal_pct", 0)
+    performance["nitrogen"].setdefault("nh4_removal_pct", 0)
+    performance["nitrogen"].setdefault("no3_removal_pct", 0)
+    performance["nitrogen"].setdefault("tn_in_mg_L", 0)
+    performance["nitrogen"].setdefault("tn_out_mg_L", 0)
+    performance["nitrogen"].setdefault("nh4_in_mg_L", 0)
+    performance["nitrogen"].setdefault("nh4_out_mg_L", 0)
+    performance["nitrogen"].setdefault("no3_in_mg_L", 0)
+    performance["nitrogen"].setdefault("no3_out_mg_L", 0)
+    performance["nitrogen"].setdefault("nitrification_rate", 0)
+    performance["nitrogen"].setdefault("denitrification_rate", 0)
+    performance["phosphorus"].setdefault("tp_removal_pct", 0)
+    performance["phosphorus"].setdefault("tp_in_mg_L", 0)
+    performance["phosphorus"].setdefault("tp_out_mg_L", 0)
+    performance["phosphorus"].setdefault("po4_in_mg_L", 0)
+    performance["phosphorus"].setdefault("po4_out_mg_L", 0)
+    performance["phosphorus"].setdefault("po4_removal_pct", 0)
+    performance["srt"].setdefault("SRT_days", 0)
+    # Additional top-level performance keys
+    performance.setdefault("HRT_hours", 0)
+    performance.setdefault("FM_ratio", 0)
+    performance.setdefault("OTR_kg_O2_d", 0)
+    performance.setdefault("COD_removal_pct", 0)
+    performance.setdefault("specific_CH4_yield_m3_kg_COD", 0)
+    performance.setdefault("OLR_kg_COD_m3_d", 0)
+
+    # Ensure other required top-level keys exist
+    data.setdefault("influent", {"flow_m3_d": 0})
+    data["influent"].setdefault("flow_m3_d", 0)
+    data.setdefault("reactor", {
+        # Aerobic reactor volumes
+        "V_anoxic_m3": 0,
+        "V_aerobic_m3": 0,
+        "V_mbr_m3": 0,
+        "V_total_m3": 0,
+        "DO_aerobic_mg_L": 0,
+        "DO_mbr_mg_L": 0,
+        # Recycle flows
+        "Q_ras_m3_d": 0,
+        "Q_ir_m3_d": 0,
+        "Q_was_m3_d": 0,
+        "RAS_ratio": 0,
+        "IR_ratio": 0,
+        # Anaerobic reactor params
+        "V_liq_m3": 0,
+        "V_gas_m3": 0,
+        "temperature_C": 35,
+        "HRT_days": 0,
+    })
+    # Ensure reactor nested keys have defaults
+    reactor = data["reactor"]
+    reactor.setdefault("V_anoxic_m3", 0)
+    reactor.setdefault("V_aerobic_m3", 0)
+    reactor.setdefault("V_mbr_m3", 0)
+    reactor.setdefault("V_total_m3", 0)
+    reactor.setdefault("DO_aerobic_mg_L", 0)
+    reactor.setdefault("DO_mbr_mg_L", 0)
+    reactor.setdefault("Q_ras_m3_d", 0)
+    reactor.setdefault("Q_ir_m3_d", 0)
+    reactor.setdefault("Q_was_m3_d", 0)
+    reactor.setdefault("RAS_ratio", 0)
+    reactor.setdefault("IR_ratio", 0)
+    reactor.setdefault("V_liq_m3", 0)
+    reactor.setdefault("V_gas_m3", 0)
+    reactor.setdefault("temperature_C", 35)
+    reactor.setdefault("HRT_days", 0)
+    data.setdefault("biomass", {
+        "X_PAO_mg_COD_L": 0,
+        "X_PP_mg_P_L": 0,
+        "X_PHA_mg_COD_L": 0,
+        "X_H_mg_COD_L": 0,
+        "X_AUT_mg_COD_L": 0,
+        "X_S_mg_COD_L": 0,
+        "X_I_mg_COD_L": 0,
+        "MLSS_mg_L": 0,
+        "MLVSS_mg_L": 0,
+        "VSS_TSS_ratio": 0,
+        "SVI_mL_g": 0,
+    })
+    # Ensure biomass nested keys have defaults
+    biomass = data["biomass"]
+    biomass.setdefault("X_PAO_mg_COD_L", 0)
+    biomass.setdefault("X_PP_mg_P_L", 0)
+    biomass.setdefault("X_PHA_mg_COD_L", 0)
+    biomass.setdefault("X_H_mg_COD_L", 0)
+    biomass.setdefault("X_AUT_mg_COD_L", 0)
+    biomass.setdefault("X_S_mg_COD_L", 0)
+    biomass.setdefault("X_I_mg_COD_L", 0)
+    biomass.setdefault("MLSS_mg_L", 0)
+    biomass.setdefault("MLVSS_mg_L", 0)
+    biomass.setdefault("VSS_TSS_ratio", 0)
+    biomass.setdefault("SVI_mL_g", 0)
+
+    data.setdefault("biogas", {})
+    data.setdefault("inhibition", {})
+    data.setdefault("sulfur", {})
+    data.setdefault("unit_analysis", {})
+    data.setdefault("thresholds", {})
+    data.setdefault("status", "unknown")
+
+    return data
 
 
 def _generate_anaerobic_plots(
@@ -288,9 +562,13 @@ def _prepare_anaerobic_data(
     output_path : Path, optional
         If provided, generate plots in plots/ subdirectory
     """
-    data = deepcopy(result)
+    # Normalize results first to ensure all required keys exist
+    data = normalize_results_for_report(
+        result,
+        output_dir=output_path.parent if output_path else None
+    )
 
-    # Extract nested data
+    # Extract nested data (now guaranteed to exist after normalization)
     influent = data.get('influent', {})
     effluent = data.get('effluent', {})
     reactor = data.get('reactor', {})
@@ -400,9 +678,13 @@ def _prepare_aerobic_data(
     output_path : Path, optional
         If provided, generate plots in plots/ subdirectory
     """
-    data = deepcopy(result)
+    # Normalize results first to ensure all required keys exist
+    data = normalize_results_for_report(
+        result,
+        output_dir=output_path.parent if output_path else None
+    )
 
-    # Extract nested data
+    # Extract nested data (now guaranteed to exist after normalization)
     influent = data.get('influent', {})
     effluent = data.get('effluent', {})
     reactor = data.get('reactor', {})

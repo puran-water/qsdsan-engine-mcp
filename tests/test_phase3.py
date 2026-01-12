@@ -841,3 +841,125 @@ class TestMCPToolBehavior:
         assert "R1" in cloned.units
         assert cloned.streams["inf"].flow_m3_d == 1000
         assert cloned.units["R1"].params["V_max"] == 500
+
+
+# =============================================================================
+# Phase 5 Tests - Artifact Contract
+# =============================================================================
+
+class TestArtifactContract:
+    """Verify artifact retrieval matches production locations.
+
+    Uses tmp_path isolation - no writes to real jobs/ directory.
+    All assertions are explicit on content and types.
+
+    Test Hygiene:
+    - NO MagicMock/Mock() - use real files
+    - NO broad except:pass - explicit exception types
+    - NO pytest.skip() for core functionality
+    - Filesystem isolation via tmp_path + monkeypatch.chdir()
+    """
+
+    def test_get_artifact_finds_diagram_in_job_dir(self, tmp_path, monkeypatch):
+        """get_artifact returns diagram from jobs/{job_id}/flowsheet.svg."""
+        import server
+
+        # Create jobs directory structure in tmp_path
+        job_id = "test123"
+        job_dir = tmp_path / "jobs" / job_id
+        job_dir.mkdir(parents=True)
+
+        # Create real SVG file
+        svg_content = '<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>'
+        (job_dir / "flowsheet.svg").write_text(svg_content)
+
+        # Change to tmp_path so jobs/ is found relative to cwd
+        monkeypatch.chdir(tmp_path)
+
+        # Call get_artifact synchronously (it's an async function)
+        import asyncio
+        result = asyncio.run(server.get_artifact(job_id=job_id, artifact_type="diagram"))
+
+        # get_artifact returns error key on failure, content/path on success
+        assert "error" not in result, f"Unexpected error: {result.get('error')}"
+        assert "content" in result
+        assert "<svg" in result["content"] or "<?xml" in result["content"]
+        # Check format field (serves as content type indicator)
+        # get_artifact returns format="svg" for SVG files (equivalent to content_type=image/svg+xml)
+        assert result.get("format") == "svg", f"Expected format='svg', got {result.get('format')}"
+        assert "svg" in str(result.get("path", ""))
+
+    def test_get_artifact_finds_timeseries_in_job_dir(self, tmp_path, monkeypatch):
+        """get_artifact returns parsed JSON from jobs/{job_id}/timeseries.json."""
+        import server
+
+        # Create jobs directory structure
+        job_id = "ts_test"
+        job_dir = tmp_path / "jobs" / job_id
+        job_dir.mkdir(parents=True)
+
+        # Create real timeseries JSON
+        ts_data = {"time": [0, 1, 2], "streams": {"effluent": {"COD": [100, 80, 60]}}, "time_units": "days"}
+        (job_dir / "timeseries.json").write_text(json.dumps(ts_data))
+
+        monkeypatch.chdir(tmp_path)
+
+        import asyncio
+        result = asyncio.run(server.get_artifact(job_id=job_id, artifact_type="timeseries"))
+
+        # get_artifact returns error key on failure, content/path on success
+        assert "error" not in result, f"Unexpected error: {result.get('error')}"
+        assert "content" in result
+        # Content should be parsed JSON (dict) - get_artifact parses JSON automatically
+        content = result["content"]
+        if isinstance(content, str):
+            content = json.loads(content)
+        assert content["time"] == [0, 1, 2]
+        assert "streams" in content
+
+    def test_get_artifact_returns_svg_as_text(self, tmp_path, monkeypatch):
+        """SVG content returned as text, not base64."""
+        import server
+
+        job_id = "svg_text"
+        job_dir = tmp_path / "jobs" / job_id
+        job_dir.mkdir(parents=True)
+
+        svg_content = '<svg xmlns="http://www.w3.org/2000/svg"><circle cx="50" cy="50" r="40"/></svg>'
+        (job_dir / "flowsheet.svg").write_text(svg_content)
+
+        monkeypatch.chdir(tmp_path)
+
+        import asyncio
+        result = asyncio.run(server.get_artifact(job_id=job_id, artifact_type="diagram"))
+
+        # get_artifact returns error key on failure, content/path on success
+        assert "error" not in result, f"Unexpected error: {result.get('error')}"
+        content = result["content"]
+
+        # Should be string (text), not bytes
+        assert isinstance(content, str)
+        # Should start with SVG-like content, not base64
+        assert content.startswith("<svg") or content.startswith("<?xml")
+        # Base64 starts with letters/numbers, not angle brackets
+        assert not content.startswith("PD") and not content.startswith("PH")  # Common base64 SVG prefixes
+
+    def test_get_artifact_missing_file_returns_error(self, tmp_path, monkeypatch):
+        """Missing artifact returns error, doesn't raise exception."""
+        import server
+
+        # Create empty jobs directory (no files)
+        job_id = "empty_job"
+        job_dir = tmp_path / "jobs" / job_id
+        job_dir.mkdir(parents=True)
+
+        monkeypatch.chdir(tmp_path)
+
+        import asyncio
+        result = asyncio.run(server.get_artifact(job_id=job_id, artifact_type="diagram"))
+
+        # Should return error dict, not raise exception
+        # get_artifact returns {"error": "..."} on failure
+        assert "error" in result, "Expected error key in result for missing file"
+        error_msg = result["error"]
+        assert "not found" in error_msg.lower() or "no" in error_msg.lower()
