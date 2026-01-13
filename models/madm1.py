@@ -197,7 +197,9 @@ def create_madm1_cmps(set_thermo=True, ASF_L=0.31, ASF_H=1.2):
     X_HFO_LP_old.description = 'Old ' + X_HFO_LP.description
     
     X_CCM = Component.from_chemical('X_CCM', chemical='calcite', description='Calcite', **mineral_properties)
-    X_ACC = Component.from_chemical('X_ACC', chemical='aragonite', description='Aragonite', **mineral_properties)
+    # X_ACC is aragonite (CaCO3 polymorph, same formula as calcite)
+    # Use direct Component creation to avoid CAS alias collision (both have CAS 471-34-1)
+    X_ACC = Component('X_ACC', formula='CaCO3', description='Aragonite', **mineral_properties)
     X_ACP = Component.from_chemical('X_ACP', chemical='Ca3(PO4)2', description='Amorphous calcium phosphate', **mineral_properties)
     X_HAP = Component.from_chemical('X_HAP', chemical='hydroxylapatite', description='Hydroxylapatite', **mineral_properties)
     X_DCPD = Component.from_chemical('X_DCPD', chemical='CaHPO4', description='Dicalcium phosphate', **mineral_properties)

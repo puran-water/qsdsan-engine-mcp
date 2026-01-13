@@ -20,6 +20,7 @@ Universal wastewater simulation engine supporting anaerobic (mADM1, 63 component
 | Phase 5 Plan | `docs/completed-plans/phase5-report-integration.md` | Complete |
 | Phase 6 Plan | `docs/completed-plans/phase6-production-hardening.md` | Complete |
 | Phase 7 Plan | `docs/completed-plans/phase7-production-hardening.md` | Complete |
+| Phase 7B Bug Fixes | `docs/completed-plans/phase7b-bug-fixes.md` | Complete |
 
 ---
 
@@ -35,8 +36,9 @@ Universal wastewater simulation engine supporting anaerobic (mADM1, 63 component
 | 5 | Report Integration (schema normalization, artifact contracts) | Complete |
 | 6 | Production Hardening (fail-fast, JobManager tests) | Complete |
 | 7 | Final Hardening (path traversal, concentration validation) | Complete |
+| 7B | Bug fixes (CAS collision, VFA/sulfur report data) | Complete |
 
-**Test Count:** 269 tests passing (Phase 7 validation: 2026-01-12)
+**Test Count:** 280 tests passing (Phase 7B validation: 2026-01-13)
 
 ---
 
