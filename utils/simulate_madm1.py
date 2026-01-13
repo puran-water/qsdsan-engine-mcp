@@ -62,6 +62,100 @@ N_mw = get_mw({'N': 1})
 
 logger = logging.getLogger(__name__)
 
+# Module-level component set (initialized once)
+_MADM1_CMPS = None
+_THERMO_SET = False
+
+# Expected mADM1 component order (critical for kinetics)
+# Based on qsdsan_madm1.py:212-223 and verified against anaerobic-design-mcp
+EXPECTED_COMPONENT_ORDER = [
+    'S_su', 'S_aa', 'S_fa', 'S_va', 'S_bu', 'S_pro', 'S_ac', 'S_h2', 'S_ch4',
+    'S_IC', 'S_IN', 'S_IP', 'S_I',
+    'X_ch', 'X_pr', 'X_li', 'X_su', 'X_aa', 'X_fa', 'X_c4', 'X_pro', 'X_ac', 'X_h2', 'X_I',
+    'X_PHA', 'X_PP', 'X_PAO',
+    'S_K', 'S_Mg',
+    'S_SO4', 'S_IS', 'X_hSRB', 'X_aSRB', 'X_pSRB', 'X_c4SRB', 'S_S0',
+    'S_Fe3', 'S_Fe2',
+    'X_HFO_H', 'X_HFO_L', 'X_HFO_old', 'X_HFO_HP', 'X_HFO_LP', 'X_HFO_HP_old', 'X_HFO_LP_old',
+    'S_Ca', 'S_Al',
+    'X_CCM', 'X_ACC', 'X_ACP', 'X_HAP', 'X_DCPD', 'X_OCP',
+    'X_struv', 'X_newb', 'X_magn', 'X_kstruv',
+    'X_FeS', 'X_Fe3PO42', 'X_AlPO4',
+    'S_Na', 'S_Cl',
+    'H2O'
+]
+
+
+def verify_component_ordering(cmps):
+    """
+    Verify that mADM1 component ordering is correct.
+
+    CRITICAL: mADM1 kinetics depend on specific state vector positions.
+    If ordering is wrong, the tracked COD proxy (S_ac) can map to the wrong
+    state variable, causing oscillations while biomass appears stable.
+
+    Parameters
+    ----------
+    cmps : CompiledComponents
+        QSDsan component set to verify
+
+    Returns
+    -------
+    bool
+        True if ordering is correct
+
+    Raises
+    ------
+    RuntimeError
+        If component ordering is incorrect
+    """
+    if len(cmps) != 63:
+        raise RuntimeError(f"Expected 63 mADM1 components, got {len(cmps)}")
+
+    # Verify all 63 positions
+    for idx, expected_id in enumerate(EXPECTED_COMPONENT_ORDER):
+        actual_id = cmps.IDs[idx]
+        if actual_id != expected_id:
+            raise RuntimeError(
+                f"mADM1 component ordering broken at position {idx}: "
+                f"found '{actual_id}', expected '{expected_id}'. "
+                f"This will cause state variable misalignment and simulation failures."
+            )
+
+    logger.info("mADM1 component ordering verified: ALL 63 components in correct positions")
+    return True
+
+
+def get_validated_components():
+    """
+    Get validated mADM1 component set (creates once, validates, sets thermo).
+
+    This ensures component ordering is correct before any simulation runs.
+    Component ordering mismatches cause COD tracking to reference wrong state
+    variables, leading to oscillations and convergence failures.
+
+    Returns
+    -------
+    CompiledComponents
+        Validated mADM1 component set
+    """
+    global _MADM1_CMPS, _THERMO_SET
+    import qsdsan as qs
+
+    if _MADM1_CMPS is None:
+        logger.info("Initializing mADM1 component set (first call)...")
+        _MADM1_CMPS = create_madm1_cmps(set_thermo=False)
+
+        # Verify ordering BEFORE setting thermo
+        verify_component_ordering(_MADM1_CMPS)
+
+        # Set thermo once
+        qs.set_thermo(_MADM1_CMPS)
+        _THERMO_SET = True
+        logger.info("mADM1 thermo set successfully")
+
+    return _MADM1_CMPS
+
 
 def create_influent_stream_sulfur(Q, Temp, adm1_state_62):
     """
@@ -90,13 +184,16 @@ def create_influent_stream_sulfur(Q, Temp, adm1_state_62):
     - Codex agent generates disaggregated SRB biomass (X_hSRB, X_aSRB, X_pSRB, X_c4SRB)
     """
     try:
-        # Use mADM1 components (62 + H2O = 63 total)
-        madm1_cmps = create_madm1_cmps()
+        # Use validated mADM1 components (62 + H2O = 63 total)
+        # CRITICAL: Use get_validated_components() to ensure ordering is correct
+        # and thermo is set consistently. Component ordering mismatches cause
+        # state variable misalignment and convergence failures.
+        madm1_cmps = get_validated_components()
 
         inf = WasteStream('Influent', T=Temp)
 
-        # Set component system (must be done before setting flows)
-        # This is handled by QSDsan when ADM1_SULFUR_CMPS is loaded
+        # Component system is set via get_validated_components() which calls
+        # qs.set_thermo(madm1_cmps) once on first call
 
         # Prepare concentrations for set_flow_by_concentration
         concentrations = {}
@@ -201,9 +298,10 @@ def initialize_62_component_state(adm1_state_62):
     2. H2S inhibition can be calculated
     3. Sulfur mass balance is meaningful
     """
-    # Get the mADM1 component set directly - it will be initialized when simulation runs
-    # This avoids dependency on async loader initialization state
-    madm1_cmps = create_madm1_cmps(set_thermo=False)  # Don't reset thermo if already set
+    # CRITICAL: Use get_validated_components() to ensure consistent thermo/ordering
+    # Creating new components with create_madm1_cmps() causes thermo flip-flopping
+    # and state variable misalignment leading to convergence failures
+    madm1_cmps = get_validated_components()
 
     def _to_number(val):
         """Coerce input value to float; handle [value, unit, comment] lists."""
@@ -664,7 +762,9 @@ def run_simulation_sulfur(basis, adm1_state_62, HRT, check_interval=2, tolerance
         logger.info("="*80)
 
         logger.info("Creating mADM1 model (62 components, built-in sulfur biology)")
-        madm1_cmps = create_madm1_cmps()
+        # CRITICAL: Use get_validated_components() to ensure consistent thermo/ordering
+        # Calling create_madm1_cmps() directly causes thermo flip-flopping and convergence failures
+        madm1_cmps = get_validated_components()
         madm1_model = ModifiedADM1(components=madm1_cmps)
         logger.info(f"mADM1 model created with {len(madm1_model)} processes")
 

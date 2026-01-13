@@ -578,6 +578,82 @@ def _prepare_anaerobic_data(
     sulfur = data.get('sulfur', {})
     flowsheet = data.get('flowsheet', {})
 
+    # Calculate VFA data from effluent if not present in inhibition
+    # mADM1 tracks individual VFA species: S_va (valerate), S_bu (butyrate), S_pro (propionate), S_ac (acetate)
+    if 'VFA' not in inhibition or inhibition.get('VFA') is None:
+        eff_concs = effluent.get('concentrations', effluent)
+        # VFA concentrations are already in mg/L in effluent (for mADM1, or mg COD/L)
+        acetate = eff_concs.get('S_ac', 0) or 0
+        propionate = eff_concs.get('S_pro', 0) or 0
+        butyrate = eff_concs.get('S_bu', 0) or 0
+        valerate = eff_concs.get('S_va', 0) or 0
+        total_vfa = acetate + propionate + butyrate + valerate
+
+        # Alkalinity from S_IC (inorganic carbon) - approximate as 50 mg CaCO3/L per mg C/L
+        s_ic = eff_concs.get('S_IC', 0) or 0
+        alkalinity = s_ic * 4.17  # Approximate alkalinity in mg CaCO3/L from S_IC in mg/L
+
+        # VFA/Alkalinity ratio (dimensionless)
+        vfa_alk_ratio = (total_vfa / alkalinity) if alkalinity > 0 else 0
+
+        inhibition['VFA'] = {
+            'acetate_mg_COD_L': acetate,
+            'propionate_mg_COD_L': propionate,
+            'butyrate_mg_COD_L': butyrate,
+            'valerate_mg_COD_L': valerate,
+            'total_VFA_mg_COD_L': total_vfa,
+            'alkalinity_mg_CaCO3_L': alkalinity,
+            'VFA_ALK_ratio': vfa_alk_ratio,
+        }
+
+    # Calculate sulfur data from effluent if not present
+    # mADM1 tracks SRB (sulfate-reducing bacteria) biomass: X_hSRB, X_aSRB, X_pSRB, X_c4SRB
+    eff_concs = effluent.get('concentrations', effluent)
+    inf_concs = influent.get('concentrations', influent)
+
+    # SRB biomass (from effluent)
+    X_hSRB = eff_concs.get('X_hSRB', 0) or 0  # H2-oxidizing SRB
+    X_aSRB = eff_concs.get('X_aSRB', 0) or 0  # Acetate-utilizing SRB
+    X_pSRB = eff_concs.get('X_pSRB', 0) or 0  # Propionate-utilizing SRB
+    X_c4SRB = eff_concs.get('X_c4SRB', 0) or 0  # Butyrate/valerate-utilizing SRB
+    total_srb = X_hSRB + X_aSRB + X_pSRB + X_c4SRB
+
+    # Sulfate in/out (S_SO4 is in mg S/L)
+    sulfate_in = inf_concs.get('S_SO4', 0) or 0
+    sulfate_out = eff_concs.get('S_SO4', 0) or 0
+    sulfate_removal = ((sulfate_in - sulfate_out) / sulfate_in * 100) if sulfate_in > 0 else 0
+
+    # Sulfide species (S_IS is total dissolved sulfide in mADM1)
+    s_is = eff_concs.get('S_IS', 0) or 0  # Total inorganic sulfide
+
+    # Update sulfur dict with calculated values if not already present
+    if 'X_hSRB_mg_COD_L' not in sulfur:
+        sulfur['X_hSRB_mg_COD_L'] = X_hSRB
+    if 'X_aSRB_mg_COD_L' not in sulfur:
+        sulfur['X_aSRB_mg_COD_L'] = X_aSRB
+    if 'X_pSRB_mg_COD_L' not in sulfur:
+        sulfur['X_pSRB_mg_COD_L'] = X_pSRB
+    if 'X_c4SRB_mg_COD_L' not in sulfur:
+        sulfur['X_c4SRB_mg_COD_L'] = X_c4SRB
+    if 'srb_biomass_mg_COD_L' not in sulfur:
+        sulfur['srb_biomass_mg_COD_L'] = total_srb
+    if 'sulfate_in_mg_L' not in sulfur:
+        sulfur['sulfate_in_mg_L'] = sulfate_in
+    if 'sulfate_out_mg_L' not in sulfur:
+        sulfur['sulfate_out_mg_L'] = sulfate_out
+    if 'sulfate_removal_pct' not in sulfur:
+        sulfur['sulfate_removal_pct'] = sulfate_removal
+    if 'sulfide_total_mg_L' not in sulfur:
+        sulfur['sulfide_total_mg_L'] = s_is
+    if 'H2S_dissolved_mg_L' not in sulfur:
+        # At neutral pH ~7, H2S is roughly 50% of total dissolved sulfide
+        sulfur['H2S_dissolved_mg_L'] = s_is * 0.5
+    if 'HS_dissolved_mg_L' not in sulfur:
+        sulfur['HS_dissolved_mg_L'] = s_is * 0.5
+    if 'h2s_biogas_ppm' not in sulfur:
+        # Default to biogas value if available, otherwise estimate from dissolved
+        sulfur['h2s_biogas_ppm'] = biogas.get('h2s_ppm', 0) or 0
+
     # Default thresholds
     thresholds = {
         'h2s_ppm': 500,
