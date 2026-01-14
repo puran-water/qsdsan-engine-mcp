@@ -42,6 +42,8 @@ htmlcov/
 
 # Output and jobs
 output/
+output_report/
+output_test/
 jobs/
 
 # Claude Code artifacts (CLAUDE.md is tracked - it contains development context)

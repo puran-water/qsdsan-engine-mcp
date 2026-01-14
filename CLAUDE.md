@@ -21,6 +21,7 @@ Universal wastewater simulation engine supporting anaerobic (mADM1, 63 component
 | Phase 6 Plan | `docs/completed-plans/phase6-production-hardening.md` | Complete |
 | Phase 7 Plan | `docs/completed-plans/phase7-production-hardening.md` | Complete |
 | Phase 7B Bug Fixes | `docs/completed-plans/phase7b-bug-fixes.md` | Complete |
+| Phase 7C CH4 Fix | `docs/completed-plans/phase7c-ch4-calculation-fix.md` | Complete |
 
 ---
 
@@ -37,8 +38,9 @@ Universal wastewater simulation engine supporting anaerobic (mADM1, 63 component
 | 6 | Production Hardening (fail-fast, JobManager tests) | Complete |
 | 7 | Final Hardening (path traversal, concentration validation) | Complete |
 | 7B | Bug fixes (CAS collision, VFA/sulfur report data) | Complete |
+| 7C | CH4 calculation fix (COD-to-mass conversion in performance metrics) | Complete |
 
-**Test Count:** 280 tests passing (Phase 7B validation: 2026-01-13)
+**Test Count:** 280 tests passing (Phase 7C validation: 2026-01-14)
 
 ---
 
@@ -81,7 +83,11 @@ qsdsan-engine-mcp/
 │   ├── test_phase3.py     # 53 tests
 │   ├── test_integration.py # E2E tests
 │   ├── test_security.py   # Path traversal tests
-│   └── test_converters.py # Validation tests
+│   ├── test_converters.py # Validation tests
+│   ├── test_madm1_state.json  # Complete 62-component mADM1 state
+│   ├── test_asm2d_state.json  # Complete ASM2d state
+│   └── run_slow_tests.py  # Integration tests for all templates
+├── NOTES_FOR_SKILLS.md    # Guidance for companion agent skills
 └── docs/completed-plans/  # Development plan archives
 ```
 
@@ -113,6 +119,14 @@ Used in `server.py` for job_id/session_id validation.
 ### Session Storage
 Default: `jobs/flowsheets/{session_id}/`
 Override: `QSDSAN_ENGINE_SESSIONS_DIR` environment variable
+
+### CH4 Flow Calculation (Phase 7C Fix)
+`templates/anaerobic/cstr.py:_calculate_performance_metrics()` uses **molar basis** for CH4 volume:
+```python
+ch4_mol = gas.imol['S_ch4']  # kmol/hr
+ch4_flow = ch4_mol * 22.414 * 24  # Nm3/d at STP
+```
+**Critical:** `gas.imass['S_ch4']` returns COD-equivalent mass (not actual CH4 mass). The `i_mass` factor is 0.25067 g CH4/g COD. Using `imass` directly without conversion causes 4x overestimate.
 
 ---
 
