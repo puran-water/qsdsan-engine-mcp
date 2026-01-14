@@ -284,12 +284,26 @@ def _calculate_performance_metrics(inf, eff, gas, V_liq: float) -> Dict[str, Any
         # Biogas production
         biogas_m3_d = float(gas.F_vol * 24) if hasattr(gas, 'F_vol') else 0
 
-        # Get methane content
-        # Try to get CH4 flow from gas stream
+        # Get methane flow using molar basis (correct for ADM1 components)
+        # S_ch4 is measured_as='COD', so imass gives COD-equivalent mass, not actual CH4
+        # Use imol (molar flow) to avoid COD-mass confusion
+        STP_MOLAR_VOLUME = 22.414  # L/mol at STP
+        CH4_DENSITY_STP = 0.717    # kg/m³ at STP
         try:
-            ch4_flow = gas.imass['S_ch4'] * 24 / 0.717 if hasattr(gas, 'imass') else 0  # kg/d to m3/d (0.717 kg/m3 at STP)
-        except:
-            ch4_flow = biogas_m3_d * 0.6  # Assume 60% CH4 if can't calculate
+            # Primary: molar basis (correct for ADM1 with adjust_MW_to_measured_as=True)
+            ch4_mol = gas.imol['S_ch4']  # kmol/hr
+            ch4_flow = ch4_mol * STP_MOLAR_VOLUME * 24  # Nm³/d
+        except Exception as e1:
+            try:
+                # Fallback: mass basis with i_mass correction
+                i_mass_ch4 = gas.components.S_ch4.i_mass  # ~0.25067 g CH4/g COD
+                ch4_flow = gas.imass['S_ch4'] * i_mass_ch4 * 24 / CH4_DENSITY_STP
+            except Exception as e2:
+                # FAIL LOUDLY - do not silently produce wrong results
+                raise RuntimeError(
+                    f"Cannot calculate CH4 flow: molar method failed ({e1}), "
+                    f"mass method failed ({e2}). Check gas stream configuration."
+                )
 
         # Specific methane yield
         COD_removed_kg_d = COD_removed * inf.F_vol * 24 / 1000 if hasattr(inf, 'F_vol') else 0  # mg/L * m3/h * 24 / 1000 = kg/d
