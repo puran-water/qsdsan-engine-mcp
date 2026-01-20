@@ -1,5 +1,8 @@
 # QSDsan Engine MCP
 
+> **⚠️ DEVELOPMENT STATUS: This project is under active development and is not yet production-ready. APIs, interfaces, and functionality may change without notice. Use at your own risk for evaluation and testing purposes only. Not recommended for production deployments.**
+
+
 A universal wastewater treatment simulation engine exposing [QSDsan](https://github.com/QSD-Group/QSDsan) capabilities through dual adapters for AI agent integration.
 
 ## Motivation
