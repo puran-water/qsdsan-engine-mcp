@@ -11,7 +11,7 @@ Commercial wastewater simulation platforms offer sophisticated biological models
 
 QSDsan Engine MCP inverts this paradigm by making **natural language the primary interface**. Instead of clicking through dialogs, engineers describe what they want:
 
-> "Build an MLE process with 4000 m3/d influent, simulate for 15 days, and explain why ammonia removal is low"
+> "Compare anaerobic-aerobic vs aerobic-only treatment for this high-strength industrial waste: evaluate supplemental alkalinity and nutrient costs, digester heating load, and biogas energy credit to identify the lowest life cycle cost flowsheet."
 
 This enables:
 
