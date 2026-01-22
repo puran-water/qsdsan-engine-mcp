@@ -451,6 +451,7 @@ def _resolve_single_input(
     input_ref: str,
     stream_registry: Dict[str, "WasteStream"],
     unit_registry: Dict[str, "SanUnit"],
+    allow_missing: bool = False,
 ) -> Optional[Any]:
     """Resolve a single input reference to a stream/port or None.
 
@@ -458,9 +459,14 @@ def _resolve_single_input(
         input_ref: Port notation string (not tuple notation)
         stream_registry: Dict of stream_id -> WasteStream
         unit_registry: Dict of unit_id -> SanUnit
+        allow_missing: If True, return None for missing refs (for deferred connections).
+                      If False, raise ValueError for missing refs.
 
     Returns:
-        WasteStream, output port, or None if not found
+        WasteStream, output port, or None if allow_missing=True and not found
+
+    Raises:
+        ValueError: If allow_missing=False and the reference cannot be resolved
     """
     from utils.pipe_parser import parse_port_notation
 
@@ -471,15 +477,37 @@ def _resolve_single_input(
         if ref.unit_id in stream_registry:
             return stream_registry[ref.unit_id]
         else:
-            # Create empty stream as placeholder
-            return None
+            # Stream not found - check if it's actually a unit ID (common mistake)
+            if ref.unit_id in unit_registry:
+                # User likely meant unit-0 (first output of the unit)
+                src_unit = unit_registry[ref.unit_id]
+                if len(src_unit.outs) > 0:
+                    logger.debug(f"Input '{input_ref}' resolved as unit output (implicit -0)")
+                    return src_unit.outs[0]
+            if allow_missing:
+                return None
+            raise ValueError(
+                f"Cannot resolve input '{input_ref}': stream not found. "
+                f"Available streams: {list(stream_registry.keys())[:5]}{'...' if len(stream_registry) > 5 else ''}"
+            )
     elif ref.port_type == "output":
         # Output port of another unit (e.g., "A1-0")
         if ref.unit_id in unit_registry:
             src_unit = unit_registry[ref.unit_id]
             if ref.index < len(src_unit.outs):
                 return src_unit.outs[ref.index]
-        return None
+            if allow_missing:
+                return None
+            raise ValueError(
+                f"Cannot resolve input '{input_ref}': unit '{ref.unit_id}' has no output port {ref.index}. "
+                f"Unit has {len(src_unit.outs)} outputs (0-{len(src_unit.outs)-1})"
+            )
+        if allow_missing:
+            return None
+        raise ValueError(
+            f"Cannot resolve input '{input_ref}': unit '{ref.unit_id}' not found. "
+            f"Available units: {list(unit_registry.keys())[:5]}{'...' if len(unit_registry) > 5 else ''}"
+        )
     elif ref.port_type == "direct":
         # Direct unit-to-unit connection (e.g., "U1-U2" or "U1-0-1-U2")
         # For inputs, we only care about the source unit's output
@@ -487,13 +515,29 @@ def _resolve_single_input(
             src_unit = unit_registry[ref.unit_id]
             if ref.index < len(src_unit.outs):
                 return src_unit.outs[ref.index]
-        return None
+            if allow_missing:
+                return None
+            raise ValueError(
+                f"Cannot resolve input '{input_ref}': unit '{ref.unit_id}' has no output port {ref.index}"
+            )
+        if allow_missing:
+            return None
+        raise ValueError(
+            f"Cannot resolve input '{input_ref}': source unit '{ref.unit_id}' not found"
+        )
     elif ref.port_type == "input":
         # Input port reference (e.g., "1-M1") - shouldn't be used as input source
         # This is unusual - typically inputs reference outputs or streams
-        return None
+        if allow_missing:
+            return None
+        raise ValueError(
+            f"Cannot resolve input '{input_ref}': input port notation (e.g., '1-M1') "
+            f"cannot be used as an input source. Use output notation (e.g., 'M1-0') instead."
+        )
     else:
-        return None
+        if allow_missing:
+            return None
+        raise ValueError(f"Cannot resolve input '{input_ref}': unknown port type '{ref.port_type}'")
 
 
 def _create_san_unit(
@@ -525,6 +569,7 @@ def _create_san_unit(
 
     # Resolve input streams/ports
     # Supports tuple fan-in notation like "(A1-0, B1-0)" for Mixer inputs
+    # allow_missing=True for deferred connections (recycles wired later)
     ins = []
     for input_ref in config.inputs:
         # Check for tuple notation (fan-in)
@@ -532,10 +577,14 @@ def _create_san_unit(
             # Parse tuple and resolve each port
             port_strs = parse_tuple_notation(input_ref)
             for port_str in port_strs:
-                resolved = _resolve_single_input(port_str, stream_registry, unit_registry)
+                resolved = _resolve_single_input(
+                    port_str, stream_registry, unit_registry, allow_missing=True
+                )
                 ins.append(resolved)
         else:
-            resolved = _resolve_single_input(input_ref, stream_registry, unit_registry)
+            resolved = _resolve_single_input(
+                input_ref, stream_registry, unit_registry, allow_missing=True
+            )
             ins.append(resolved)
 
     # Get the QSDsan class
@@ -543,8 +592,21 @@ def _create_san_unit(
 
     # Build kwargs
     kwargs = {"ID": unit_id}
+
+    # Handle inputs based on unit type
+    # Mixer uses ins=(...) tuple pattern for variable inputs
+    # Splitter uses ins=single_stream
     if ins:
-        kwargs["ins"] = ins if len(ins) > 1 else ins[0]
+        # Filter out None values (deferred connections)
+        valid_ins = [s for s in ins if s is not None]
+        if config.unit_type == "Mixer":
+            # Mixer: always pass as tuple even for single input
+            # This enables adding more inputs later via deferred connections
+            kwargs["ins"] = tuple(valid_ins) if valid_ins else ()
+        elif len(valid_ins) == 1:
+            kwargs["ins"] = valid_ins[0]
+        elif len(valid_ins) > 1:
+            kwargs["ins"] = valid_ins
 
     # Add unit-specific parameters
     for param, value in config.params.items():
@@ -561,6 +623,15 @@ def _create_san_unit(
             kwargs.setdefault("suspended_growth_model", pc.mASM2d())
         elif model_type == "ASM1":
             kwargs.setdefault("suspended_growth_model", pc.ASM1())
+            # ASM1 uses S_O for dissolved oxygen, not S_O2
+            # Check both kwargs and ensure correct DO component for ASM1
+            if kwargs.get("DO_ID") == "S_O2":
+                kwargs["DO_ID"] = "S_O"
+                logger.debug(f"Unit '{unit_id}': Changed DO_ID from S_O2 to S_O for ASM1")
+            elif "aeration" in kwargs and kwargs["aeration"] and "DO_ID" not in kwargs:
+                # If aeration is set but DO_ID is missing, set it for ASM1
+                kwargs["DO_ID"] = "S_O"
+                logger.debug(f"Unit '{unit_id}': Set DO_ID to S_O for ASM1 aerated reactor")
         else:
             logger.warning(f"Unit '{unit_id}': No suspended_growth_model for model_type '{model_type}'")
 
@@ -778,9 +849,49 @@ def _wire_connection(
     - Output notation: {"from": "A1-0", "to": "B1"} or {"from": "A1-0", "to": "1-B1"}
     - Direct notation: {"from": "A1-B1", "to": None} (U1-U2 format)
     - Explicit notation: {"from": "A1-0-1-B1", "to": None} (U1-0-1-U2 format)
+
+    Special handling for Mixer units:
+    - Mixers have variable inputs via ins=(...) tuple
+    - If target input index exceeds current ins length, the connection is appended
     """
     from qsdsan import WasteStream
     from utils.pipe_parser import parse_port_notation
+
+    def _assign_to_input_port(dst_unit: "SanUnit", dst_in_idx: int, src_port: "WasteStream"):
+        """Assign source port to destination unit's input, handling Mixer specially."""
+        unit_type = type(dst_unit).__name__
+
+        # Check if port exists
+        if dst_in_idx < len(dst_unit.ins):
+            dst_unit.ins[dst_in_idx] = src_port
+            return
+
+        # Port doesn't exist - check if unit supports variable inputs (Mixer, MixTank, Tank, CSTR)
+        # These units have n_ins=-1 in registry, meaning variable inputs
+        if unit_type in ("Mixer", "MixTank", "Tank", "CSTR", "Junction"):
+            # Find next available empty slot or append
+            for i, existing_in in enumerate(dst_unit.ins):
+                if existing_in is None or (hasattr(existing_in, 'F_mass') and existing_in.F_mass == 0):
+                    dst_unit.ins[i] = src_port
+                    logger.debug(f"Assigned to empty slot {i} on {dst_unit.ID}")
+                    return
+
+            # No empty slot - for Mixers, append to ins list
+            # BioSTEAM Mixer has _ins_size_is_fixed = False, allowing dynamic additions
+            if unit_type in ("Mixer", "MixTank", "Junction"):
+                # Append stream to ins list (not tuple - ins is a mutable list)
+                dst_unit.ins.append(src_port)
+                logger.debug(f"Appended {src_port.ID} to {dst_unit.ID}.ins")
+            else:
+                raise ValueError(
+                    f"Unit '{dst_unit.ID}' has {len(dst_unit.ins)} inputs, "
+                    f"cannot wire to port {dst_in_idx}"
+                )
+        else:
+            raise ValueError(
+                f"Unit '{dst_unit.ID}' ({unit_type}) has no input port {dst_in_idx}. "
+                f"Unit has {len(dst_unit.ins)} inputs (0-{len(dst_unit.ins)-1})"
+            )
 
     from_ref = parse_port_notation(conn.from_port)
 
@@ -802,11 +913,9 @@ def _wire_connection(
         dst_unit = unit_registry[from_ref.target_unit_id]
 
         dst_in_idx = from_ref.target_index if from_ref.target_index is not None else 0
-        if dst_in_idx >= len(dst_unit.ins):
-            raise ValueError(f"Unit '{from_ref.target_unit_id}' has no input port {dst_in_idx}")
 
-        # Wire the connection
-        dst_unit.ins[dst_in_idx] = src_port
+        # Wire the connection using helper
+        _assign_to_input_port(dst_unit, dst_in_idx, src_port)
 
         # Track as recycle stream
         if src_port not in recycle_streams:
@@ -829,11 +938,16 @@ def _wire_connection(
 
     # Get destination port
     if to_ref.port_type == "stream":
-        # Destination is a unit ID (e.g., "B1") - use input port 0
+        # Destination is a unit ID (e.g., "B1") - find first empty slot or use port 0
         if to_ref.unit_id not in unit_registry:
             raise ValueError(f"Destination unit '{to_ref.unit_id}' not found")
         dst_unit = unit_registry[to_ref.unit_id]
+        # Try to find first empty input slot for Mixers
         dst_in_idx = 0
+        for i, existing_in in enumerate(dst_unit.ins):
+            if existing_in is None or (hasattr(existing_in, 'F_mass') and existing_in.F_mass == 0):
+                dst_in_idx = i
+                break
     elif to_ref.port_type == "input":
         # Explicit input notation (e.g., "1-B1")
         if to_ref.unit_id not in unit_registry:
@@ -845,11 +959,8 @@ def _wire_connection(
             f"Invalid to_port '{conn.to_port}': expected input notation or unit ID"
         )
 
-    if dst_in_idx >= len(dst_unit.ins):
-        raise ValueError(f"Unit '{to_ref.unit_id}' has no input port {dst_in_idx}")
-
-    # Wire the connection
-    dst_unit.ins[dst_in_idx] = src_port
+    # Wire the connection using helper
+    _assign_to_input_port(dst_unit, dst_in_idx, src_port)
 
     # Track as recycle stream
     if src_port not in recycle_streams:
@@ -1020,7 +1131,21 @@ def _extract_unit_analysis(
 
             # Split ratio (for splitters)
             if hasattr(unit, 'split'):
-                params['split_ratio'] = float(unit.split) if unit.split else None
+                split_val = unit.split
+                # Handle array splits (per-component) vs scalar splits
+                if split_val is not None:
+                    import numpy as np
+                    if isinstance(split_val, np.ndarray):
+                        # For array splits, report the mean or first value
+                        params['split_ratio'] = float(split_val[0]) if len(split_val) > 0 else None
+                        params['split_is_array'] = True
+                    elif hasattr(split_val, '__len__') and not isinstance(split_val, str):
+                        params['split_ratio'] = float(split_val[0]) if len(split_val) > 0 else None
+                        params['split_is_array'] = True
+                    else:
+                        params['split_ratio'] = float(split_val)
+                else:
+                    params['split_ratio'] = None
 
             unit_data['parameters'] = params
 
@@ -1192,10 +1317,46 @@ def _extract_simulation_results(
     if effluent_stream_ids:
         effluent_streams = [s for s in system.streams if s and s.ID in effluent_stream_ids]
     else:
-        # Auto-detect effluent (streams with "effluent" in name or last stream)
+        # Auto-detect effluent using multiple strategies
+        # Priority 1: Streams with "effluent" in name
         effluent_streams = [s for s in system.streams if s and "effluent" in s.ID.lower()]
+
+        # Priority 2: First output of clarifier units (outs[0] is effluent)
+        if not effluent_streams:
+            clarifier_types = ('Clarifier', 'FlatBottomCircularClarifier', 'IdealClarifier', 'PrimaryClarifier')
+            for unit in system.units:
+                if any(ct in type(unit).__name__ for ct in clarifier_types):
+                    if unit.outs and unit.outs[0] and hasattr(unit.outs[0], 'F_vol') and unit.outs[0].F_vol > 0:
+                        effluent_streams = [unit.outs[0]]
+                        break
+
+        # Priority 3: Terminal streams with lowest TSS (clarified water)
         if not effluent_streams and system.streams:
-            effluent_streams = [system.streams[-1]]
+            exclude_patterns = ('ras', 'ir', 'was', 'recycle', 'return', 'internal')
+            terminal_streams = []
+            for s in system.streams:
+                if not s:
+                    continue
+                sid_lower = s.ID.lower()
+                if any(pat in sid_lower for pat in exclude_patterns):
+                    continue
+                if hasattr(s, 'sink') and s.sink is not None:
+                    continue
+                if hasattr(s, 'F_vol') and s.F_vol > 0:
+                    terminal_streams.append(s)
+
+            if terminal_streams:
+                # Prefer lowest TSS (clarified) with reasonable flow
+                def effluent_score(s):
+                    tss = s.get_TSS() if hasattr(s, 'get_TSS') else 1000
+                    flow = s.F_vol if hasattr(s, 'F_vol') else 0
+                    # Lower TSS is better; reasonable flow (>100 m3/d) is required
+                    if flow < 100 / 24:  # < 100 m3/d, unlikely to be main effluent
+                        return float('inf')
+                    return tss
+                effluent_streams = [min(terminal_streams, key=effluent_score)]
+            elif system.streams:
+                effluent_streams = [system.streams[-1]]
 
     # Calculate effluent quality - use model-aware analysis function
     if effluent_streams:

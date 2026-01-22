@@ -32,6 +32,10 @@ from utils.analysis.aerobic import (
     DEFAULT_ASM2D_KWARGS,
     DEFAULT_DOMESTIC_WW,
 )
+from utils.aerobic_inoculum_generator import (
+    generate_aerobic_inoculum,
+    estimate_equilibration_time,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -241,6 +245,39 @@ def build_and_run(
         # RAS/WAS splitter
         SP = su.Splitter('SP', ins=MBR-1, outs=[RAS, WAS], split=split_ras)
 
+        # =====================================================================
+        # PHASE 8B: Initialize reactors with acclimated sludge inoculum
+        # =====================================================================
+        # This solves the nitrification failure problem where reactors
+        # initialized with influent composition (~5 mg/L X_AUT) fail to
+        # achieve >80% NH4 removal due to insufficient nitrifier biomass.
+        #
+        # CRITICAL: CSTR does NOT accept initial_state parameter.
+        # Must use set_init_conc(**kwargs) method after unit creation.
+        # =====================================================================
+
+        # Generate inoculum with established nitrifier population
+        # Target: 3500 mg VSS/L MLSS, ~5% as nitrifiers (~249 mg COD/L X_AUT)
+        reactor_inoculum = generate_aerobic_inoculum(
+            target_mlvss_mg_L=config.get('target_mlvss_mg_L', 3500),
+            x_aut_fraction=0.05,  # 5% nitrifiers (IWA typical for nitrifying AS)
+            x_pao_fraction=0.02,  # 2% PAOs (minimal for MLE without EBPR)
+            x_h_fraction=0.85,    # 85% heterotrophs
+        )
+
+        # Apply inoculum to all reactors
+        all_reactors = [A1, A2, O1, O2, MBR]
+        for reactor in all_reactors:
+            try:
+                reactor.set_init_conc(**reactor_inoculum)
+                logger.debug(f"Initialized {reactor.ID} with inoculum")
+            except Exception as e:
+                logger.warning(f"Could not initialize {reactor.ID}: {e}")
+
+        logger.info(
+            f"Reactor inoculation complete: X_AUT={reactor_inoculum.get('X_AUT', 0):.0f} mg COD/L"
+        )
+
         # Create system with both recycles
         sys = qs.System(
             'MLE_MBR',
@@ -250,6 +287,25 @@ def build_and_run(
 
         # Set dynamic tracker
         sys.set_dynamic_tracker(*sys.products)
+
+        # =====================================================================
+        # PHASE 8B: Simulation duration warning
+        # =====================================================================
+        # Nitrifiers grow slowly (μ_AUT ~1.0 d⁻¹ at 20°C).
+        # Short simulations may not reach steady-state nitrification.
+        # =====================================================================
+        equil_estimate = estimate_equilibration_time(
+            target_mlvss_mg_L=config.get('target_mlvss_mg_L', 3500),
+            x_aut_fraction=0.05,
+            srt_days=15.0,  # Typical MLE SRT
+        )
+        if duration_days < equil_estimate['minimum_days']:
+            logger.warning(
+                f"Simulation duration {duration_days}d may be insufficient for nitrifier "
+                f"equilibration. Minimum recommended: {equil_estimate['minimum_days']:.0f}d, "
+                f"optimal: {equil_estimate['recommended_days']:.0f}d. "
+                f"Consider longer simulation for accurate nitrification assessment."
+            )
 
         logger.info(f"Simulating for {duration_days} days...")
 
@@ -295,6 +351,46 @@ def build_and_run(
         total_V = 2 * V_an + 2 * V_ae + V_mbr
         hrt_hours = total_V / Q * 24
 
+        # =====================================================================
+        # PHASE 8B: Calculate SRT from reactor state
+        # =====================================================================
+        # SRT = Total biomass in system / Biomass leaving in WAS
+        # This provides an operational check for the design
+        # =====================================================================
+        try:
+            # Sum MLVSS in all reactors (simplified: X_H + X_PAO + X_AUT)
+            total_biomass_kg = 0.0
+            for reactor in all_reactors:
+                if hasattr(reactor, '_state') and reactor._state is not None:
+                    # Get component indices
+                    cmps = reactor.components
+                    xh_idx = cmps.index('X_H') if 'X_H' in cmps.IDs else None
+                    xpao_idx = cmps.index('X_PAO') if 'X_PAO' in cmps.IDs else None
+                    xaut_idx = cmps.index('X_AUT') if 'X_AUT' in cmps.IDs else None
+
+                    # Sum biomass concentrations (kg/m³ = g/L = mg/mL)
+                    biomass_conc = 0.0
+                    if xh_idx is not None:
+                        biomass_conc += reactor._state[xh_idx]
+                    if xpao_idx is not None:
+                        biomass_conc += reactor._state[xpao_idx]
+                    if xaut_idx is not None:
+                        biomass_conc += reactor._state[xaut_idx]
+
+                    total_biomass_kg += biomass_conc * reactor.V_max / 1000  # kg
+
+            # WAS biomass flux (kg/d)
+            was_tss_mg_L = was_stream.get_TSS() if hasattr(was_stream, 'get_TSS') else 0
+            was_flow_m3_d = Q_was
+            was_biomass_kg_d = was_tss_mg_L * was_flow_m3_d / 1e6  # mg/L * m³/d / 1e6 = kg/d
+
+            # Calculate SRT
+            srt_days = total_biomass_kg / was_biomass_kg_d if was_biomass_kg_d > 0 else float('inf')
+            logger.info(f"Calculated SRT: {srt_days:.1f} days")
+        except Exception as e:
+            logger.warning(f"Could not calculate SRT: {e}")
+            srt_days = None
+
         # Build result
         result = {
             "status": "completed",
@@ -312,11 +408,13 @@ def build_and_run(
                 "V_mbr_m3": V_mbr,
                 "V_total_m3": total_V,
                 "HRT_hours": hrt_hours,
+                "SRT_days": srt_days,
                 "DO_aerobic_mg_L": DO_ae,
                 "DO_mbr_mg_L": DO_mbr,
                 "Q_ras_m3_d": Q_ras,
                 "Q_ir_m3_d": Q_ir,
                 "Q_was_m3_d": Q_was,
+                "inoculum_X_AUT_mg_COD_L": reactor_inoculum.get('X_AUT', 0),
             },
             "effluent": {
                 "COD_mg_L": eff_analysis.get('COD_mg_L', 0),

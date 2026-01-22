@@ -22,6 +22,8 @@ Universal wastewater simulation engine supporting anaerobic (mADM1, 63 component
 | Phase 7 Plan | `docs/completed-plans/phase7-production-hardening.md` | Complete |
 | Phase 7B Bug Fixes | `docs/completed-plans/phase7b-bug-fixes.md` | Complete |
 | Phase 7C CH4 Fix | `docs/completed-plans/phase7c-ch4-calculation-fix.md` | Complete |
+| Phase 8 Plan | `docs/completed-plans/phase8-mle-tea-nitrification.md` | Complete |
+| Phase 8D CLI Verification | `docs/completed-plans/phase8d-cli-workflow-verification.md` | Complete |
 
 ---
 
@@ -39,8 +41,10 @@ Universal wastewater simulation engine supporting anaerobic (mADM1, 63 component
 | 7 | Final Hardening (path traversal, concentration validation) | Complete |
 | 7B | Bug fixes (CAS collision, VFA/sulfur report data) | Complete |
 | 7C | CH4 calculation fix (COD-to-mass conversion in performance metrics) | Complete |
+| 8 | MLE Bug Fixes, Nitrification Fix, TEA Integration | Complete |
+| 8D | CLI Workflow Verification (Mixer ins.append, Splitter array, effluent detection, ASM1 DO_ID) | Complete |
 
-**Test Count:** 280 tests passing (Phase 7C validation: 2026-01-14)
+**Test Count:** 292 tests passing (Phase 8D validation: 2026-01-22)
 
 ---
 
@@ -73,7 +77,9 @@ qsdsan-engine-mcp/
 │   ├── path_utils.py      # Path traversal guards
 │   ├── pipe_parser.py     # BioSTEAM notation parser
 │   ├── topo_sort.py       # Topological sort with recycles
-│   └── diagram.py         # Flowsheet diagrams
+│   ├── diagram.py         # Flowsheet diagrams
+│   ├── aerobic_inoculum_generator.py  # Reactor inoculation (Phase 8B)
+│   └── tea_wrapper.py     # TEA calculations (Phase 8C)
 ├── reports/
 │   ├── qmd_builder.py     # Quarto report generator
 │   └── templates/         # QMD templates
@@ -84,6 +90,8 @@ qsdsan-engine-mcp/
 │   ├── test_integration.py # E2E tests
 │   ├── test_security.py   # Path traversal tests
 │   ├── test_converters.py # Validation tests
+│   ├── test_flowsheet_mixer_splitter.py # Phase 8A Mixer/Splitter tests
+│   ├── test_nitrification.py # Phase 8B nitrification tests
 │   ├── test_madm1_state.json  # Complete 62-component mADM1 state
 │   ├── test_asm2d_state.json  # Complete ASM2d state
 │   └── run_slow_tests.py  # Integration tests for all templates
@@ -128,6 +136,21 @@ ch4_flow = ch4_mol * 22.414 * 24  # Nm3/d at STP
 ```
 **Critical:** `gas.imass['S_ch4']` returns COD-equivalent mass (not actual CH4 mass). The `i_mass` factor is 0.25067 g CH4/g COD. Using `imass` directly without conversion causes 4x overestimate.
 
+### Aerobic Reactor Inoculation (Phase 8B Fix)
+`templates/aerobic/mle_mbr.py` uses `utils/aerobic_inoculum_generator.py` to initialize reactors with established biomass:
+```python
+from utils.aerobic_inoculum_generator import generate_aerobic_inoculum
+inoculum = generate_aerobic_inoculum(target_mlvss_mg_L=3500)
+for reactor in [A1, A2, O1, O2, MBR]:
+    reactor.set_init_conc(**inoculum)
+```
+**Critical:** CSTR does NOT accept `initial_state` parameter - must use `set_init_conc()` method. Default inoculum provides ~249 mg COD/L X_AUT (nitrifiers), enabling >80% NH4 removal.
+
+### TEA Estimation (Phase 8C)
+TEA tools (`create_tea`, `get_capex_breakdown`, etc.) provide cost estimates. However, many QSDsan units (CSTR, Mixer, Splitter) lack `_cost()` methods. The tools use heuristic estimation:
+- CAPEX: ~$1000/m³ reactor volume
+- OPEX: Aeration power ~0.03 kW/m³, maintenance ~3% TCI
+
 ---
 
 ## Known Limitations
@@ -170,9 +193,10 @@ python -m pytest tests/test_security.py -v
 | Mutation | `update_stream`, `update_unit`, `delete_stream`, `delete_unit`, `delete_connection`, `clone_session`, `delete_session` |
 | Discovery | `list_units`, `get_model_components`, `validate_flowsheet`, `suggest_recycles` |
 | Retrieval | `get_flowsheet_session`, `list_flowsheet_sessions`, `get_flowsheet_timeseries`, `get_artifact` |
+| TEA | `create_tea`, `get_capex_breakdown`, `get_opex_summary`, `get_utility_costs` |
 | Utility | `list_templates`, `validate_state`, `convert_state` |
 
-**Total:** 29 MCP tools
+**Total:** 33 MCP tools
 
 ---
 

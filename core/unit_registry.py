@@ -76,7 +76,9 @@ UNIT_REGISTRY: Dict[str, UnitSpec] = {
     "CSTR": UnitSpec(
         unit_type="CSTR",
         category=UnitCategory.REACTOR,
-        description="Continuous stirred-tank reactor with optional aeration",
+        # Note: CSTR has _cost() method but it's empty/pass (no equipment costing).
+        # TEA tools use heuristic estimation for CSTR units.
+        description="Continuous stirred-tank reactor with optional aeration. Note: lacks equipment costing.",
         compatible_models=["ASM2d", "mASM2d", "ASM1"],  # Primary: ASM2d
         required_params={},  # V_max is optional with default 1000
         optional_params={
@@ -552,13 +554,16 @@ UNIT_REGISTRY: Dict[str, UnitSpec] = {
     "Mixer": UnitSpec(
         unit_type="Mixer",
         category=UnitCategory.UTILITY,
-        description="Stream mixer combining multiple inputs",
+        # Note: Mixer uses BioSTEAM's variable fan-in pattern via ins=(s1, s2, ...) tuple.
+        # The flowsheet builder creates Mixer with ins=(tuple_of_streams) not n_ins=-1.
+        # Additional inputs (e.g., recycles) are wired to empty input slots dynamically.
+        description="Stream mixer combining multiple inputs. Uses ins=(...) tuple pattern for variable fan-in.",
         compatible_models=[],
         required_params={},
         optional_params={},
         qsdsan_class="qsdsan.sanunits.Mixer",
         is_dynamic=True,
-        n_ins=-1,  # Variable inputs
+        n_ins=-1,  # Variable inputs (implementation uses ins=(tuple) pattern)
         n_outs=1,
     ),
     "ComponentSplitter": UnitSpec(

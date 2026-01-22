@@ -120,6 +120,17 @@ Access simulation outputs programmatically:
 | `get_artifact` | `get_artifact` | `flowsheet artifact` | Get diagram/report content |
 | `get_flowsheet_timeseries` | `get_flowsheet_timeseries` | `flowsheet timeseries` | Get time-series trajectories |
 
+### Techno-Economic Analysis (TEA) Tools
+
+Estimate capital and operating costs:
+
+| Tool | MCP | CLI | Description |
+|------|-----|-----|-------------|
+| `create_tea` | `create_tea` | - | Create TEA for completed simulation |
+| `get_capex_breakdown` | `get_capex_breakdown` | - | CAPEX hierarchy (DPI, TDC, FCI, TCI) |
+| `get_opex_summary` | `get_opex_summary` | - | OPEX components (FOC, VOC, AOC) |
+| `get_utility_costs` | `get_utility_costs` | - | Utility consumption (kWh/yr, heating) |
+
 ## Supported Models
 
 | Model | Components | Use Case |
