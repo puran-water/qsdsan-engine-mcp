@@ -58,6 +58,10 @@ from core.unit_registry import (
     validate_unit_params,
     validate_model_compatibility,
     get_units_by_category,
+    # Phase 9: Junction model transforms
+    normalize_model_name,
+    get_junction_output_model,
+    suggest_junction_for_conversion,
 )
 from utils.job_manager import JobManager
 from utils.path_utils import normalize_path_for_wsl, get_python_executable
@@ -626,6 +630,102 @@ async def create_stream(
         return {"error": str(e)}
 
 
+# =============================================================================
+# Phase 9: Model Zone Computation for Mixed-Model Flowsheets
+# =============================================================================
+
+def compute_effective_model_at_unit(
+    session: "FlowsheetSessionManager",
+    unit_inputs: List[str],
+    explicit_model: Optional[str] = None,
+) -> tuple[str, List[str]]:
+    """
+    Compute effective model for a unit based on upstream junctions.
+
+    This function enables mixed-model flowsheet construction by tracing upstream
+    through junctions to determine the effective model at any point in the flowsheet.
+
+    Priority:
+    1. Explicit model_type if provided (user override)
+    2. Output model of upstream junction (if any)
+    3. Upstream unit's explicit model_type
+    4. Session primary_model_type
+
+    Args:
+        session: FlowsheetSession instance
+        unit_inputs: List of input port notations or stream IDs
+        explicit_model: User-provided model_type override
+
+    Returns:
+        Tuple of (effective_model, list of warnings)
+    """
+    from utils.pipe_parser import parse_port_notation, is_tuple_notation, parse_tuple_notation
+
+    warnings = []
+
+    # Priority 1: Honor explicit override
+    if explicit_model:
+        return normalize_model_name(explicit_model), warnings
+
+    # Collect models from all inputs for fan-in validation
+    input_models = []
+
+    for inp in unit_inputs:
+        # Handle tuple notation for fan-in
+        if is_tuple_notation(inp):
+            port_strs = parse_tuple_notation(inp)
+        else:
+            port_strs = [inp]
+
+        for port_str in port_strs:
+            try:
+                ref = parse_port_notation(port_str)
+                upstream_unit_id = ref.unit_id
+
+                if upstream_unit_id in session.units:
+                    upstream_config = session.units[upstream_unit_id]
+                    junction_transform = get_junction_output_model(upstream_config.unit_type)
+
+                    if junction_transform:
+                        # This is a junction - use its output model
+                        input_models.append(normalize_model_name(junction_transform[1]))
+                    elif upstream_config.model_type:
+                        # Upstream has explicit model
+                        input_models.append(normalize_model_name(upstream_config.model_type))
+                    else:
+                        # Recursively trace upstream (for junction chains)
+                        upstream_model, _ = compute_effective_model_at_unit(
+                            session, upstream_config.inputs, upstream_config.model_type
+                        )
+                        input_models.append(upstream_model)
+                elif upstream_unit_id in session.streams:
+                    # Stream input - use stream's model if set, else session primary
+                    stream_config = session.streams[upstream_unit_id]
+                    if stream_config.model_type:
+                        input_models.append(normalize_model_name(stream_config.model_type))
+                    else:
+                        input_models.append(normalize_model_name(session.primary_model_type))
+                else:
+                    # Unknown input (deferred recycle) - use session primary
+                    input_models.append(normalize_model_name(session.primary_model_type))
+            except ValueError:
+                # Parse error - skip this input, use session primary as fallback
+                input_models.append(normalize_model_name(session.primary_model_type))
+
+    # Fan-in validation: warn if multiple different models
+    unique_models = set(input_models)
+    if len(unique_models) > 1:
+        warnings.append(
+            f"Multiple input models detected: {sorted(unique_models)}. "
+            f"Consider adding junctions to unify component sets before mixing."
+        )
+
+    # Return first input's model (or session primary if no inputs)
+    if input_models:
+        return input_models[0], warnings
+    return normalize_model_name(session.primary_model_type), warnings
+
+
 @mcp.tool()
 async def create_unit(
     session_id: str,
@@ -676,12 +776,27 @@ async def create_unit(
 
         # Load session to check model compatibility
         session = session_manager.get_session(session_id)
-        effective_model = model_type or session.primary_model_type
 
-        # Validate model compatibility
+        # Phase 9: Compute effective model considering upstream junctions
+        # This enables mixed-model flowsheets (e.g., ASM2d with mADM1 digester via junction)
+        effective_model, zone_warnings = compute_effective_model_at_unit(
+            session, inputs or [], model_type
+        )
+
+        # Validate model compatibility with computed effective model
         is_compatible, compat_error = validate_model_compatibility(unit_type, effective_model)
         if not is_compatible:
-            return {"error": compat_error}
+            # Provide helpful error with junction suggestion
+            suggestion = suggest_junction_for_conversion(
+                session.primary_model_type,
+                spec.compatible_models
+            )
+
+            error_msg = compat_error
+            if suggestion:
+                error_msg += f" {suggestion}"
+
+            return {"error": error_msg}
 
         # Pre-compilation input validation (Phase 8A)
         # Validate that all input references exist (streams or upstream units)
@@ -735,14 +850,15 @@ async def create_unit(
 
         result = session_manager.add_unit(session_id, config)
 
-        # Add warnings to result (combine param and input warnings)
-        all_warnings = param_warnings + input_warnings
+        # Add warnings to result (combine param, input, and zone warnings)
+        all_warnings = param_warnings + input_warnings + zone_warnings
         if all_warnings:
             result["warnings"] = all_warnings
 
-        # Add port info
+        # Add port info and effective model (Phase 9)
         result["n_ins"] = spec.n_ins
         result["n_outs"] = spec.n_outs
+        result["effective_model"] = effective_model
 
         return result
 

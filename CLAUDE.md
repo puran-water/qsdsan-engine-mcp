@@ -24,6 +24,7 @@ Universal wastewater simulation engine supporting anaerobic (mADM1, 63 component
 | Phase 7C CH4 Fix | `docs/completed-plans/phase7c-ch4-calculation-fix.md` | Complete |
 | Phase 8 Plan | `docs/completed-plans/phase8-mle-tea-nitrification.md` | Complete |
 | Phase 8D CLI Verification | `docs/completed-plans/phase8d-cli-workflow-verification.md` | Complete |
+| Phase 9 Plan | `docs/completed-plans/phase9-mixed-model-flowsheet-support.md` | Complete |
 
 ---
 
@@ -43,8 +44,9 @@ Universal wastewater simulation engine supporting anaerobic (mADM1, 63 component
 | 7C | CH4 calculation fix (COD-to-mass conversion in performance metrics) | Complete |
 | 8 | MLE Bug Fixes, Nitrification Fix, TEA Integration | Complete |
 | 8D | CLI Workflow Verification (Mixer ins.append, Splitter array, effluent detection, ASM1 DO_ID) | Complete |
+| 9 | Mixed-Model Flowsheet Support (junction transforms, model zones, suggestions) | Complete |
 
-**Test Count:** 292 tests passing (Phase 8D validation: 2026-01-22)
+**Test Count:** 322 tests passing (Phase 9 validation: 2026-01-22)
 
 ---
 
@@ -92,6 +94,7 @@ qsdsan-engine-mcp/
 │   ├── test_converters.py # Validation tests
 │   ├── test_flowsheet_mixer_splitter.py # Phase 8A Mixer/Splitter tests
 │   ├── test_nitrification.py # Phase 8B nitrification tests
+│   ├── test_mixed_model.py   # Phase 9 mixed-model flowsheet tests (30 tests)
 │   ├── test_madm1_state.json  # Complete 62-component mADM1 state
 │   ├── test_asm2d_state.json  # Complete ASM2d state
 │   └── run_slow_tests.py  # Integration tests for all templates
@@ -150,6 +153,24 @@ for reactor in [A1, A2, O1, O2, MBR]:
 TEA tools (`create_tea`, `get_capex_breakdown`, etc.) provide cost estimates. However, many QSDsan units (CSTR, Mixer, Splitter) lack `_cost()` methods. The tools use heuristic estimation:
 - CAPEX: ~$1000/m³ reactor volume
 - OPEX: Aeration power ~0.03 kW/m³, maintenance ~3% TCI
+
+### Mixed-Model Flowsheet Support (Phase 9)
+`core/unit_registry.py` now includes junction model transforms that enable mixed-model flowsheets:
+```python
+JUNCTION_MODEL_TRANSFORMS = {
+    "ASM2dtomADM1": ("ASM2d", "mADM1"),
+    "mADM1toASM2d": ("mADM1", "ASM2d"),
+    "ADM1ptomASM2d": ("mADM1", "mASM2d"),  # Note: mADM1 = ADM1p
+    ...
+}
+```
+
+`server.py:compute_effective_model_at_unit()` traces upstream through junctions to determine the effective model at any unit. This enables:
+- Creating mADM1 units after `ASM2dtomADM1` junction in ASM2d sessions
+- Helpful error messages suggesting appropriate junctions
+- Fan-in warnings when mixing streams from different models
+
+**Key functions:** `normalize_model_name()`, `get_junction_output_model()`, `suggest_junction_for_conversion()`
 
 ---
 

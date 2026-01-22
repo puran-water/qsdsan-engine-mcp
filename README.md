@@ -148,6 +148,38 @@ Estimate capital and operating costs:
 | `ao_mbr_asm2d` | ASM2d | A/O process with MBR |
 | `a2o_mbr_asm2d` | ASM2d | A2O process with EBPR and MBR |
 
+## Mixed-Model Flowsheets
+
+Build flowsheets combining aerobic and anaerobic treatment with automatic model conversion:
+
+```bash
+# Create ASM2d session
+python cli.py flowsheet new --model ASM2d --id mixed_plant
+
+# Add aerobic treatment
+python cli.py flowsheet add-stream --session mixed_plant --id influent \
+  --flow 4000 --concentrations '{"S_F": 75, "S_NH4": 35}'
+python cli.py flowsheet add-unit --session mixed_plant --type CSTR --id aerobic \
+  --params '{"V_max": 2000, "aeration": 2.0}' --inputs '["influent"]'
+
+# Add junction to convert ASM2d -> mADM1
+python cli.py flowsheet add-unit --session mixed_plant --type ASM2dtomADM1 --id J1 \
+  --inputs '["aerobic-0"]'
+
+# Add anaerobic digester (mADM1 model)
+python cli.py flowsheet add-unit --session mixed_plant --type AnaerobicCSTRmADM1 --id digester \
+  --params '{"V_max": 500}' --inputs '["J1-0"]'
+
+# Build and simulate
+python cli.py flowsheet build --session mixed_plant
+python cli.py flowsheet simulate --session mixed_plant --duration 30
+```
+
+The engine automatically:
+- Tracks model zones through junction units
+- Suggests appropriate junctions when model-incompatible units are added
+- Warns about fan-in from different model types
+
 ## Quick Start
 
 ### Using CLI
@@ -210,7 +242,7 @@ Then use natural language:
 - **Separators:** CompletelyMixedMBR, AnMBR, PolishingFilter, MembraneDistillation
 - **Clarifiers:** FlatBottomCircularClarifier, PrimaryClarifier, IdealClarifier
 - **Sludge:** Thickener, Centrifuge, SludgeDigester, DryingBed
-- **Junctions:** ASM2dtoADM1, ADM1toASM2d, mADM1toASM2d (model converters)
+- **Junctions:** ASM2dtomADM1, mADM1toASM2d, ASM2dtoADM1, ADM1toASM2d (model converters for mixed flowsheets)
 - **Utilities:** Splitter, Mixer, Tank, StorageTank, DynamicInfluent
 
 ```bash
