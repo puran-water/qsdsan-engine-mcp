@@ -184,6 +184,10 @@ JUNCTION_MODEL_TRANSFORMS = {
 
 4. **Junction Property Alignment:** `X_AUT -> X_h2` in `COMPONENT_ALIGNMENT` is for property matching only; actual conversion uses QSDsan's `_compile_reactions()`.
 
+5. **Junction Chains/Cycles:** Complex junction chains (A→J1→J2→B) traverse correctly, but cycles containing junctions are only detected at `build_system` time, not during `create_unit`.
+
+6. **Fan-in Model Validation:** Mixing streams from different models at fan-in points (e.g., ASM2d + mADM1 into Mixer) produces a warning but not an error. Users must add appropriate junctions to unify component sets.
+
 ---
 
 ## Testing
