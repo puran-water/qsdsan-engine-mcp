@@ -1019,6 +1019,38 @@ def suggest_junction_for_conversion(from_model: str, to_models: List[str]) -> Op
     return None
 
 
+def find_junction_for_conversion(from_model: str, to_model: str) -> Optional[str]:
+    """
+    Find junction unit type that converts from_model to to_model.
+
+    Phase 10: Used by server.py for auto-inserting junctions on fan-in mismatch.
+
+    NOTE: For our custom mADM1 (63 components), we use our custom junction
+    implementations in core/junction_units.py, NOT upstream QSDsan junctions.
+    JUNCTION_MODEL_TRANSFORMS maps to our custom implementations.
+
+    Args:
+        from_model: Source model type (e.g., "mADM1", "ASM2d")
+        to_model: Target model type (e.g., "ASM2d", "mADM1")
+
+    Returns:
+        Junction unit type name if available, None otherwise.
+
+    Example:
+        >>> find_junction_for_conversion("mADM1", "ASM2d")
+        "mADM1toASM2d"
+        >>> find_junction_for_conversion("ASM2d", "mADM1")
+        "ASM2dtomADM1"
+    """
+    from_norm = normalize_model_name(from_model)
+    to_norm = normalize_model_name(to_model)
+
+    for junction, (inp, out) in JUNCTION_MODEL_TRANSFORMS.items():
+        if normalize_model_name(inp) == from_norm and normalize_model_name(out) == to_norm:
+            return junction
+    return None
+
+
 def list_available_units(
     model_type: Optional[str] = None,
     category: Optional[str] = None,
@@ -1108,4 +1140,6 @@ __all__ = [
     'get_junction_output_model',
     'models_compatible',
     'suggest_junction_for_conversion',
+    # Phase 10: Auto-insert junctions
+    'find_junction_for_conversion',
 ]

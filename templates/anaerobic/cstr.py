@@ -65,11 +65,14 @@ def build_and_run(
             "The mADM1 CSTR template runs to convergence, not time-domain simulation."
         )
 
+    # Phase 10: Validate and log kinetic parameter overrides
+    validated_kinetic_params = None
     if kinetic_params:
-        logger.warning(
-            "kinetic_params not yet implemented for mADM1 - using default parameters. "
-            f"Ignored parameters: {list(kinetic_params.keys())}"
-        )
+        from core.kinetic_params import validate_kinetic_params
+        validated_kinetic_params, kinetic_warnings = validate_kinetic_params(kinetic_params)
+        for w in kinetic_warnings:
+            logger.warning(f"Kinetic params: {w}")
+        logger.info(f"Kinetic parameter overrides: {list(kinetic_params.keys())}")
 
     # Import simulation module (triggers QSDsan load)
     from utils.simulate_madm1 import run_simulation_sulfur
@@ -112,6 +115,7 @@ def build_and_run(
             HRT=HRT_days,
             check_interval=2,  # Check convergence every 2 days
             tolerance=1e-3,
+            kinetic_params=validated_kinetic_params,  # Phase 10: Pass kinetic params
         )
 
         logger.info(f"Simulation completed: {status} at t={converged_at:.1f} days")

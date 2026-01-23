@@ -32,27 +32,95 @@ from models.reactors import AnaerobicCSTRmADM1
 # Import inoculum generator for CSTR startup
 from utils.inoculum_generator import generate_inoculum_state
 
-# Import pH calculation if available
-try:
-    import sys
-    import os
-    parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    adm1_dir = os.path.join(os.path.dirname(parent_dir), "adm1_mcp_server")
-    sys.path.insert(0, adm1_dir)
-    from calculate_ph_and_alkalinity_fixed import update_ph_and_alkalinity
-except ImportError:
-    logging.warning(
-        "pH/alkalinity calculation module not available. "
-        "Using fixed defaults (pH=7.0, SAlk=2.5 meq/L). "
-        "For accurate pH prediction, install calculate_ph_and_alkalinity_fixed module "
-        "from adm1_mcp_server. Simulation will proceed with degraded pH accuracy."
-    )
-    def update_ph_and_alkalinity(stream):
-        """Fallback pH/alkalinity setter when calculation module unavailable."""
+# Phase 10: Native pH calculation using our custom pcm() function
+# Replaces external calculate_ph_and_alkalinity_fixed module
+def update_ph_and_alkalinity(stream, T_op=None):
+    """
+    Calculate pH and alkalinity using our custom pcm() function from mADM1.
+
+    This uses the production-grade PCM equilibrium model with:
+    - Temperature-corrected Ka values (Van't Hoff equation)
+    - Full acid-base equilibrium (VFAs, ammonia, carbonate, sulfide)
+    - Charge balance using Brent's method root-finding
+    - Explicit handling of Fe3+/Al3+ for dosing scenarios (custom extension)
+
+    Parameters
+    ----------
+    stream : WasteStream
+        Stream to update pH and alkalinity
+    T_op : float, optional
+        Operating temperature in K. If None, uses stream temperature.
+
+    Returns
+    -------
+    WasteStream
+        Updated stream with _pH and _SAlk properties set
+    """
+    try:
+        from models.madm1 import pcm
+
+        cmps = stream.components
+        n_cmps = len(cmps)
+
+        # Build state array from stream concentrations (kg/m3)
+        # pcm() expects concentrations in kg/m3
+        if stream.F_vol > 0:
+            state_arr = np.array([stream.imass[cmp.ID] / stream.F_vol for cmp in cmps])
+        else:
+            # Zero flow - use fixed defaults
+            if hasattr(stream, '_pH'):
+                stream._pH = 7.0
+            if hasattr(stream, '_SAlk'):
+                stream._SAlk = 2.5
+            return stream
+
+        # Get temperature
+        if T_op is None:
+            T_op = stream.T if hasattr(stream, 'T') else 308.15
+
+        # Build params dict for pcm()
+        # pKa values at 25°C (298.15 K): [Kw, NH4, CO2, HAc, HPro, HBu, HVa]
+        pKa_base = [14.0, 9.25, 6.35, 4.76, 4.88, 4.82, 4.86]
+        Ka_base = np.array([10**(-pKa) for pKa in pKa_base])
+        Ka_dH = np.array([55900, 51965, 7646, 0, 0, 0, 0])  # J/mol
+
+        params = {
+            'Ka_base': Ka_base,
+            'Ka_dH': Ka_dH,
+            'T_base': 298.15,
+            'T_op': T_op,
+            'components': cmps,
+        }
+
+        # Calculate pH using pcm()
+        pH, nh3, co2, activities = pcm(state_arr, params)
+
+        # Set pH
+        if hasattr(stream, '_pH'):
+            stream._pH = float(pH)
+
+        # Calculate alkalinity from carbonate equilibrium
+        # Alkalinity (meq/L) = [HCO3-] + 2*[CO3--] + [OH-] - [H+]
+        # Simplified: SAlk ≈ S_IC * HCO3_fraction * 1000 / 12 (meq/L)
+        S_IC_idx = cmps.index('S_IC') if 'S_IC' in cmps.IDs else None
+        if S_IC_idx is not None and hasattr(stream, '_SAlk'):
+            S_IC = state_arr[S_IC_idx]  # kg/m3
+            Ka_co2 = params['Ka_base'][2] * np.exp((params['Ka_dH'][2] / 8.314) * (1/298.15 - 1/T_op))
+            h = 10**(-pH)
+            HCO3_fraction = Ka_co2 / (h + Ka_co2)
+            # S_IC in kg C/m3, convert to meq/L: kg C/m3 * 1000 g/kg * HCO3_frac / (12 g/mol C) * 1 eq/mol
+            stream._SAlk = S_IC * 1000 * HCO3_fraction / 12.0
+        elif hasattr(stream, '_SAlk'):
+            stream._SAlk = 2.5  # Default meq/L
+
+        return stream
+
+    except Exception as e:
+        logging.warning(f"pH calculation failed: {e}. Using defaults (pH=7.0, SAlk=2.5)")
         if hasattr(stream, '_pH'):
             stream._pH = 7.0
         if hasattr(stream, '_SAlk'):
-            stream._SAlk = 2.5  # meq/L
+            stream._SAlk = 2.5
         return stream
 
 # Constants
@@ -670,7 +738,8 @@ def extract_time_series(eff, gas):
 
 def run_simulation_sulfur(basis, adm1_state_62, HRT, check_interval=2, tolerance=1e-3, pH_ctrl=None,
                           fixed_naoh_dose_m3_d=0.0, fixed_fecl3_dose_m3_d=0.0, fixed_na2co3_dose_m3_d=0.0,
-                          naoh_conc_kg_m3=431.25, fecl3_conc_kg_m3=400.0, na2co3_conc_kg_m3=106.0):
+                          naoh_conc_kg_m3=431.25, fecl3_conc_kg_m3=400.0, na2co3_conc_kg_m3=106.0,
+                          kinetic_params=None):
     """
     Run single ADM1+sulfur simulation at specified HRT until TRUE steady state.
 
@@ -710,6 +779,10 @@ def run_simulation_sulfur(basis, adm1_state_62, HRT, check_interval=2, tolerance
         FeCl3 concentration as kg Fe³⁺/m³ (default 400.0, uses S_Fe3 component)
     na2co3_conc_kg_m3 : float, optional
         Na2CO3 concentration as kg Na+/m³ (default 106.0)
+    kinetic_params : dict, optional
+        Kinetic parameter overrides for ModifiedADM1 (Phase 10).
+        See core.kinetic_params.MADM1_KINETIC_SCHEMA for available parameters.
+        Examples: {"k_ac": 8.0, "K_ac": 0.15, "k_hSRB": 41.0}
 
     Returns
     -------
@@ -765,7 +838,13 @@ def run_simulation_sulfur(basis, adm1_state_62, HRT, check_interval=2, tolerance
         # CRITICAL: Use get_validated_components() to ensure consistent thermo/ordering
         # Calling create_madm1_cmps() directly causes thermo flip-flopping and convergence failures
         madm1_cmps = get_validated_components()
-        madm1_model = ModifiedADM1(components=madm1_cmps)
+
+        # Phase 10: Pass kinetic parameters to ModifiedADM1
+        if kinetic_params:
+            logger.info(f"Applying {len(kinetic_params)} kinetic parameter overrides")
+            madm1_model = ModifiedADM1(components=madm1_cmps, **kinetic_params)
+        else:
+            madm1_model = ModifiedADM1(components=madm1_cmps)
         logger.info(f"mADM1 model created with {len(madm1_model)} processes")
 
         # 2. Create streams with 62 mADM1 components (adm1_state_62 actually has 62 components from Codex)
@@ -972,7 +1051,8 @@ def assess_robustness(results_design, results_check, threshold=10.0):
 def run_dual_hrt_simulation(basis, adm1_state_62, heuristic_config, hrt_variation=0.2,
                             check_interval=2, tolerance=1e-3, pH_ctrl=None,
                             fixed_naoh_dose_m3_d=0.0, fixed_fecl3_dose_m3_d=0.0, fixed_na2co3_dose_m3_d=0.0,
-                            naoh_conc_kg_m3=431.25, fecl3_conc_kg_m3=400.0, na2co3_conc_kg_m3=106.0):
+                            naoh_conc_kg_m3=431.25, fecl3_conc_kg_m3=400.0, na2co3_conc_kg_m3=106.0,
+                            kinetic_params=None):
     """
     Run simulation at design SRT and validation SRT.
 
@@ -1044,7 +1124,8 @@ def run_dual_hrt_simulation(basis, adm1_state_62, heuristic_config, hrt_variatio
                                           fixed_na2co3_dose_m3_d=fixed_na2co3_dose_m3_d,
                                           naoh_conc_kg_m3=naoh_conc_kg_m3,
                                           fecl3_conc_kg_m3=fecl3_conc_kg_m3,
-                                          na2co3_conc_kg_m3=na2co3_conc_kg_m3)
+                                          na2co3_conc_kg_m3=na2co3_conc_kg_m3,
+                                          kinetic_params=kinetic_params)
 
     # Run at check SRT (runs until convergence, no time limit)
     logger.info("Running simulation at check SRT...")
@@ -1057,7 +1138,8 @@ def run_dual_hrt_simulation(basis, adm1_state_62, heuristic_config, hrt_variatio
                                          fixed_na2co3_dose_m3_d=fixed_na2co3_dose_m3_d,
                                          naoh_conc_kg_m3=naoh_conc_kg_m3,
                                          fecl3_conc_kg_m3=fecl3_conc_kg_m3,
-                                         na2co3_conc_kg_m3=na2co3_conc_kg_m3)
+                                         na2co3_conc_kg_m3=na2co3_conc_kg_m3,
+                                         kinetic_params=kinetic_params)
 
     # Assess robustness
     logger.info("Assessing design robustness...")

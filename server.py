@@ -62,6 +62,8 @@ from core.unit_registry import (
     normalize_model_name,
     get_junction_output_model,
     suggest_junction_for_conversion,
+    # Phase 10: Auto-insert junctions
+    find_junction_for_conversion,
 )
 from utils.job_manager import JobManager
 from utils.path_utils import normalize_path_for_wsl, get_python_executable
@@ -111,9 +113,11 @@ async def simulate_system(
         duration_days: Simulation duration in days (default 1.0)
         timestep_hours: Output timestep in hours (aerobic templates only, optional)
         reactor_config: Optional reactor configuration overrides
-        parameters: Optional kinetic parameter overrides. Note: Currently supported
-                    for ASM2d/aerobic templates only. mADM1 template uses QSDsan
-                    defaults and ignores this parameter.
+        parameters: Optional kinetic parameter overrides. For mADM1 templates, supports
+                    80+ kinetic parameters including rate constants (k_su, k_aa, k_ac, etc.),
+                    half-saturation coefficients (K_su, K_aa, K_ac, etc.), inhibition constants
+                    (KI_h2_fa, KI_nh3, etc.), and SRB parameters. See core/kinetic_params.py
+                    for the full schema and validation. ASM2d templates also accept kinetics.
 
     Returns:
         Dict with job_id, status, and instructions for monitoring
@@ -638,6 +642,7 @@ def compute_effective_model_at_unit(
     session: "FlowsheetSessionManager",
     unit_inputs: List[str],
     explicit_model: Optional[str] = None,
+    _depth: int = 0,
 ) -> tuple[str, List[str]]:
     """
     Compute effective model for a unit based on upstream junctions.
@@ -655,11 +660,22 @@ def compute_effective_model_at_unit(
         session: FlowsheetSession instance
         unit_inputs: List of input port notations or stream IDs
         explicit_model: User-provided model_type override
+        _depth: Internal recursion depth counter (Phase 10 cycle guard)
 
     Returns:
         Tuple of (effective_model, list of warnings)
+
+    Raises:
+        ValueError: If traversal depth exceeds 20 (possible cycle)
     """
     from utils.pipe_parser import parse_port_notation, is_tuple_notation, parse_tuple_notation
+
+    # Phase 10: Guard against infinite loops from cycles
+    if _depth > 20:
+        raise ValueError(
+            "Junction chain too deep (>20 levels). Possible cycle detected in flowsheet. "
+            "Check for circular unit connections involving junctions."
+        )
 
     warnings = []
 
@@ -694,8 +710,9 @@ def compute_effective_model_at_unit(
                         input_models.append(normalize_model_name(upstream_config.model_type))
                     else:
                         # Recursively trace upstream (for junction chains)
+                        # Phase 10: Pass depth counter to prevent infinite loops
                         upstream_model, _ = compute_effective_model_at_unit(
-                            session, upstream_config.inputs, upstream_config.model_type
+                            session, upstream_config.inputs, upstream_config.model_type, _depth + 1
                         )
                         input_models.append(upstream_model)
                 elif upstream_unit_id in session.streams:
@@ -724,6 +741,186 @@ def compute_effective_model_at_unit(
     if input_models:
         return input_models[0], warnings
     return normalize_model_name(session.primary_model_type), warnings
+
+
+def _auto_insert_junction(
+    session: "FlowsheetSessionManager",
+    source_unit_id: str,
+    source_port: int,
+    source_model: str,
+    target_model: str,
+) -> tuple[Optional[str], str, Optional[str]]:
+    """
+    Phase 10: Auto-insert a junction unit to convert source_model to target_model.
+
+    Creates a junction unit in the session to bridge model mismatches at fan-in points.
+
+    NOTE: For our custom mADM1 (63 components), we use our custom junction
+    implementations in core/junction_units.py, NOT upstream QSDsan junctions.
+    Upstream junctions target ADM1_p_extension, not our 63-component model.
+
+    Args:
+        session: FlowsheetSession instance
+        source_unit_id: ID of the upstream unit
+        source_port: Output port index of the upstream unit
+        source_model: Model type of the source (e.g., "mADM1")
+        target_model: Target model type (e.g., "ASM2d")
+
+    Returns:
+        Tuple of (junction_unit_id, junction_output_port, warning_message)
+        Returns (None, original_port, None) if no junction available
+    """
+    junction_type = find_junction_for_conversion(source_model, target_model)
+    if not junction_type:
+        # No junction available - can't auto-insert
+        return None, f"{source_unit_id}-{source_port}", None
+
+    # Generate unique junction ID
+    junction_id = f"_auto_{junction_type}_{source_unit_id}"
+    counter = 1
+    while junction_id in session.units:
+        junction_id = f"_auto_{junction_type}_{source_unit_id}_{counter}"
+        counter += 1
+
+    # Create junction unit config
+    junction_config = UnitConfig(
+        unit_id=junction_id,
+        unit_type=junction_type,
+        params={},
+        inputs=[f"{source_unit_id}-{source_port}"],
+        outputs=[f"{junction_id}-0"],
+        model_type=target_model,  # Output model
+        auto_inserted=True,  # Track for debugging
+    )
+    session.units[junction_id] = junction_config
+
+    logger.info(f"Phase 10: Auto-inserted {junction_type} junction '{junction_id}' to convert {source_model} -> {target_model}")
+
+    warning = f"Auto-inserted junction '{junction_id}' to convert {source_model} -> {target_model} for input '{source_unit_id}-{source_port}'"
+    return junction_id, f"{junction_id}-0", warning
+
+
+def _rewrite_inputs_with_junctions(
+    session: "FlowsheetSessionManager",
+    inputs: List[str],
+    target_model: str,
+) -> tuple[List[str], List[str]]:
+    """
+    Phase 10: Rewrite inputs to auto-insert junctions where needed.
+
+    Scans inputs for model mismatches and auto-inserts junction units to unify
+    component sets at fan-in points.
+
+    Args:
+        session: FlowsheetSession instance
+        inputs: Original list of input port notations or stream IDs
+        target_model: Target model type for the unit being created
+
+    Returns:
+        Tuple of (rewritten_inputs, auto_insert_warnings)
+    """
+    from utils.pipe_parser import parse_port_notation, is_tuple_notation, parse_tuple_notation
+
+    rewritten_inputs = []
+    warnings = []
+    target_norm = normalize_model_name(target_model)
+
+    for inp in inputs:
+        # Handle tuple notation for fan-in
+        if is_tuple_notation(inp):
+            port_strs = parse_tuple_notation(inp)
+            rewritten_ports = []
+            for port_str in port_strs:
+                try:
+                    ref = parse_port_notation(port_str)
+                    inp_model = _get_model_for_input(session, ref)
+
+                    if inp_model and normalize_model_name(inp_model) != target_norm:
+                        # Model mismatch - try to auto-insert junction
+                        junction_id, new_port, warning = _auto_insert_junction(
+                            session, ref.unit_id, ref.port_index, inp_model, target_model
+                        )
+                        if junction_id:
+                            rewritten_ports.append(new_port)
+                            if warning:
+                                warnings.append(warning)
+                        else:
+                            # No junction available - keep original and warn
+                            rewritten_ports.append(port_str)
+                            warnings.append(
+                                f"No junction available to convert {inp_model} -> {target_model} "
+                                f"for input '{port_str}'. Component mismatch may cause build failure."
+                            )
+                    else:
+                        rewritten_ports.append(port_str)
+                except ValueError:
+                    # Parse error - keep original
+                    rewritten_ports.append(port_str)
+
+            # Reconstruct tuple notation
+            rewritten_inputs.append("(" + ", ".join(rewritten_ports) + ")")
+        else:
+            # Single input
+            try:
+                ref = parse_port_notation(inp)
+                inp_model = _get_model_for_input(session, ref)
+
+                if inp_model and normalize_model_name(inp_model) != target_norm:
+                    # Model mismatch - try to auto-insert junction
+                    junction_id, new_port, warning = _auto_insert_junction(
+                        session, ref.unit_id, ref.port_index, inp_model, target_model
+                    )
+                    if junction_id:
+                        rewritten_inputs.append(new_port)
+                        if warning:
+                            warnings.append(warning)
+                    else:
+                        # No junction available - keep original and warn
+                        rewritten_inputs.append(inp)
+                        warnings.append(
+                            f"No junction available to convert {inp_model} -> {target_model} "
+                            f"for input '{inp}'. Component mismatch may cause build failure."
+                        )
+                else:
+                    rewritten_inputs.append(inp)
+            except ValueError:
+                # Parse error - keep original
+                rewritten_inputs.append(inp)
+
+    return rewritten_inputs, warnings
+
+
+def _get_model_for_input(session, ref) -> Optional[str]:
+    """
+    Get the effective model for an input reference.
+
+    Args:
+        session: FlowsheetSession instance
+        ref: Parsed port reference
+
+    Returns:
+        Model type string or None if unknown
+    """
+    upstream_unit_id = ref.unit_id
+
+    if upstream_unit_id in session.units:
+        upstream_config = session.units[upstream_unit_id]
+        junction_transform = get_junction_output_model(upstream_config.unit_type)
+
+        if junction_transform:
+            # This is a junction - use its output model
+            return junction_transform[1]
+        elif upstream_config.model_type:
+            return upstream_config.model_type
+        else:
+            # Fall through to session primary
+            return session.primary_model_type
+    elif upstream_unit_id in session.streams:
+        stream_config = session.streams[upstream_unit_id]
+        return stream_config.model_type or session.primary_model_type
+    else:
+        # Unknown input (deferred recycle)
+        return session.primary_model_type
 
 
 @mcp.tool()
@@ -798,6 +995,23 @@ async def create_unit(
 
             return {"error": error_msg}
 
+        # Phase 10: Auto-insert junctions for model mismatches at fan-in
+        # If zone_warnings indicate multiple input models, rewrite inputs with junctions
+        auto_insert_warnings = []
+        if any("Multiple input models detected" in w for w in zone_warnings):
+            # Determine target model (session primary for consistency)
+            target_model = normalize_model_name(session.primary_model_type)
+
+            # Rewrite inputs to auto-insert junctions where needed
+            inputs, auto_insert_warnings = _rewrite_inputs_with_junctions(
+                session, inputs or [], target_model
+            )
+
+            # Recompute effective model after junction insertion
+            effective_model, zone_warnings = compute_effective_model_at_unit(
+                session, inputs, model_type
+            )
+
         # Pre-compilation input validation (Phase 8A)
         # Validate that all input references exist (streams or upstream units)
         input_warnings = []
@@ -850,8 +1064,8 @@ async def create_unit(
 
         result = session_manager.add_unit(session_id, config)
 
-        # Add warnings to result (combine param, input, and zone warnings)
-        all_warnings = param_warnings + input_warnings + zone_warnings
+        # Add warnings to result (combine param, input, zone, and auto-insert warnings)
+        all_warnings = param_warnings + input_warnings + zone_warnings + auto_insert_warnings
         if all_warnings:
             result["warnings"] = all_warnings
 

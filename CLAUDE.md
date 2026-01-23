@@ -25,6 +25,7 @@ Universal wastewater simulation engine supporting anaerobic (mADM1, 63 component
 | Phase 8 Plan | `docs/completed-plans/phase8-mle-tea-nitrification.md` | Complete |
 | Phase 8D CLI Verification | `docs/completed-plans/phase8d-cli-workflow-verification.md` | Complete |
 | Phase 9 Plan | `docs/completed-plans/phase9-mixed-model-flowsheet-support.md` | Complete |
+| Phase 10 Plan | `docs/completed-plans/phase10-known-limitations.md` | Complete |
 
 ---
 
@@ -45,8 +46,9 @@ Universal wastewater simulation engine supporting anaerobic (mADM1, 63 component
 | 8 | MLE Bug Fixes, Nitrification Fix, TEA Integration | Complete |
 | 8D | CLI Workflow Verification (Mixer ins.append, Splitter array, effluent detection, ASM1 DO_ID) | Complete |
 | 9 | Mixed-Model Flowsheet Support (junction transforms, model zones, suggestions) | Complete |
+| 10 | Known Limitations (kinetic params, native pH, auto-insert junctions, traversal depth) | Complete |
 
-**Test Count:** 322 tests passing (Phase 9 validation: 2026-01-22)
+**Test Count:** 355+ tests passing (Phase 10 validation: 2026-01-22)
 
 ---
 
@@ -63,7 +65,8 @@ qsdsan-engine-mcp/
 │   ├── converters.py      # State conversion + mass/charge validation
 │   ├── junction_components.py  # Component alignment for junctions
 │   ├── junction_units.py  # Custom junction classes
-│   └── unit_registry.py   # 49 SanUnit specs
+│   ├── kinetic_params.py  # Phase 10: mADM1 kinetic parameter schema (80+ params)
+│   └── unit_registry.py   # 49 SanUnit specs + find_junction_for_conversion()
 ├── templates/
 │   ├── anaerobic/cstr.py  # mADM1 CSTR template
 │   └── aerobic/           # mle_mbr.py, ao_mbr.py, a2o_mbr.py
@@ -95,6 +98,7 @@ qsdsan-engine-mcp/
 │   ├── test_flowsheet_mixer_splitter.py # Phase 8A Mixer/Splitter tests
 │   ├── test_nitrification.py # Phase 8B nitrification tests
 │   ├── test_mixed_model.py   # Phase 9 mixed-model flowsheet tests (30 tests)
+│   ├── test_phase10.py       # Phase 10 known limitations tests (20 tests)
 │   ├── test_madm1_state.json  # Complete 62-component mADM1 state
 │   ├── test_asm2d_state.json  # Complete ASM2d state
 │   └── run_slow_tests.py  # Integration tests for all templates
@@ -177,16 +181,20 @@ JUNCTION_MODEL_TRANSFORMS = {
 ## Known Limitations
 
 1. **QSDsan Import Time:** ~18s cold start. Use `utils/qsdsan_loader.py` for async loading.
+   - Phase 10: Mitigation enhanced with process model caching.
 
-2. **Kinetic Parameters:** `parameters` argument ignored for mADM1 templates; ASM2d only.
+2. ~~**Kinetic Parameters:**~~ **RESOLVED (Phase 10):** mADM1 templates now accept 80+ kinetic parameters via `core/kinetic_params.py`. Pass parameters in `kinetic_params` dict to `simulate_system` or CLI.
+   ```python
+   kinetic_params={"k_ac": 8.0, "K_ac": 0.15, "k_hSRB": 41.0}
+   ```
 
-3. **pH/Alkalinity:** Falls back to pH=7.0, SAlk=2.5 if `calculate_ph_and_alkalinity_fixed` module unavailable.
+3. ~~**pH/Alkalinity:**~~ **RESOLVED (Phase 10):** Native pH calculation using our custom `pcm()` function from `models/madm1.py`. No longer requires external module. Full charge balance with temperature-corrected Ka values.
 
-4. **Junction Property Alignment:** `X_AUT -> X_h2` in `COMPONENT_ALIGNMENT` is for property matching only; actual conversion uses QSDsan's `_compile_reactions()`.
+4. **Junction Property Alignment (Design Note):** `COMPONENT_ALIGNMENT` in `core/junction_components.py` is for property matching only. Actual mass conversion uses QSDsan's `_compile_reactions()`. **Important:** Upstream junctions only balance COD/TKN/TP - our custom S/Fe/Al species require custom handling in `core/junction_units.py`.
 
-5. **Junction Chains/Cycles:** Complex junction chains (A→J1→J2→B) traverse correctly, but cycles containing junctions are only detected at `build_system` time, not during `create_unit`.
+5. ~~**Junction Chains/Cycles:**~~ **RESOLVED (Phase 10):** Traversal depth limit (20 levels) in `compute_effective_model_at_unit()` prevents infinite loops. Raises clear error for detected cycles.
 
-6. **Fan-in Model Validation:** Mixing streams from different models at fan-in points (e.g., ASM2d + mADM1 into Mixer) produces a warning but not an error. Users must add appropriate junctions to unify component sets.
+6. ~~**Fan-in Model Validation:**~~ **RESOLVED (Phase 10):** Auto-insert junctions for model mismatches at fan-in points. When creating units with inputs from different models, the engine automatically inserts appropriate junction units (e.g., `mADM1toASM2d`). Auto-inserted units are prefixed with `_auto_` and have `auto_inserted=True` flag.
 
 ---
 

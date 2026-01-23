@@ -214,7 +214,174 @@ async def wait_for_load(model_type: str, timeout: float = 30.0) -> bool:
 
 def clear_cache():
     """Clear all cached components. Useful for testing."""
-    global _components_cache, _load_tasks
+    global _components_cache, _load_tasks, _model_cache
     _components_cache.clear()
     _load_tasks.clear()
-    logger.info("Component cache cleared")
+    _model_cache.clear()
+    logger.info("Component and model cache cleared")
+
+
+# =============================================================================
+# Phase 10: Process Model Caching
+# =============================================================================
+
+# Global model cache (ModifiedADM1, ASM2d process models are expensive to compile)
+_model_cache: Dict[str, Any] = {}
+
+
+async def _do_load_madm1_model():
+    """
+    Load and cache the ModifiedADM1 process model.
+
+    The process model compilation is the most expensive part of QSDsan
+    initialization (~5-10s). Caching it separately from components allows
+    faster subsequent simulations.
+
+    Returns:
+        ModifiedADM1 process model instance
+    """
+    def _import_model():
+        """Synchronous model creation (runs in thread pool)."""
+        logger.info("Starting ModifiedADM1 process model compilation...")
+        import_start = time.time()
+
+        try:
+            from models.madm1 import ModifiedADM1, create_madm1_cmps
+            # Create components first
+            cmps = create_madm1_cmps()
+            # Create the process model
+            model = ModifiedADM1(components=cmps)
+            elapsed = time.time() - import_start
+            logger.info(f"ModifiedADM1 process model compiled in {elapsed:.1f}s")
+            return model
+        except ImportError as e:
+            logger.warning(f"ModifiedADM1 model import failed: {e}")
+            return None
+
+    import anyio
+    model = await anyio.to_thread.run_sync(
+        _import_model,
+        limiter=anyio.to_thread.current_default_thread_limiter()
+    )
+    return model
+
+
+async def _do_load_asm2d_model():
+    """
+    Load and cache the ASM2d process model.
+
+    Returns:
+        ASM2d process model instance
+    """
+    def _import_model():
+        """Synchronous model creation (runs in thread pool)."""
+        logger.info("Starting ASM2d process model compilation...")
+        import_start = time.time()
+
+        try:
+            from models.asm2d import create_asm2d_components, create_asm2d_process
+            # Create components first
+            cmps = create_asm2d_components(set_thermo=True)
+            # Create the process model
+            model = create_asm2d_process(cmps)
+            elapsed = time.time() - import_start
+            logger.info(f"ASM2d process model compiled in {elapsed:.1f}s")
+            return model
+        except ImportError as e:
+            logger.warning(f"ASM2d model import failed: {e}")
+            return None
+
+    import anyio
+    model = await anyio.to_thread.run_sync(
+        _import_model,
+        limiter=anyio.to_thread.current_default_thread_limiter()
+    )
+    return model
+
+
+async def get_process_model(model_type: str):
+    """
+    Get a cached process model instance.
+
+    Thread-safe: Multiple concurrent calls await the same load task.
+
+    Args:
+        model_type: Model type ("mADM1", "ASM2d")
+
+    Returns:
+        Compiled process model instance
+
+    Example:
+        >>> model = await get_process_model("mADM1")
+    """
+    global _model_cache, _load_tasks
+
+    model_key = f"{model_type.lower()}_model"
+
+    # Fast path: already loaded
+    if model_key in _model_cache:
+        logger.debug(f"{model_type} process model retrieved from cache")
+        return _model_cache[model_key]
+
+    # Slow path: need to load
+    if model_key not in _load_tasks:
+        logger.info(f"First caller - creating {model_type} process model load task")
+        if model_type.lower() in ("madm1",):
+            _load_tasks[model_key] = asyncio.create_task(_do_load_madm1_model())
+        elif model_type.lower() in ("asm2d", "masm2d"):
+            _load_tasks[model_key] = asyncio.create_task(_do_load_asm2d_model())
+        else:
+            raise ValueError(f"Process model caching not implemented for: {model_type}")
+    else:
+        logger.info(f"Waiting for ongoing {model_type} process model load task...")
+
+    _model_cache[model_key] = await _load_tasks[model_key]
+    logger.info(f"{model_type} process model now cached and ready")
+    return _model_cache[model_key]
+
+
+def is_model_loaded(model_type: str) -> bool:
+    """Check if a process model is cached."""
+    return f"{model_type.lower()}_model" in _model_cache
+
+
+async def full_warmup(models: list = None):
+    """
+    Comprehensive warmup that pre-loads components and process models.
+
+    Phase 10 enhancement: Loads both components AND process models in parallel
+    to minimize cold-start latency.
+
+    Args:
+        models: List of model types to warm up (default: ["mADM1", "ASM2d"])
+
+    Example:
+        >>> asyncio.create_task(full_warmup(["mADM1", "ASM2d"]))
+    """
+    if models is None:
+        models = ["mADM1", "ASM2d"]
+
+    logger.info(f"Starting full warmup for models: {models}")
+    warmup_start = time.time()
+
+    tasks = []
+
+    # Load components
+    for model in models:
+        tasks.append(get_components(model))
+
+    # Load process models
+    for model in models:
+        if model.lower() in ("madm1", "asm2d", "masm2d"):
+            tasks.append(get_process_model(model))
+
+    # Wait for all tasks
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Log any errors
+    for i, result in enumerate(results):
+        if isinstance(result, Exception):
+            logger.error(f"Warmup task {i} failed: {result}")
+
+    elapsed = time.time() - warmup_start
+    logger.info(f"Full warmup completed in {elapsed:.1f}s")

@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     'create_asm2d_components',
+    'create_asm2d_process',
     'DEFAULT_ASM2D_KWARGS',
     'DEFAULT_DOMESTIC_WW',
 ]
@@ -74,6 +75,43 @@ def create_asm2d_components(set_thermo: bool = True):
 
     logger.info(f"Created ASM2d components: {len(cmps.IDs)} components")
     return cmps
+
+
+def create_asm2d_process(cmps=None, **kwargs):
+    """
+    Create ASM2d process model with calibrated kinetics.
+
+    Parameters
+    ----------
+    cmps : CompiledComponents, optional
+        Component set to use. If None, creates new components.
+    **kwargs : dict
+        Override default kinetic parameters (see DEFAULT_ASM2D_KWARGS).
+
+    Returns
+    -------
+    ASM2d
+        QSDsan ASM2d process model instance
+
+    Example
+    -------
+    >>> cmps = create_asm2d_components()
+    >>> asm2d = create_asm2d_process(cmps, mu_H=7.0)
+    """
+    from qsdsan import processes as pc
+
+    if cmps is None:
+        cmps = create_asm2d_components(set_thermo=True)
+
+    # Merge default kwargs with overrides
+    process_kwargs = DEFAULT_ASM2D_KWARGS.copy()
+    process_kwargs.update(kwargs)
+
+    logger.info("Creating ASM2d process model...")
+    asm2d = pc.ASM2d(**process_kwargs)
+
+    logger.info(f"Created ASM2d process model with {len(asm2d.IDs)} reactions")
+    return asm2d
 
 
 # Default ASM2d kinetic parameters (from Pune_Nanded reference)
