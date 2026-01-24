@@ -25,6 +25,8 @@ import numpy as np
 import qsdsan as qs
 from qsdsan import processes as pc, sanunits as su
 
+from core.version import __version__ as ENGINE_VERSION
+
 from utils.analysis.aerobic import (
     analyze_aerobic_stream,
     analyze_aerobic_performance,
@@ -184,6 +186,9 @@ def build_and_run(
 
         logger.info(f"Simulating for {duration_days} days...")
 
+        # Progress reporting for job monitoring
+        print(f"[PROGRESS] Starting A/O-MBR simulation: {duration_days} days, Q={Q} m3/d", flush=True)
+
         # Build simulation kwargs
         sim_kwargs = {
             'state_reset_hook': 'reset_cache',
@@ -201,8 +206,10 @@ def build_and_run(
             sim_kwargs['t_eval'] = t_eval
             logger.info(f"Using timestep {timestep_hours}h -> {len(t_eval)} evaluation points")
 
+        print(f"[PROGRESS] Running ODE solver (method=RK23)...", flush=True)
         sys.simulate(**sim_kwargs)
 
+        print(f"[PROGRESS] Simulation complete: 100%", flush=True)
         logger.info("Simulation completed, analyzing results...")
 
         eff_stream = sys.flowsheet.stream.effluent
@@ -270,7 +277,7 @@ def build_and_run(
         result["metadata"] = {
             "qsdsan_version": qsdsan_version,
             "biosteam_version": biosteam_version,
-            "engine_version": "3.0.0",
+            "engine_version": ENGINE_VERSION,
             "template": "ao_mbr_asm2d",
             "solver": {
                 "method": "RK23",

@@ -21,6 +21,8 @@ import logging
 from pathlib import Path
 from typing import Dict, Any, Optional
 
+from core.version import __version__ as ENGINE_VERSION
+
 logger = logging.getLogger(__name__)
 
 
@@ -185,7 +187,7 @@ def build_and_run(
         result["metadata"] = {
             "qsdsan_version": qsdsan_version,
             "biosteam_version": biosteam_version,
-            "engine_version": "3.0.0",
+            "engine_version": ENGINE_VERSION,
             "template": "anaerobic_cstr_madm1",
             "solver": {
                 "method": "BDF",

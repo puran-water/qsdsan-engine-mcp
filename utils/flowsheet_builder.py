@@ -24,6 +24,7 @@ import json
 import logging
 
 from core.plant_state import validate_concentration_bounds
+from core.version import __version__ as ENGINE_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -324,7 +325,7 @@ def simulate_compiled_system(
     results["metadata"] = {
         "qsdsan_version": qsdsan_version,
         "biosteam_version": biosteam_version,
-        "engine_version": "3.0.0",
+        "engine_version": ENGINE_VERSION,
         "solver": {
             "method": method,
             "duration_days": duration_days,

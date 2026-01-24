@@ -519,6 +519,9 @@ def run_simulation_to_steady_state(sys, eff, gas, check_interval=2, t_step=0.1, 
 
     logger.info(f"Starting simulation to TRUE steady state (no time limit, checking every {check_interval} days)")
 
+    # Progress reporting for job monitoring
+    print(f"[PROGRESS] Starting mADM1 simulation (checking every {check_interval} days)", flush=True)
+
     # CRITICAL FIX per Codex: Reset caches ONCE before loop, not every iteration
     # Resetting every iteration causes the simulation to replay the same 2 days forever
     # because all accumulated state and tracking data gets cleared
@@ -531,6 +534,7 @@ def run_simulation_to_steady_state(sys, eff, gas, check_interval=2, t_step=0.1, 
         t_next = t_current + check_interval
 
         logger.debug(f"Simulating from t={t_current} to t={t_next} days")
+        print(f"[PROGRESS] Day {t_current:.0f} - running BDF solver...", flush=True)
 
         try:
             sys.simulate(
@@ -548,11 +552,13 @@ def run_simulation_to_steady_state(sys, eff, gas, check_interval=2, t_step=0.1, 
         # Check for convergence
         if check_steady_state(eff, gas, tolerance=tolerance):
             logger.info(f"Converged to TRUE steady state at t={t_current} days")
+            print(f"[PROGRESS] Simulation complete: converged at day {t_current:.0f}", flush=True)
             return t_current, 'converged'
 
         # Log progress every 100 days to show we're still working
         if t_current % 100 == 0:
             logger.info(f"Progress: t={t_current} days, still approaching steady state...")
+            print(f"[PROGRESS] Day {t_current:.0f} - still converging...", flush=True)
 
 
 def extract_time_series(eff, gas):
