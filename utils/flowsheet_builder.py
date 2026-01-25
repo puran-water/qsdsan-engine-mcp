@@ -195,6 +195,229 @@ def compile_system(
     return system, build_info
 
 
+# =============================================================================
+# Sludge/Biomass Stream Detection (Phase 11)
+# =============================================================================
+
+# Unit-specific output mappings for clarifiers and MBRs
+CLARIFIER_SLUDGE_OUTPUTS = {
+    'FlatBottomCircularClarifier': [2, 1],  # WAS (priority), RAS (fallback)
+    'IdealClarifier': [1],                   # underflow
+    'PrimaryClarifier': [1],                 # underflow
+    'PrimaryClarifierBSM2': [1],             # underflow
+}
+
+MBR_SLUDGE_OUTPUTS = {
+    'CompletelyMixedMBR': [1],               # retentate/pumped
+    'AnMBR': [2],                            # sludge (not outs[1] which is effluent!)
+}
+
+
+def _detect_sludge_streams(system: "System") -> List["WasteStream"]:
+    """
+    Auto-detect sludge streams for biomass convergence tracking.
+
+    Uses unit-specific output mapping (clarifiers, MBRs) and biomass-based
+    ranking for accurate sludge stream identification.
+
+    Parameters
+    ----------
+    system : System
+        QSDsan System with units configured
+
+    Returns
+    -------
+    List[WasteStream]
+        Detected sludge streams ranked by biomass mass flow
+
+    Notes
+    -----
+    Detection priority:
+    1. Unit-specific sludge outputs (clarifiers outs[2]/[1], MBR outs[1])
+    2. Name-based matching ("was", "sludge", "waste_sludge")
+    3. Terminal stream with highest biomass (data-driven fallback)
+
+    Excludes internal recycles (RAS, IR) from results.
+    """
+    candidates = []
+
+    # Priority 1: Unit-specific sludge outputs
+    for unit in system.units:
+        unit_type = type(unit).__name__
+
+        # Clarifiers
+        if unit_type in CLARIFIER_SLUDGE_OUTPUTS:
+            for idx in CLARIFIER_SLUDGE_OUTPUTS[unit_type]:
+                if len(unit.outs) > idx and unit.outs[idx]:
+                    candidates.append(unit.outs[idx])
+
+        # MBRs
+        elif unit_type in MBR_SLUDGE_OUTPUTS:
+            for idx in MBR_SLUDGE_OUTPUTS[unit_type]:
+                if len(unit.outs) > idx and unit.outs[idx]:
+                    candidates.append(unit.outs[idx])
+
+        # Unknown clarifier/MBR types: use biomass heuristic
+        elif 'Clarifier' in unit_type or 'MBR' in unit_type:
+            if len(unit.outs) > 1:
+                # Pick outlet with highest biomass (not effluent at outs[0])
+                best_sludge = _select_by_biomass(unit.outs[1:])
+                if best_sludge:
+                    candidates.append(best_sludge)
+
+    # Priority 2: Name-based matching (fallback)
+    if not candidates:
+        sludge_patterns = ('was', 'sludge', 'waste_sludge')
+        exclude_patterns = ('ras', 'return', 'recycle', 'internal', '_ir')
+        for s in system.streams:
+            if not s:
+                continue
+            sid_lower = s.ID.lower()
+            if any(pat in sid_lower for pat in sludge_patterns):
+                if not any(ex in sid_lower for ex in exclude_patterns):
+                    candidates.append(s)
+
+    # Priority 3: Terminal stream with highest biomass (data-driven fallback)
+    if not candidates:
+        exclude_patterns = ('ras', 'ir', 'return', 'recycle', 'internal')
+        terminal_streams = []
+        for s in system.streams:
+            if not s:
+                continue
+            sid_lower = s.ID.lower()
+            if any(pat in sid_lower for pat in exclude_patterns):
+                continue
+            if hasattr(s, 'sink') and s.sink is None:
+                terminal_streams.append(s)
+
+        if terminal_streams:
+            best = _select_by_biomass(terminal_streams)
+            if best:
+                candidates.append(best)
+
+    # Rank by biomass and deduplicate
+    return _rank_and_dedupe_by_biomass(candidates)
+
+
+def _select_by_biomass(streams) -> "WasteStream":
+    """Select stream with highest ASM biomass mass flow."""
+    def biomass_score(s):
+        if not s or not hasattr(s, 'imass'):
+            return 0
+        score = 0
+        for comp in ['X_AUT', 'X_H', 'X_PAO', 'X_ac', 'X_h2']:  # ASM + ADM biomass
+            try:
+                score += s.imass[comp]
+            except Exception:
+                pass
+        return score
+
+    valid = [s for s in streams if s]
+    return max(valid, key=biomass_score, default=None)
+
+
+def _biomass_score(s) -> float:
+    """Calculate biomass score for a stream (numeric value for sorting)."""
+    if not s or not hasattr(s, 'imass'):
+        return 0.0
+    score = 0.0
+    for comp in ['X_AUT', 'X_H', 'X_PAO', 'X_ac', 'X_h2']:  # ASM + ADM biomass
+        try:
+            score += float(s.imass[comp])
+        except Exception:
+            pass
+    return score
+
+
+def _rank_and_dedupe_by_biomass(candidates) -> List["WasteStream"]:
+    """Rank candidates by biomass and remove duplicates."""
+    seen = set()
+    unique = []
+    for s in candidates:
+        if s and id(s) not in seen:
+            seen.add(id(s))
+            unique.append(s)
+
+    # Sort by biomass score descending (highest first)
+    # Uses _biomass_score which returns a float, not a stream object
+    return sorted(unique, key=_biomass_score, reverse=True)
+
+
+def _detect_effluent_streams(system: "System") -> List["WasteStream"]:
+    """
+    Auto-detect effluent streams for convergence tracking.
+
+    Uses multiple strategies with priority:
+    1. Streams with "effluent" in name
+    2. First output of clarifier units (outs[0] is clarified effluent)
+    3. Terminal streams with lowest TSS (clear water = effluent)
+
+    Parameters
+    ----------
+    system : System
+        QSDsan System
+
+    Returns
+    -------
+    List[WasteStream]
+        Detected effluent streams
+    """
+    candidates = []
+
+    # Priority 1: Name-based detection
+    for s in system.streams:
+        if s and "effluent" in s.ID.lower():
+            candidates.append(s)
+
+    if candidates:
+        return candidates
+
+    # Priority 2: First output of clarifier units
+    clarifier_types = ('Clarifier', 'MBR', 'FlatBottom', 'IdealClarifier')
+    for unit in system.units:
+        unit_type = type(unit).__name__
+        if any(ct in unit_type for ct in clarifier_types):
+            if len(unit.outs) > 0 and unit.outs[0]:
+                candidates.append(unit.outs[0])
+
+    if candidates:
+        return candidates
+
+    # Priority 3: Terminal stream with lowest TSS (excluding sludge)
+    exclude_patterns = ('was', 'sludge', 'ras', 'return', 'recycle', 'biogas', 'gas')
+    terminal_streams = []
+    for s in system.streams:
+        if not s:
+            continue
+        sid_lower = s.ID.lower()
+        if any(pat in sid_lower for pat in exclude_patterns):
+            continue
+        if hasattr(s, 'sink') and s.sink is None:
+            terminal_streams.append(s)
+
+    if terminal_streams:
+        def tss_score(s):
+            """Lower TSS = more likely to be effluent."""
+            if not hasattr(s, 'get_TSS'):
+                return float('inf')
+            try:
+                return s.get_TSS()
+            except Exception:
+                return float('inf')
+
+        # Return stream with lowest TSS
+        best = min(terminal_streams, key=tss_score, default=None)
+        if best:
+            return [best]
+
+    # Fallback: return first product that's not a gas
+    for s in system.products:
+        if s and 'gas' not in s.ID.lower() and 'biogas' not in s.ID.lower():
+            return [s]
+
+    return []
+
+
 def simulate_compiled_system(
     system: "System",
     duration_days: float = 1.0,
@@ -209,15 +432,26 @@ def simulate_compiled_system(
     include_components: bool = False,
     track: Optional[List[str]] = None,
     export_state_to: Optional[Path] = None,
+    run_to_convergence: bool = False,
+    convergence_atol: float = 0.1,
+    convergence_rtol: float = 1e-3,
+    check_interval_days: float = 2.0,
+    max_duration_days: Optional[float] = None,
+    convergence_stream_ids: Optional[Dict[str, List[str]]] = None,
+    convergence_components: Optional[Dict[str, List[str]]] = None,
+    # SRT Control Parameters (Phase 12)
+    target_srt_days: Optional[float] = None,
+    srt_tolerance: float = 0.1,
+    max_srt_iterations: int = 10,
 ) -> Dict[str, Any]:
     """
     Simulate a compiled QSDsan System.
 
     Args:
         system: Compiled QSDsan System
-        duration_days: Simulation duration in days
+        duration_days: Simulation duration in days (used when run_to_convergence=False)
         timestep_hours: Output timestep in hours
-        method: ODE solver method (RK23, RK45, BDF)
+        method: ODE solver method (RK23, RK45, BDF). Auto-set to BDF when run_to_convergence=True.
         t_eval: Custom evaluation times (days). If None, uses timestep.
         state_reset_hook: Method name for state reset
         output_dir: Directory for output files
@@ -227,40 +461,264 @@ def simulate_compiled_system(
         include_components: Include full component breakdown in results
         track: Stream IDs to track dynamically during simulation
         export_state_to: Path to export final effluent state as PlantState JSON
+        run_to_convergence: If True, run until steady state (default False)
+        convergence_atol: Absolute tolerance for convergence (default 0.1 mg/L/d)
+        convergence_rtol: Relative tolerance for convergence (default 1e-3)
+        check_interval_days: Days between convergence checks (default 2.0)
+        max_duration_days: Maximum simulation time for convergence mode
+        convergence_stream_ids: Explicit streams for convergence:
+            {"effluent": ["eff1"], "sludge": ["was1"]}
+        convergence_components: Explicit components to check:
+            {"effluent": ["S_NH4", "S_NO3"], "sludge": ["X_AUT", "X_H"]}
+        target_srt_days: Target SRT in days. If set, Q_was is iteratively adjusted
+            to achieve the target SRT at steady state. Implies run_to_convergence=True. (Phase 12)
+        srt_tolerance: Relative tolerance on achieved SRT (default 0.1 = 10%).
+        max_srt_iterations: Maximum Q_was adjustment iterations for SRT control (default 10).
 
     Returns:
         Dict with simulation results including effluent quality, removal efficiency, etc.
+        When run_to_convergence=True, also includes:
+        - simulation.converged_at_days: Time when steady state was reached
+        - simulation.convergence_status: 'converged' or 'max_time_reached'
+        - simulation.convergence_metrics: Detailed convergence diagnostics
+        When target_srt_days is set, also includes:
+        - srt_control: Dict with achieved_srt_days, q_was_optimal, srt_iterations
     """
     import numpy as np
 
-    # Generate t_eval if not provided
-    if t_eval is None:
-        t_eval = np.arange(0, duration_days + timestep_hours / 24, timestep_hours / 24).tolist()
+    # Initialize convergence tracking variables
+    converged_at = None
+    conv_status = None
+    conv_metrics = None
+    actual_duration = duration_days
+    simulation_method = method
+    srt_days = None  # Phase 12: Track achieved SRT
 
-    t_span = (0, duration_days)
+    # Phase 12: SRT control takes precedence if target_srt_days is set
+    if target_srt_days is not None:
+        # =====================================================================
+        # SRT-controlled simulation (Phase 12)
+        # =====================================================================
+        from utils.run_to_srt import run_to_target_srt
+        from utils.srt_control import detect_wastage_streams, has_srt_decoupling
+        from utils.convergence import get_convergence_components_for_model
 
-    # Build simulate kwargs
-    sim_kwargs = {
-        "t_span": t_span,
-        "t_eval": t_eval,
-        "method": method,
-        "state_reset_hook": state_reset_hook,
-    }
+        # Check if system has MBR/Clarifier (SRT decoupling)
+        if not has_srt_decoupling(system):
+            logger.warning(
+                "No MBR or clarifier detected in system. "
+                "SRT control is only effective for systems that decouple HRT and SRT."
+            )
 
-    # Add track streams if provided (for dynamic tracking during simulation)
-    if track:
-        # Resolve stream IDs to WasteStream objects
-        track_streams = []
-        for stream_id in track:
-            for stream in system.streams:
-                if stream and stream.ID == stream_id:
-                    track_streams.append(stream)
-                    break
-        if track_streams:
-            sim_kwargs["track"] = track_streams
+        # Step 1: Detect or use explicit effluent streams
+        if convergence_stream_ids and 'effluent' in convergence_stream_ids:
+            eff_ids = convergence_stream_ids['effluent']
+            eff_streams = [s for s in system.streams if s and s.ID in eff_ids]
+        else:
+            if effluent_stream_ids:
+                eff_streams = [s for s in system.streams if s and s.ID in effluent_stream_ids]
+            else:
+                eff_streams = _detect_effluent_streams(system)
 
-    # Run dynamic simulation
-    system.simulate(**sim_kwargs)
+        # Step 2: Detect wastage streams for SRT calculation
+        if convergence_stream_ids and 'sludge' in convergence_stream_ids:
+            sludge_ids = convergence_stream_ids['sludge']
+            sludge_streams = [s for s in system.streams if s and s.ID in sludge_ids]
+        else:
+            sludge_streams = _detect_sludge_streams(system)
+
+        # Use sludge streams as WAS streams for SRT calculation
+        was_streams = detect_wastage_streams(system) or sludge_streams
+
+        # Step 3: Combine all convergence streams
+        all_convergence_streams = eff_streams + sludge_streams
+        if not all_convergence_streams:
+            logger.warning("No streams detected for convergence tracking, using system.products")
+            all_convergence_streams = [s for s in system.products if s]
+
+        # Set up dynamic tracking
+        system.set_dynamic_tracker(*all_convergence_streams)
+
+        # Step 4: Determine components to check
+        if convergence_components is None:
+            default_comps = get_convergence_components_for_model(model_type)
+            conv_comps_map = {}
+            for s in eff_streams:
+                if s:
+                    conv_comps_map[s.ID] = default_comps.get("effluent", ['S_NH4', 'S_NO3', 'S_O2'])
+            for s in sludge_streams:
+                if s:
+                    conv_comps_map[s.ID] = default_comps.get("sludge", ['X_AUT', 'X_H', 'X_PAO'])
+        else:
+            conv_comps_map = {}
+            for s in eff_streams:
+                if s:
+                    conv_comps_map[s.ID] = convergence_components.get("effluent", ['S_NH4', 'S_NO3'])
+            for s in sludge_streams:
+                if s:
+                    conv_comps_map[s.ID] = convergence_components.get("sludge", ['X_AUT', 'X_H'])
+
+        # Step 5: Set default max_time from target SRT (4x for margin)
+        if max_duration_days is None:
+            max_duration_days = max(100.0, target_srt_days * 4)
+
+        logger.info(
+            f"Running SRT-controlled simulation: target_srt={target_srt_days}d, "
+            f"tolerance={srt_tolerance:.0%}, max_time={max_duration_days:.0f}d"
+        )
+
+        # Step 6: Run SRT-controlled simulation
+        achieved_srt, srt_status, srt_metrics = run_to_target_srt(
+            system=system,
+            target_srt_days=target_srt_days,
+            wastage_streams=was_streams,
+            effluent_streams=None,  # MBR permeate typically has no solids
+            convergence_streams=all_convergence_streams,
+            convergence_components=conv_comps_map,
+            model_type=model_type,
+            srt_tolerance=srt_tolerance,
+            max_srt_iterations=max_srt_iterations,
+            min_time_multiplier=2.0,
+            check_interval=check_interval_days,
+            atol=convergence_atol,
+            rtol=convergence_rtol,
+            max_time=max_duration_days,
+        )
+
+        # Store results
+        actual_duration = srt_metrics.get('converged_at', max_duration_days) if srt_metrics else max_duration_days
+        simulation_method = 'BDF'
+        converged_at = actual_duration
+        conv_status = srt_status
+        conv_metrics = srt_metrics
+        srt_days = achieved_srt
+
+        logger.info(
+            f"SRT control complete: achieved_srt={achieved_srt:.1f}d "
+            f"(target={target_srt_days}d), status={srt_status}"
+        )
+
+    elif run_to_convergence:
+        # =====================================================================
+        # Convergence-based simulation (Phase 11)
+        # =====================================================================
+        from utils.run_to_convergence import run_system_to_steady_state
+        from utils.convergence import get_convergence_components_for_model
+
+        # Step 1: Detect or use explicit effluent streams
+        if convergence_stream_ids and 'effluent' in convergence_stream_ids:
+            eff_ids = convergence_stream_ids['effluent']
+            eff_streams = [s for s in system.streams if s and s.ID in eff_ids]
+        else:
+            # Use effluent_stream_ids parameter or auto-detect
+            if effluent_stream_ids:
+                eff_streams = [s for s in system.streams if s and s.ID in effluent_stream_ids]
+            else:
+                # Auto-detect using existing logic
+                eff_streams = _detect_effluent_streams(system)
+
+        # Step 2: Detect or use explicit sludge streams
+        if convergence_stream_ids and 'sludge' in convergence_stream_ids:
+            sludge_ids = convergence_stream_ids['sludge']
+            sludge_streams = [s for s in system.streams if s and s.ID in sludge_ids]
+        else:
+            sludge_streams = _detect_sludge_streams(system)
+
+        # Step 3: Combine all convergence streams
+        all_convergence_streams = eff_streams + sludge_streams
+        if not all_convergence_streams:
+            logger.warning("No streams detected for convergence tracking, using system.products")
+            all_convergence_streams = [s for s in system.products if s]
+
+        # Set up dynamic tracking
+        system.set_dynamic_tracker(*all_convergence_streams)
+
+        # Step 4: Determine components to check
+        if convergence_components is None:
+            # Use defaults based on model type
+            default_comps = get_convergence_components_for_model(model_type)
+            conv_comps_map = {}
+            for s in eff_streams:
+                if s:
+                    conv_comps_map[s.ID] = default_comps.get("effluent", ['S_NH4', 'S_NO3', 'S_O2'])
+            for s in sludge_streams:
+                if s:
+                    conv_comps_map[s.ID] = default_comps.get("sludge", ['X_AUT', 'X_H', 'X_PAO'])
+        else:
+            # Map explicit components to stream IDs
+            conv_comps_map = {}
+            for s in eff_streams:
+                if s:
+                    conv_comps_map[s.ID] = convergence_components.get("effluent", ['S_NH4', 'S_NO3'])
+            for s in sludge_streams:
+                if s:
+                    conv_comps_map[s.ID] = convergence_components.get("sludge", ['X_AUT', 'X_H'])
+
+        # Step 5: Set default max_time
+        if max_duration_days is None:
+            # Default based on model type
+            if model_type.upper() in ('MADM1', 'ADM1'):
+                max_duration_days = 500.0
+            else:
+                max_duration_days = 100.0
+
+        logger.info(
+            f"Running to convergence: max_time={max_duration_days:.0f}d, "
+            f"effluent_streams={[s.ID for s in eff_streams]}, "
+            f"sludge_streams={[s.ID for s in sludge_streams]}"
+        )
+
+        # Step 6: Run to convergence
+        converged_at, conv_status, conv_metrics = run_system_to_steady_state(
+            system=system,
+            convergence_streams=all_convergence_streams,
+            convergence_components=conv_comps_map,
+            check_interval=check_interval_days,
+            t_step=timestep_hours / 24,
+            atol=convergence_atol,
+            rtol=convergence_rtol,
+            method='BDF',  # Always BDF for convergence
+            max_time=max_duration_days,
+        )
+
+        actual_duration = converged_at
+        simulation_method = 'BDF'
+
+    else:
+        # =====================================================================
+        # Fixed-duration simulation (original behavior)
+        # =====================================================================
+        # Generate t_eval if not provided
+        if t_eval is None:
+            t_eval = np.arange(0, duration_days + timestep_hours / 24, timestep_hours / 24).tolist()
+
+        t_span = (0, duration_days)
+
+        # Build simulate kwargs
+        sim_kwargs = {
+            "t_span": t_span,
+            "t_eval": t_eval,
+            "method": method,
+            "state_reset_hook": state_reset_hook,
+        }
+
+        # Add track streams if provided (for dynamic tracking during simulation)
+        if track:
+            # Resolve stream IDs to WasteStream objects
+            track_streams = []
+            for stream_id in track:
+                for stream in system.streams:
+                    if stream and stream.ID == stream_id:
+                        track_streams.append(stream)
+                        break
+            if track_streams:
+                sim_kwargs["track"] = track_streams
+
+        # Run dynamic simulation
+        system.simulate(**sim_kwargs)
+
+        actual_duration = duration_days
+        simulation_method = method
 
     # Extract results
     results = _extract_simulation_results(
@@ -326,15 +784,43 @@ def simulate_compiled_system(
         "biosteam_version": biosteam_version,
         "engine_version": "3.0.0",
         "solver": {
-            "method": method,
-            "duration_days": duration_days,
+            "method": simulation_method,
+            "duration_days": actual_duration,
             "timestep_hours": timestep_hours,
             "rtol": 1e-3,
             "atol": 1e-6,
+            "run_to_convergence": run_to_convergence,
         },
         "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
         "model_type": model_type,
     }
+
+    # Add simulation info
+    results["simulation"] = {
+        "duration_days": actual_duration,
+        "method": simulation_method,
+        "status": "completed",
+        "run_to_convergence": run_to_convergence or target_srt_days is not None,
+    }
+
+    # Add convergence info if applicable
+    if run_to_convergence or target_srt_days is not None:
+        results["simulation"]["converged_at_days"] = converged_at
+        results["simulation"]["convergence_status"] = conv_status
+        results["simulation"]["convergence_metrics"] = conv_metrics
+        results["metadata"]["solver"]["convergence_atol"] = convergence_atol
+        results["metadata"]["solver"]["convergence_rtol"] = convergence_rtol
+
+    # Add SRT control info if applicable (Phase 12)
+    if target_srt_days is not None:
+        results["srt_control"] = {
+            "target_srt_days": target_srt_days,
+            "achieved_srt_days": srt_days,
+            "srt_tolerance": srt_tolerance,
+            "status": conv_status,
+            "q_was_optimal": conv_metrics.get('q_was_optimal') if conv_metrics else None,
+            "srt_iterations": conv_metrics.get('srt_iterations') if conv_metrics else None,
+        }
 
     return results
 

@@ -81,33 +81,11 @@ logger = logging.getLogger(__name__)
 # Initialize MCP server
 mcp = FastMCP("qsdsan-engine")
 
-# Use absolute paths relative to this file to avoid CWD issues when run from Claude Desktop
-_BASE_DIR = Path(__file__).parent.absolute()
-_JOBS_DIR = _BASE_DIR / "jobs"
-
 # Initialize job manager (singleton)
-job_manager = JobManager(max_concurrent_jobs=3, jobs_base_dir=str(_JOBS_DIR))
+job_manager = JobManager(max_concurrent_jobs=3, jobs_base_dir="jobs")
 
 # Initialize flowsheet session manager (singleton)
-session_manager = FlowsheetSessionManager(sessions_dir=_JOBS_DIR)
-
-
-# =============================================================================
-# Tool 0: get_version (Version Information)
-# =============================================================================
-@mcp.tool()
-async def get_version() -> Dict[str, Any]:
-    """
-    Get version information for the QSDsan Engine and its dependencies.
-
-    Returns version numbers for the engine, QSDsan, BioSTEAM, and Python.
-    This is useful for debugging and ensuring compatibility.
-
-    Returns:
-        Dict with engine_version, qsdsan_version, biosteam_version, python_version
-    """
-    from core.version import get_version_info
-    return get_version_info()
+session_manager = FlowsheetSessionManager(sessions_dir=Path("jobs"))
 
 
 # =============================================================================
@@ -121,7 +99,12 @@ async def simulate_system(
     timestep_hours: Optional[float] = None,
     reactor_config: Optional[Dict[str, Any]] = None,
     parameters: Optional[Dict[str, Any]] = None,
-    timeout_seconds: float = 300.0,
+    # SRT Control Parameters (Phase 12)
+    target_srt_days: Optional[float] = None,
+    srt_tolerance: float = 0.1,
+    run_to_convergence: bool = False,
+    convergence_atol: float = 0.1,
+    max_duration_days: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Run QSDsan dynamic simulation using a flowsheet template.
@@ -141,9 +124,12 @@ async def simulate_system(
                     half-saturation coefficients (K_su, K_aa, K_ac, etc.), inhibition constants
                     (KI_h2_fa, KI_nh3, etc.), and SRB parameters. See core/kinetic_params.py
                     for the full schema and validation. ASM2d templates also accept kinetics.
-        timeout_seconds: Maximum simulation runtime in seconds (default 300 = 5 minutes).
-                        If exceeded, the job is terminated with status="timeout".
-                        Set to 0 for no timeout (not recommended for production).
+        target_srt_days: Target SRT in days. If set, Q_was is iteratively adjusted to achieve
+                         the target SRT at steady state. Only applies to MBR templates. (Phase 12)
+        srt_tolerance: Relative tolerance on achieved SRT (default 0.1 = 10%).
+        run_to_convergence: If True, run until steady state is reached (default False).
+        convergence_atol: Absolute tolerance for convergence (default 0.1 mg/L/d).
+        max_duration_days: Maximum simulation time for convergence or SRT control mode.
 
     Returns:
         Dict with job_id, status, and instructions for monitoring
@@ -152,8 +138,7 @@ async def simulate_system(
         >>> result = await simulate_system(
         ...     template="anaerobic_cstr_madm1",
         ...     influent={"model_type": "mADM1", "flow_m3_d": 1000, "concentrations": {...}},
-        ...     duration_days=30.0,
-        ...     timeout_seconds=600  # 10 minutes for complex anaerobic model
+        ...     duration_days=30.0
         ... )
         >>> job_id = result["job_id"]
         >>> # Then call get_job_status(job_id) and get_job_results(job_id)
@@ -166,11 +151,10 @@ async def simulate_system(
         reactor_cfg = reactor_config or {}
         params = parameters or {}
 
-        # Create job directory (use absolute path relative to this file to avoid CWD issues)
+        # Create job directory
         import uuid
         job_id = str(uuid.uuid4())[:8]
-        base_dir = Path(__file__).parent.absolute()
-        job_dir = base_dir / "jobs" / job_id
+        job_dir = Path("jobs") / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
 
         # Save influent state to job directory
@@ -183,7 +167,12 @@ async def simulate_system(
             "timestep_hours": timestep_hours,
             "reactor_config": reactor_cfg,
             "parameters": params,
-            "timeout_seconds": timeout_seconds,
+            # SRT Control (Phase 12)
+            "target_srt_days": target_srt_days,
+            "srt_tolerance": srt_tolerance,
+            "run_to_convergence": run_to_convergence,
+            "convergence_atol": convergence_atol,
+            "max_duration_days": max_duration_days,
         }
         with open(job_dir / "config.json", "w") as f:
             json.dump(config, f, indent=2)
@@ -209,22 +198,27 @@ async def simulate_system(
         if parameters:
             cmd.extend(["--parameters", json.dumps(parameters)])
 
-        # Execute as background job with timeout
+        # SRT Control Parameters (Phase 12)
+        if target_srt_days is not None:
+            cmd.extend(["--target-srt", str(target_srt_days)])
+        if srt_tolerance != 0.1:  # Only pass if not default
+            cmd.extend(["--srt-tolerance", str(srt_tolerance)])
+        if run_to_convergence:
+            cmd.append("--run-to-convergence")
+        if convergence_atol != 0.1:  # Only pass if not default
+            cmd.extend(["--convergence-atol", str(convergence_atol)])
+        if max_duration_days is not None:
+            cmd.extend(["--max-duration", str(max_duration_days)])
+
+        # Execute as background job
         cwd = str(Path(__file__).parent.absolute())
-        effective_timeout = timeout_seconds if timeout_seconds > 0 else None
-        job = await job_manager.execute(
-            cmd=cmd,
-            cwd=cwd,
-            job_id=job_id,
-            timeout_seconds=effective_timeout,
-        )
+        job = await job_manager.execute(cmd=cmd, cwd=cwd, job_id=job_id)
 
         return {
             "job_id": job["id"],
             "status": job["status"],
             "template": template,
             "duration_days": duration_days,
-            "timeout_seconds": timeout_seconds,
             "message": f"Simulation started. Use get_job_status('{job['id']}') to monitor progress.",
         }
     except Exception as e:
@@ -447,11 +441,10 @@ async def convert_state(
                 "supported": [f"{f.value} -> {t.value}" for f, t in supported_conversions],
             }
 
-        # Create job directory (use absolute path relative to this file to avoid CWD issues)
+        # Create job directory
         import uuid
         job_id = str(uuid.uuid4())[:8]
-        base_dir = Path(__file__).parent.absolute()
-        job_dir = base_dir / "jobs" / job_id
+        job_dir = Path("jobs") / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
 
         # Save input state
@@ -1374,7 +1367,15 @@ async def simulate_built_system(
     diagram: bool = True,
     include_components: bool = False,
     export_state_to: Optional[str] = None,
-    timeout_seconds: float = 300.0,
+    run_to_convergence: bool = False,
+    convergence_atol: float = 0.1,
+    convergence_rtol: float = 1e-3,
+    check_interval_days: float = 2.0,
+    max_duration_days: Optional[float] = None,
+    # SRT Control Parameters (Phase 12)
+    target_srt_days: Optional[float] = None,
+    srt_tolerance: float = 0.1,
+    max_srt_iterations: int = 10,
 ) -> Dict[str, Any]:
     """
     Simulate a compiled flowsheet with comprehensive reporting.
@@ -1386,9 +1387,10 @@ async def simulate_built_system(
         session_id: Flowsheet session ID (mutually exclusive with system_id)
         system_id: Previously built system ID (mutually exclusive with session_id).
             The system_id is the value returned in build_system() output.
-        duration_days: Simulation duration in days
+        duration_days: Simulation duration in days (used when run_to_convergence=False)
         timestep_hours: Output timestep in hours
-        method: ODE solver method ("RK23", "RK45", "BDF")
+        method: ODE solver method ("RK23", "RK45", "BDF"). Auto-set to BDF when
+            run_to_convergence=True.
         t_eval: Optional list of evaluation times (days). If not provided, uses timestep.
         track: Optional list of stream IDs to track dynamically during simulation
         effluent_stream_ids: Optional list of stream IDs for effluent quality analysis
@@ -1397,12 +1399,26 @@ async def simulate_built_system(
         diagram: Generate flowsheet diagram
         include_components: Include full component breakdown in results
         export_state_to: Path to export final effluent state as PlantState JSON
-        timeout_seconds: Maximum simulation runtime in seconds (default 300 = 5 minutes).
-                        If exceeded, the job is terminated with status="timeout".
-                        Set to 0 for no timeout (not recommended for production).
+        run_to_convergence: If True, run until steady state (default False).
+            Uses BDF solver and checks convergence on effluent nutrients and WAS biomass.
+        convergence_atol: Absolute tolerance for convergence (default 0.1 mg/L/d)
+        convergence_rtol: Relative tolerance for convergence (default 1e-3)
+        check_interval_days: Days between convergence checks (default 2.0)
+        max_duration_days: Maximum simulation time when run_to_convergence=True.
+            Defaults to 100d for aerobic, 500d for anaerobic.
+        target_srt_days: Target SRT in days. If set, Q_was is iteratively adjusted to achieve
+            the target SRT at steady state. Only applies to systems with MBR/clarifier. (Phase 12)
+        srt_tolerance: Relative tolerance on achieved SRT (default 0.1 = 10%).
+        max_srt_iterations: Maximum Q_was adjustment iterations for SRT control (default 10).
 
     Returns:
-        Dict with job_id for tracking via get_job_status/get_job_results
+        Dict with job_id for tracking via get_job_status/get_job_results.
+        When run_to_convergence=True, results include:
+        - simulation.converged_at_days: Time when steady state was reached
+        - simulation.convergence_status: 'converged' or 'max_time_reached'
+        - simulation.convergence_metrics: Detailed convergence diagnostics
+        When target_srt_days is set, results also include:
+        - srt_control: Dict with achieved_srt_days, q_was_optimal, srt_iterations
 
     Reporting Features:
         - Effluent quality: COD, TSS, NH4-N, NO3-N, TN, PO4-P, TP
@@ -1412,17 +1428,18 @@ async def simulate_built_system(
         - Quarto report with mass balance tables
 
     Example:
-        >>> # Using session_id
+        >>> # Fixed-duration simulation
         >>> result = await simulate_built_system(
         ...     session_id="abc123",
         ...     duration_days=15,
         ...     report=True,
         ... )
-        >>> # Or using system_id from build_system output
+        >>> # Convergence-based simulation
         >>> result = await simulate_built_system(
-        ...     system_id="custom_mle",
-        ...     duration_days=15,
-        ...     report=True,
+        ...     session_id="abc123",
+        ...     run_to_convergence=True,
+        ...     convergence_atol=0.1,
+        ...     max_duration_days=100,
         ... )
         >>> job_id = result["job_id"]
         >>> # Use get_job_status(job_id) and get_job_results(job_id)
@@ -1444,7 +1461,7 @@ async def simulate_built_system(
         if system_id:
             # Search for session with matching system_id in build_config
             found_session_id = None
-            sessions_dir = _JOBS_DIR / "flowsheets"
+            sessions_dir = Path("jobs") / "flowsheets"
             if sessions_dir.exists():
                 for session_dir in sessions_dir.iterdir():
                     if session_dir.is_dir():
@@ -1474,10 +1491,9 @@ async def simulate_built_system(
                 f"Run build_system(session_id='{session_id}', ...) first."
             }
 
-        # Create job directory (use absolute path relative to this file to avoid CWD issues)
+        # Create job directory
         job_id = str(uuid.uuid4())[:8]
-        base_dir = Path(__file__).parent.absolute()
-        job_dir = base_dir / "jobs" / job_id
+        job_dir = Path("jobs") / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
 
         # Copy session info to job dir
@@ -1501,6 +1517,11 @@ async def simulate_built_system(
             "diagram": diagram,
             "include_components": include_components,
             "export_state_to": export_state_to,
+            "run_to_convergence": run_to_convergence,
+            "convergence_atol": convergence_atol,
+            "convergence_rtol": convergence_rtol,
+            "check_interval_days": check_interval_days,
+            "max_duration_days": max_duration_days,
         }
         with open(job_dir / "sim_config.json", "w") as f:
             json.dump(sim_config, f, indent=2)
@@ -1534,23 +1555,29 @@ async def simulate_built_system(
             cmd.append("--include-components")
         if export_state_to:
             cmd.extend(["--export-state-to", export_state_to])
+        if run_to_convergence:
+            cmd.append("--run-to-convergence")
+            cmd.extend(["--convergence-atol", str(convergence_atol)])
+            cmd.extend(["--convergence-rtol", str(convergence_rtol)])
+            cmd.extend(["--check-interval", str(check_interval_days)])
+            if max_duration_days is not None:
+                cmd.extend(["--max-duration", str(max_duration_days)])
 
-        # Execute as background job with timeout
+        # SRT Control Parameters (Phase 12)
+        if target_srt_days is not None:
+            cmd.extend(["--target-srt", str(target_srt_days)])
+        if srt_tolerance != 0.1:  # Only pass if not default
+            cmd.extend(["--srt-tolerance", str(srt_tolerance)])
+
+        # Execute as background job
         cwd = str(Path(__file__).parent.absolute())
-        effective_timeout = timeout_seconds if timeout_seconds > 0 else None
-        job = await job_manager.execute(
-            cmd=cmd,
-            cwd=cwd,
-            job_id=job_id,
-            timeout_seconds=effective_timeout,
-        )
+        job = await job_manager.execute(cmd=cmd, cwd=cwd, job_id=job_id)
 
         return {
             "job_id": job["id"],
             "status": job["status"],
             "session_id": session_id,
             "duration_days": duration_days,
-            "timeout_seconds": timeout_seconds,
             "message": f"Simulation started. Use get_job_status('{job['id']}') to monitor progress.",
         }
 
@@ -1848,7 +1875,7 @@ async def get_flowsheet_timeseries(
     try:
         # Validate job_id format and prevent path traversal
         validate_id(job_id, "job_id")
-        job_dir = validate_safe_path(_JOBS_DIR, job_id, "job_id")
+        job_dir = validate_safe_path(Path("jobs"), job_id, "job_id")
         ts_path = job_dir / "timeseries.json"
 
         if not ts_path.exists():
@@ -2331,7 +2358,7 @@ async def get_artifact(
     try:
         # Validate job_id format and prevent path traversal
         validate_id(job_id, "job_id")
-        job_dir = validate_safe_path(_JOBS_DIR, job_id, "job_id")
+        job_dir = validate_safe_path(Path("jobs"), job_id, "job_id")
 
         if not job_dir.exists():
             return {"error": f"Job {job_id} not found"}
@@ -2467,7 +2494,7 @@ async def create_tea(
     try:
         # Validate job_id
         validate_id(job_id, "job_id")
-        job_dir = validate_safe_path(_JOBS_DIR, job_id, "job_id")
+        job_dir = validate_safe_path(Path("jobs"), job_id, "job_id")
 
         if not job_dir.exists():
             return {"error": f"Job {job_id} not found"}

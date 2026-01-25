@@ -134,6 +134,48 @@ Access simulation outputs programmatically:
 | `ao_mbr_asm2d` | ASM2d | A/O process with MBR |
 | `a2o_mbr_asm2d` | ASM2d | A2O process with EBPR and MBR |
 
+## Advanced Simulation Features
+
+### SRT-Controlled Simulation (Phase 12)
+
+For systems with MBR or clarifier that decouple HRT and SRT, the engine supports **target SRT setpoints** where sludge wasting is automatically controlled to achieve the desired SRT:
+
+```bash
+# CLI: Run MLE-MBR with target SRT of 15 days
+python cli.py simulate \
+  --template mle_mbr_asm2d \
+  --influent influent.json \
+  --target-srt 15 \
+  --srt-tolerance 0.1
+```
+
+**How it works:**
+- Uses `scipy.brentq` root-finding to find optimal Q_was (waste activated sludge flow)
+- Enforces minimum simulation time of 2× target SRT for dynamics equilibration
+- Validates mass balance: Q_was ≤ Q_in (since Q_in = Q_was + Q_effluent)
+- Achieves target SRT within specified tolerance (e.g., 0.1 = 10%)
+
+**Test results:** Target SRT 5.0 days → Achieved SRT 5.01 days (0.23% error)
+
+### Run-to-Convergence Simulation
+
+For accurate steady-state simulation, use convergence-based stopping:
+
+```bash
+# CLI: Run until steady state (auto-detected)
+python cli.py flowsheet simulate \
+  --session my_plant \
+  --run-to-convergence \
+  --convergence-atol 0.1 \
+  --max-duration 100
+```
+
+**Features:**
+- Abs+rel tolerance: `|slope| < atol + rtol × max(|mean|, floor)`
+- Multi-stream tracking: effluent (nutrients) + WAS (biomass)
+- Auto-detection of effluent and sludge streams
+- Oscillation detection for non-converged systems
+
 ## Quick Start
 
 ### Using CLI

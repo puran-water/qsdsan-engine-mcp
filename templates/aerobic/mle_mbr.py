@@ -91,6 +91,15 @@ def build_and_run(
     duration_days: float = 15.0,
     timestep_hours: Optional[float] = None,
     output_dir: Optional[Path] = None,
+    run_to_convergence: bool = False,
+    convergence_atol: float = 0.1,
+    convergence_rtol: float = 1e-3,
+    check_interval_days: float = 2.0,
+    max_duration_days: Optional[float] = None,
+    # SRT Control Parameters (Phase 12)
+    target_srt_days: Optional[float] = None,
+    srt_tolerance: float = 0.1,
+    max_srt_iterations: int = 10,
 ) -> Dict[str, Any]:
     """
     Build and run MLE-MBR simulation with ASM2d.
@@ -107,16 +116,39 @@ def build_and_run(
     kinetic_params : dict, optional
         ASM2d kinetic parameter overrides (e.g., {"mu_H": 6.0, "K_F": 10.0})
     duration_days : float
-        Simulation duration in days
+        Simulation duration in days (used when run_to_convergence=False)
     timestep_hours : float, optional
         Output timestep in hours. If provided, generates t_eval array for simulation.
     output_dir : Path, optional
         Directory to save results
+    run_to_convergence : bool, optional
+        If True, run simulation until steady state is reached (default False).
+        Uses BDF solver and checks convergence on effluent nutrients and WAS biomass.
+    convergence_atol : float, optional
+        Absolute tolerance for convergence (default 0.1 mg/L/d).
+    convergence_rtol : float, optional
+        Relative tolerance for convergence (default 1e-3).
+    check_interval_days : float, optional
+        Days between convergence checks (default 2.0).
+    max_duration_days : float, optional
+        Maximum simulation time when run_to_convergence=True (default: 4-5x SRT).
+    target_srt_days : float, optional
+        Target SRT in days. If set, enables SRT-controlled simulation where
+        Q_was is iteratively adjusted to achieve the target SRT at steady state.
+        Implies run_to_convergence=True. (Phase 12)
+    srt_tolerance : float, optional
+        Relative tolerance for achieved SRT vs target (default 0.1 = 10%).
+    max_srt_iterations : int, optional
+        Maximum Q_was adjustment iterations (default 10).
 
     Returns
     -------
     dict
-        Simulation results including effluent, performance, and time series
+        Simulation results including effluent, performance, and time series.
+        When run_to_convergence=True, also includes:
+        - simulation.converged_at_days: Time when steady state was reached
+        - simulation.convergence_status: 'converged' or 'max_time_reached'
+        - simulation.convergence_metrics: Detailed convergence diagnostics
     """
     try:
         # Extract influent parameters
@@ -285,11 +317,20 @@ def build_and_run(
             recycle=[RAS, IR],
         )
 
-        # Set dynamic tracker
-        sys.set_dynamic_tracker(*sys.products)
+        # =====================================================================
+        # PHASE 11: Set dynamic tracker for both effluent AND WAS
+        # =====================================================================
+        # CRITICAL: Tracking only sys.products (effluent + WAS) is correct,
+        # but for convergence we need to ensure WAS is tracked for biomass.
+        # MBR permeate has no biomass, so checking X_AUT/X_H on permeate
+        # would "converge" immediately (near-zero values).
+        # =====================================================================
+        eff_stream = sys.flowsheet.stream.effluent
+        was_stream = sys.flowsheet.stream.WAS
+        sys.set_dynamic_tracker(eff_stream, was_stream)
 
         # =====================================================================
-        # PHASE 8B: Simulation duration warning
+        # PHASE 8B: Simulation duration warning / equilibration time
         # =====================================================================
         # Nitrifiers grow slowly (μ_AUT ~1.0 d⁻¹ at 20°C).
         # Short simulations may not reach steady-state nitrification.
@@ -299,44 +340,139 @@ def build_and_run(
             x_aut_fraction=0.05,
             srt_days=15.0,  # Typical MLE SRT
         )
-        if duration_days < equil_estimate['minimum_days']:
-            logger.warning(
-                f"Simulation duration {duration_days}d may be insufficient for nitrifier "
-                f"equilibration. Minimum recommended: {equil_estimate['minimum_days']:.0f}d, "
-                f"optimal: {equil_estimate['recommended_days']:.0f}d. "
-                f"Consider longer simulation for accurate nitrification assessment."
+
+        # Determine simulation mode and duration
+        # Phase 12: SRT control takes precedence if target_srt_days is set
+        if target_srt_days is not None:
+            # SRT-controlled simulation
+            from utils.run_to_srt import run_to_target_srt
+            from utils.srt_control import has_srt_decoupling, calculate_srt
+
+            logger.info(
+                f"Running SRT-controlled simulation: target_srt={target_srt_days}d, "
+                f"tolerance={srt_tolerance:.0%}"
             )
 
-        logger.info(f"Simulating for {duration_days} days...")
+            # Set default max_duration from target SRT (4x for margin)
+            if max_duration_days is None:
+                max_duration_days = max(100.0, target_srt_days * 4)
 
-        # Build simulation kwargs
-        sim_kwargs = {
-            'state_reset_hook': 'reset_cache',
-            't_span': (0, duration_days),
-            'method': 'RK23',
-        }
+            # Configure convergence components: effluent for nutrients, WAS for biomass
+            convergence_components = {
+                eff_stream.ID: ['S_NH4', 'S_NO3', 'S_O2'],
+                was_stream.ID: ['X_AUT', 'X_H', 'X_PAO'],
+            }
 
-        # Add t_eval if timestep_hours is specified
-        if timestep_hours is not None and timestep_hours > 0:
-            dt = timestep_hours / 24  # Convert hours to days
-            # Use epsilon to avoid floating-point overshoot
-            t_eval = np.arange(0, duration_days + 1e-9, dt)
-            # Clamp to duration_days
-            t_eval = t_eval[t_eval <= duration_days + 1e-9]
-            # Ensure final point is included
-            if len(t_eval) == 0 or t_eval[-1] < duration_days - 1e-9:
-                t_eval = np.append(t_eval, duration_days)
-            sim_kwargs['t_eval'] = t_eval
-            logger.info(f"Using timestep {timestep_hours}h -> {len(t_eval)} evaluation points")
+            achieved_srt, srt_status, srt_metrics = run_to_target_srt(
+                system=sys,
+                target_srt_days=target_srt_days,
+                wastage_streams=[was_stream],
+                effluent_streams=None,  # MBR permeate has no solids
+                convergence_streams=[eff_stream, was_stream],
+                convergence_components=convergence_components,
+                model_type='ASM2d',
+                srt_tolerance=srt_tolerance,
+                max_srt_iterations=max_srt_iterations,
+                min_time_multiplier=2.0,
+                check_interval=check_interval_days,
+                atol=convergence_atol,
+                rtol=convergence_rtol,
+                max_time=max_duration_days,
+            )
 
-        # Run simulation
-        sys.simulate(**sim_kwargs)
+            # Store results
+            actual_duration = srt_metrics.get('converged_at', max_duration_days) if srt_metrics else max_duration_days
+            simulation_method = 'BDF'
+            converged_at = actual_duration
+            conv_status = srt_status
+            conv_metrics = srt_metrics
+            srt_days = achieved_srt
+
+            logger.info(
+                f"SRT control complete: achieved_srt={achieved_srt:.1f}d "
+                f"(target={target_srt_days}d), status={srt_status}"
+            )
+
+        elif run_to_convergence:
+            # Use convergence-based simulation
+            from utils.run_to_convergence import run_system_to_steady_state
+            from utils.convergence import get_convergence_components_for_model
+
+            # Set default max_duration from equilibration estimate
+            if max_duration_days is None:
+                max_duration_days = equil_estimate['recommended_days']
+
+            # Configure convergence components: effluent for nutrients, WAS for biomass
+            convergence_components = {
+                eff_stream.ID: ['S_NH4', 'S_NO3', 'S_O2'],  # Nutrients in permeate
+                was_stream.ID: ['X_AUT', 'X_H', 'X_PAO'],   # Biomass in WAS
+            }
+
+            logger.info(
+                f"Running to convergence: max_time={max_duration_days:.0f}d, "
+                f"atol={convergence_atol}, rtol={convergence_rtol}"
+            )
+
+            converged_at, conv_status, conv_metrics = run_system_to_steady_state(
+                system=sys,
+                convergence_streams=[eff_stream, was_stream],
+                convergence_components=convergence_components,
+                check_interval=check_interval_days,
+                t_step=0.5,
+                atol=convergence_atol,
+                rtol=convergence_rtol,
+                method='BDF',  # Use BDF for convergence runs
+                max_time=max_duration_days,
+            )
+
+            # Store convergence info for result
+            actual_duration = converged_at
+            simulation_method = 'BDF'
+
+        else:
+            # Fixed-duration simulation (original behavior)
+            if duration_days < equil_estimate['minimum_days']:
+                logger.warning(
+                    f"Simulation duration {duration_days}d may be insufficient for nitrifier "
+                    f"equilibration. Minimum recommended: {equil_estimate['minimum_days']:.0f}d, "
+                    f"optimal: {equil_estimate['recommended_days']:.0f}d. "
+                    f"Consider longer simulation or use run_to_convergence=True."
+                )
+
+            logger.info(f"Simulating for {duration_days} days (fixed duration)...")
+
+            # Build simulation kwargs
+            sim_kwargs = {
+                'state_reset_hook': 'reset_cache',
+                't_span': (0, duration_days),
+                'method': 'RK23',
+            }
+
+            # Add t_eval if timestep_hours is specified
+            if timestep_hours is not None and timestep_hours > 0:
+                dt = timestep_hours / 24  # Convert hours to days
+                # Use epsilon to avoid floating-point overshoot
+                t_eval = np.arange(0, duration_days + 1e-9, dt)
+                # Clamp to duration_days
+                t_eval = t_eval[t_eval <= duration_days + 1e-9]
+                # Ensure final point is included
+                if len(t_eval) == 0 or t_eval[-1] < duration_days - 1e-9:
+                    t_eval = np.append(t_eval, duration_days)
+                sim_kwargs['t_eval'] = t_eval
+                logger.info(f"Using timestep {timestep_hours}h -> {len(t_eval)} evaluation points")
+
+            # Run simulation
+            sys.simulate(**sim_kwargs)
+
+            actual_duration = duration_days
+            simulation_method = 'RK23'
+            converged_at = None
+            conv_status = None
+            conv_metrics = None
 
         logger.info("Simulation completed, analyzing results...")
 
-        # Get streams
-        eff_stream = sys.flowsheet.stream.effluent
-        was_stream = sys.flowsheet.stream.WAS
+        # Streams already assigned above (eff_stream, was_stream)
 
         # Analyze performance
         inf_analysis = analyze_aerobic_stream(influent)
@@ -352,44 +488,24 @@ def build_and_run(
         hrt_hours = total_V / Q * 24
 
         # =====================================================================
-        # PHASE 8B: Calculate SRT from reactor state
+        # PHASE 8B/12: Calculate SRT using QSDsan utilities
         # =====================================================================
-        # SRT = Total biomass in system / Biomass leaving in WAS
-        # This provides an operational check for the design
+        # When SRT control was used, srt_days is already set from controller result
+        # Otherwise, calculate SRT post-hoc for reporting purposes
         # =====================================================================
-        try:
-            # Sum MLVSS in all reactors (simplified: X_H + X_PAO + X_AUT)
-            total_biomass_kg = 0.0
-            for reactor in all_reactors:
-                if hasattr(reactor, '_state') and reactor._state is not None:
-                    # Get component indices
-                    cmps = reactor.components
-                    xh_idx = cmps.index('X_H') if 'X_H' in cmps.IDs else None
-                    xpao_idx = cmps.index('X_PAO') if 'X_PAO' in cmps.IDs else None
-                    xaut_idx = cmps.index('X_AUT') if 'X_AUT' in cmps.IDs else None
-
-                    # Sum biomass concentrations (kg/m³ = g/L = mg/mL)
-                    biomass_conc = 0.0
-                    if xh_idx is not None:
-                        biomass_conc += reactor._state[xh_idx]
-                    if xpao_idx is not None:
-                        biomass_conc += reactor._state[xpao_idx]
-                    if xaut_idx is not None:
-                        biomass_conc += reactor._state[xaut_idx]
-
-                    total_biomass_kg += biomass_conc * reactor.V_max / 1000  # kg
-
-            # WAS biomass flux (kg/d)
-            was_tss_mg_L = was_stream.get_TSS() if hasattr(was_stream, 'get_TSS') else 0
-            was_flow_m3_d = Q_was
-            was_biomass_kg_d = was_tss_mg_L * was_flow_m3_d / 1e6  # mg/L * m³/d / 1e6 = kg/d
-
-            # Calculate SRT
-            srt_days = total_biomass_kg / was_biomass_kg_d if was_biomass_kg_d > 0 else float('inf')
-            logger.info(f"Calculated SRT: {srt_days:.1f} days")
-        except Exception as e:
-            logger.warning(f"Could not calculate SRT: {e}")
-            srt_days = None
+        if target_srt_days is None:
+            try:
+                from utils.srt_control import calculate_srt, detect_wastage_streams
+                wastage_streams = detect_wastage_streams(sys)
+                srt_days = calculate_srt(
+                    system=sys,
+                    wastage_streams=wastage_streams,
+                    model_type='ASM2d',
+                )
+                logger.info(f"Calculated SRT: {srt_days:.1f} days")
+            except Exception as e:
+                logger.warning(f"Could not calculate SRT: {e}")
+                srt_days = None
 
         # Build result
         result = {
@@ -425,11 +541,29 @@ def build_and_run(
             },
             "performance": performance if performance.get('success') else {"error": performance.get('error')},
             "simulation": {
-                "duration_days": duration_days,
-                "method": "RK23",
+                "duration_days": actual_duration,
+                "method": simulation_method,
                 "status": "completed",
+                "run_to_convergence": run_to_convergence,
             },
         }
+
+        # Add convergence info if applicable
+        if run_to_convergence or target_srt_days is not None:
+            result["simulation"]["converged_at_days"] = converged_at
+            result["simulation"]["convergence_status"] = conv_status
+            result["simulation"]["convergence_metrics"] = conv_metrics
+
+        # Add SRT control info if applicable (Phase 12)
+        if target_srt_days is not None:
+            result["simulation"]["srt_control"] = {
+                "target_srt_days": target_srt_days,
+                "achieved_srt_days": srt_days,
+                "srt_tolerance": srt_tolerance,
+                "srt_status": conv_status,
+                "q_was_optimal": conv_metrics.get('q_was_optimal') if conv_metrics else None,
+                "srt_iterations": conv_metrics.get('srt_iterations') if conv_metrics else None,
+            }
 
         # Add deterministic metadata (Phase 3C)
         import datetime
@@ -450,11 +584,14 @@ def build_and_run(
             "engine_version": "3.0.0",
             "template": "mle_mbr_asm2d",
             "solver": {
-                "method": "RK23",
-                "duration_days": duration_days,
+                "method": simulation_method,
+                "duration_days": actual_duration,
                 "timestep_hours": timestep_hours,
                 "rtol": 1e-3,
                 "atol": 1e-6,
+                "run_to_convergence": run_to_convergence,
+                "convergence_atol": convergence_atol if run_to_convergence else None,
+                "convergence_rtol": convergence_rtol if run_to_convergence else None,
             },
             "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
             "model_type": "ASM2d",

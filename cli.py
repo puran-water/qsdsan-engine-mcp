@@ -79,6 +79,12 @@ def simulate(
     parameters: Optional[str] = typer.Option(None, "--parameters", "-p", help="Kinetic parameter overrides as JSON (aerobic templates only). Example: '{\"mu_H\": 6.0}'"),
     report: bool = typer.Option(False, "--report", "-r", help="Generate Quarto report (.qmd)"),
     json_out: bool = typer.Option(False, "--json-out", "-j", help="Output results as JSON"),
+    # SRT Control Parameters (Phase 12)
+    target_srt: Optional[float] = typer.Option(None, "--target-srt", help="Target SRT in days (enables SRT-controlled simulation for MBR/clarifier systems)"),
+    srt_tolerance: float = typer.Option(0.1, "--srt-tolerance", help="Relative tolerance for achieved SRT (default 0.1 = 10%)"),
+    run_to_convergence: bool = typer.Option(False, "--run-to-convergence", help="Run until steady state is reached"),
+    convergence_atol: float = typer.Option(0.1, "--convergence-atol", help="Absolute tolerance for convergence (mg/L/d)"),
+    max_duration: Optional[float] = typer.Option(None, "--max-duration", help="Maximum simulation time (days)"),
 ):
     """
     Run QSDsan dynamic simulation using a flowsheet template.
@@ -122,6 +128,12 @@ def simulate(
                 parameters=params,
                 output_dir=output_dir,
                 timestep_hours=timestep_hours,
+                # SRT control params (Phase 12)
+                target_srt_days=target_srt,
+                srt_tolerance=srt_tolerance,
+                run_to_convergence=run_to_convergence,
+                convergence_atol=convergence_atol,
+                max_duration_days=max_duration,
             )
         elif template == "ao_mbr_asm2d":
             result = _run_ao_mbr_asm2d(
@@ -131,6 +143,12 @@ def simulate(
                 parameters=params,
                 output_dir=output_dir,
                 timestep_hours=timestep_hours,
+                # SRT control params (Phase 12)
+                target_srt_days=target_srt,
+                srt_tolerance=srt_tolerance,
+                run_to_convergence=run_to_convergence,
+                convergence_atol=convergence_atol,
+                max_duration_days=max_duration,
             )
         elif template == "a2o_mbr_asm2d":
             result = _run_a2o_mbr_asm2d(
@@ -140,6 +158,12 @@ def simulate(
                 parameters=params,
                 output_dir=output_dir,
                 timestep_hours=timestep_hours,
+                # SRT control params (Phase 12)
+                target_srt_days=target_srt,
+                srt_tolerance=srt_tolerance,
+                run_to_convergence=run_to_convergence,
+                convergence_atol=convergence_atol,
+                max_duration_days=max_duration,
             )
         else:
             result = {"error": f"Unknown template: {template}. Available: anaerobic_cstr_madm1, mle_mbr_asm2d, ao_mbr_asm2d, a2o_mbr_asm2d"}
@@ -218,6 +242,12 @@ def _run_mle_mbr_asm2d(
     parameters: dict,
     output_dir: Path,
     timestep_hours: Optional[float] = None,
+    # SRT control params (Phase 12)
+    target_srt_days: Optional[float] = None,
+    srt_tolerance: float = 0.1,
+    run_to_convergence: bool = False,
+    convergence_atol: float = 0.1,
+    max_duration_days: Optional[float] = None,
 ) -> dict:
     """Run MLE-MBR simulation with ASM2d."""
     from templates.aerobic.mle_mbr import build_and_run
@@ -237,6 +267,12 @@ def _run_mle_mbr_asm2d(
         duration_days=duration_days,
         output_dir=output_dir,
         timestep_hours=timestep_hours,
+        # SRT control params (Phase 12)
+        target_srt_days=target_srt_days,
+        srt_tolerance=srt_tolerance,
+        run_to_convergence=run_to_convergence,
+        convergence_atol=convergence_atol,
+        max_duration_days=max_duration_days,
     )
 
     return result
@@ -249,6 +285,12 @@ def _run_ao_mbr_asm2d(
     parameters: dict,
     output_dir: Path,
     timestep_hours: Optional[float] = None,
+    # SRT control params (Phase 12)
+    target_srt_days: Optional[float] = None,
+    srt_tolerance: float = 0.1,
+    run_to_convergence: bool = False,
+    convergence_atol: float = 0.1,
+    max_duration_days: Optional[float] = None,
 ) -> dict:
     """Run A/O-MBR simulation with ASM2d."""
     from templates.aerobic.ao_mbr import build_and_run
@@ -268,6 +310,12 @@ def _run_ao_mbr_asm2d(
         duration_days=duration_days,
         output_dir=output_dir,
         timestep_hours=timestep_hours,
+        # SRT control params (Phase 12)
+        target_srt_days=target_srt_days,
+        srt_tolerance=srt_tolerance,
+        run_to_convergence=run_to_convergence,
+        convergence_atol=convergence_atol,
+        max_duration_days=max_duration_days,
     )
 
     return result
@@ -280,6 +328,12 @@ def _run_a2o_mbr_asm2d(
     parameters: dict,
     output_dir: Path,
     timestep_hours: Optional[float] = None,
+    # SRT control params (Phase 12)
+    target_srt_days: Optional[float] = None,
+    srt_tolerance: float = 0.1,
+    run_to_convergence: bool = False,
+    convergence_atol: float = 0.1,
+    max_duration_days: Optional[float] = None,
 ) -> dict:
     """Run A2O-MBR simulation with ASM2d (EBPR)."""
     from templates.aerobic.a2o_mbr import build_and_run
@@ -299,6 +353,12 @@ def _run_a2o_mbr_asm2d(
         duration_days=duration_days,
         output_dir=output_dir,
         timestep_hours=timestep_hours,
+        # SRT control params (Phase 12)
+        target_srt_days=target_srt_days,
+        srt_tolerance=srt_tolerance,
+        run_to_convergence=run_to_convergence,
+        convergence_atol=convergence_atol,
+        max_duration_days=max_duration_days,
     )
 
     return result
@@ -917,6 +977,11 @@ def flowsheet_simulate(
     diagram: bool = typer.Option(False, "--diagram", help="Generate flowsheet diagram"),
     include_components: bool = typer.Option(False, "--include-components", help="Include full component breakdown"),
     export_state_to: Optional[Path] = typer.Option(None, "--export-state-to", help="Export final effluent state as PlantState JSON"),
+    run_to_convergence: bool = typer.Option(False, "--run-to-convergence", help="Run until steady state is reached"),
+    convergence_atol: float = typer.Option(0.1, "--convergence-atol", help="Absolute tolerance for convergence (mg/L/d)"),
+    convergence_rtol: float = typer.Option(1e-3, "--convergence-rtol", help="Relative tolerance for convergence"),
+    check_interval: float = typer.Option(2.0, "--check-interval", help="Days between convergence checks"),
+    max_duration: Optional[float] = typer.Option(None, "--max-duration", help="Maximum simulation time for convergence mode"),
     json_out: bool = typer.Option(False, "--json-out", "-j", help="Output as JSON"),
 ):
     """
@@ -925,6 +990,7 @@ def flowsheet_simulate(
     Example:
         qsdsan-engine flowsheet simulate --session abc123 --duration 15 --report
         qsdsan-engine flowsheet simulate --system-id custom_mle --duration 15 --report
+        qsdsan-engine flowsheet simulate --session abc123 --run-to-convergence --max-duration 100
     """
     # Validate arguments: exactly one of session_id or system_id must be provided
     if session_id and system_id_opt:
@@ -1010,7 +1076,11 @@ def flowsheet_simulate(
         )
 
         # Run simulation
-        console.print(f"[bold]Simulating for {duration} days (method: {method})...[/bold]") if not json_out else None
+        if run_to_convergence:
+            console.print(f"[bold]Running to convergence (max: {max_duration or 'auto'} days, method: BDF)...[/bold]") if not json_out else None
+        else:
+            console.print(f"[bold]Simulating for {duration} days (method: {method})...[/bold]") if not json_out else None
+
         sim_results = simulate_compiled_system(
             system,
             duration_days=duration,
@@ -1023,6 +1093,11 @@ def flowsheet_simulate(
             effluent_stream_ids=effluent_stream_ids,
             biogas_stream_ids=biogas_stream_ids,
             export_state_to=export_state_to,
+            run_to_convergence=run_to_convergence,
+            convergence_atol=convergence_atol,
+            convergence_rtol=convergence_rtol,
+            check_interval_days=check_interval,
+            max_duration_days=max_duration,
         )
 
         # Generate diagram if requested
@@ -1058,6 +1133,9 @@ def flowsheet_simulate(
                 "timestep_hours": timestep,
                 "method": method,
                 "output_dir": str(output_dir),
+                "run_to_convergence": run_to_convergence,
+                "convergence_atol": convergence_atol if run_to_convergence else None,
+                "convergence_rtol": convergence_rtol if run_to_convergence else None,
             },
             "build_info": {
                 "unit_order": build_info.unit_order,
@@ -1078,7 +1156,19 @@ def flowsheet_simulate(
             console.print(f"\n[bold green]Simulation completed![/bold green]")
             console.print(f"System: {system_id}")
             console.print(f"Units: {' -> '.join(build_info.unit_order)}")
-            console.print(f"Duration: {duration} days")
+
+            # Show convergence status if applicable
+            if run_to_convergence and "simulation" in sim_results:
+                sim_info = sim_results["simulation"]
+                conv_status = sim_info.get("convergence_status", "unknown")
+                conv_days = sim_info.get("converged_at_days", sim_info.get("duration_days"))
+                if conv_status == "converged":
+                    console.print(f"[green]Converged at: {conv_days:.1f} days[/green]")
+                else:
+                    console.print(f"[yellow]Status: {conv_status} at {conv_days:.1f} days[/yellow]")
+            else:
+                console.print(f"Duration: {duration} days")
+
             console.print(f"Output: {output_dir}")
 
             if "effluent_quality" in sim_results:
