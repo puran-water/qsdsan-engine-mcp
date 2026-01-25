@@ -89,6 +89,24 @@ session_manager = FlowsheetSessionManager(sessions_dir=Path("jobs"))
 
 
 # =============================================================================
+# Tool 0: get_version (Version Information)
+# =============================================================================
+@mcp.tool()
+async def get_version() -> Dict[str, Any]:
+    """
+    Get version information for the QSDsan Engine and its dependencies.
+
+    Returns version numbers for the engine, QSDsan, BioSTEAM, and Python.
+    This is useful for debugging and ensuring compatibility.
+
+    Returns:
+        Dict with engine_version, qsdsan_version, biosteam_version, python_version
+    """
+    from core.version import get_version_info
+    return get_version_info()
+
+
+# =============================================================================
 # Tool 1: simulate_system (Background Job)
 # =============================================================================
 @mcp.tool()
