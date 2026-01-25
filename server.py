@@ -81,11 +81,15 @@ logger = logging.getLogger(__name__)
 # Initialize MCP server
 mcp = FastMCP("qsdsan-engine")
 
+# Use absolute paths relative to this file to avoid CWD issues when run from Claude Desktop
+_BASE_DIR = Path(__file__).parent.absolute()
+_JOBS_DIR = _BASE_DIR / "jobs"
+
 # Initialize job manager (singleton)
-job_manager = JobManager(max_concurrent_jobs=3, jobs_base_dir="jobs")
+job_manager = JobManager(max_concurrent_jobs=3, jobs_base_dir=str(_JOBS_DIR))
 
 # Initialize flowsheet session manager (singleton)
-session_manager = FlowsheetSessionManager(sessions_dir=Path("jobs"))
+session_manager = FlowsheetSessionManager(sessions_dir=_JOBS_DIR)
 
 
 # =============================================================================
@@ -162,10 +166,11 @@ async def simulate_system(
         reactor_cfg = reactor_config or {}
         params = parameters or {}
 
-        # Create job directory
+        # Create job directory (use absolute path relative to this file to avoid CWD issues)
         import uuid
         job_id = str(uuid.uuid4())[:8]
-        job_dir = Path("jobs") / job_id
+        base_dir = Path(__file__).parent.absolute()
+        job_dir = base_dir / "jobs" / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
 
         # Save influent state to job directory
@@ -442,10 +447,11 @@ async def convert_state(
                 "supported": [f"{f.value} -> {t.value}" for f, t in supported_conversions],
             }
 
-        # Create job directory
+        # Create job directory (use absolute path relative to this file to avoid CWD issues)
         import uuid
         job_id = str(uuid.uuid4())[:8]
-        job_dir = Path("jobs") / job_id
+        base_dir = Path(__file__).parent.absolute()
+        job_dir = base_dir / "jobs" / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
 
         # Save input state
@@ -1438,7 +1444,7 @@ async def simulate_built_system(
         if system_id:
             # Search for session with matching system_id in build_config
             found_session_id = None
-            sessions_dir = Path("jobs") / "flowsheets"
+            sessions_dir = _JOBS_DIR / "flowsheets"
             if sessions_dir.exists():
                 for session_dir in sessions_dir.iterdir():
                     if session_dir.is_dir():
@@ -1468,9 +1474,10 @@ async def simulate_built_system(
                 f"Run build_system(session_id='{session_id}', ...) first."
             }
 
-        # Create job directory
+        # Create job directory (use absolute path relative to this file to avoid CWD issues)
         job_id = str(uuid.uuid4())[:8]
-        job_dir = Path("jobs") / job_id
+        base_dir = Path(__file__).parent.absolute()
+        job_dir = base_dir / "jobs" / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
 
         # Copy session info to job dir
@@ -1841,7 +1848,7 @@ async def get_flowsheet_timeseries(
     try:
         # Validate job_id format and prevent path traversal
         validate_id(job_id, "job_id")
-        job_dir = validate_safe_path(Path("jobs"), job_id, "job_id")
+        job_dir = validate_safe_path(_JOBS_DIR, job_id, "job_id")
         ts_path = job_dir / "timeseries.json"
 
         if not ts_path.exists():
@@ -2324,7 +2331,7 @@ async def get_artifact(
     try:
         # Validate job_id format and prevent path traversal
         validate_id(job_id, "job_id")
-        job_dir = validate_safe_path(Path("jobs"), job_id, "job_id")
+        job_dir = validate_safe_path(_JOBS_DIR, job_id, "job_id")
 
         if not job_dir.exists():
             return {"error": f"Job {job_id} not found"}
@@ -2460,7 +2467,7 @@ async def create_tea(
     try:
         # Validate job_id
         validate_id(job_id, "job_id")
-        job_dir = validate_safe_path(Path("jobs"), job_id, "job_id")
+        job_dir = validate_safe_path(_JOBS_DIR, job_id, "job_id")
 
         if not job_dir.exists():
             return {"error": f"Job {job_id} not found"}
