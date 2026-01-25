@@ -1,8 +1,5 @@
 # QSDsan Engine MCP
 
-> **⚠️ DEVELOPMENT STATUS: This project is under active development and is not yet production-ready. APIs, interfaces, and functionality may change without notice. Use at your own risk for evaluation and testing purposes only. Not recommended for production deployments.**
-
-
 A universal wastewater treatment simulation engine exposing [QSDsan](https://github.com/QSD-Group/QSDsan) capabilities through dual adapters for AI agent integration.
 
 ## Motivation
@@ -11,7 +8,7 @@ Commercial wastewater simulation platforms offer sophisticated biological models
 
 QSDsan Engine MCP inverts this paradigm by making **natural language the primary interface**. Instead of clicking through dialogs, engineers describe what they want:
 
-> "Compare anaerobic-aerobic vs aerobic-only treatment for this high-strength industrial waste: evaluate supplemental alkalinity and nutrient costs, digester heating load, and biogas energy credit to identify the lowest life cycle cost flowsheet."
+> "Build an MLE process with 4000 m3/d influent, simulate for 15 days, and explain why ammonia removal is low"
 
 This enables:
 
@@ -120,17 +117,6 @@ Access simulation outputs programmatically:
 | `get_artifact` | `get_artifact` | `flowsheet artifact` | Get diagram/report content |
 | `get_flowsheet_timeseries` | `get_flowsheet_timeseries` | `flowsheet timeseries` | Get time-series trajectories |
 
-### Techno-Economic Analysis (TEA) Tools
-
-Estimate capital and operating costs:
-
-| Tool | MCP | CLI | Description |
-|------|-----|-----|-------------|
-| `create_tea` | `create_tea` | - | Create TEA for completed simulation |
-| `get_capex_breakdown` | `get_capex_breakdown` | - | CAPEX hierarchy (DPI, TDC, FCI, TCI) |
-| `get_opex_summary` | `get_opex_summary` | - | OPEX components (FOC, VOC, AOC) |
-| `get_utility_costs` | `get_utility_costs` | - | Utility consumption (kWh/yr, heating) |
-
 ## Supported Models
 
 | Model | Components | Use Case |
@@ -147,38 +133,6 @@ Estimate capital and operating costs:
 | `mle_mbr_asm2d` | ASM2d | MLE process with MBR |
 | `ao_mbr_asm2d` | ASM2d | A/O process with MBR |
 | `a2o_mbr_asm2d` | ASM2d | A2O process with EBPR and MBR |
-
-## Mixed-Model Flowsheets
-
-Build flowsheets combining aerobic and anaerobic treatment with automatic model conversion:
-
-```bash
-# Create ASM2d session
-python cli.py flowsheet new --model ASM2d --id mixed_plant
-
-# Add aerobic treatment
-python cli.py flowsheet add-stream --session mixed_plant --id influent \
-  --flow 4000 --concentrations '{"S_F": 75, "S_NH4": 35}'
-python cli.py flowsheet add-unit --session mixed_plant --type CSTR --id aerobic \
-  --params '{"V_max": 2000, "aeration": 2.0}' --inputs '["influent"]'
-
-# Add junction to convert ASM2d -> mADM1
-python cli.py flowsheet add-unit --session mixed_plant --type ASM2dtomADM1 --id J1 \
-  --inputs '["aerobic-0"]'
-
-# Add anaerobic digester (mADM1 model)
-python cli.py flowsheet add-unit --session mixed_plant --type AnaerobicCSTRmADM1 --id digester \
-  --params '{"V_max": 500}' --inputs '["J1-0"]'
-
-# Build and simulate
-python cli.py flowsheet build --session mixed_plant
-python cli.py flowsheet simulate --session mixed_plant --duration 30
-```
-
-The engine automatically:
-- Tracks model zones through junction units
-- Suggests appropriate junctions when model-incompatible units are added
-- Warns about fan-in from different model types
 
 ## Quick Start
 
@@ -242,7 +196,7 @@ Then use natural language:
 - **Separators:** CompletelyMixedMBR, AnMBR, PolishingFilter, MembraneDistillation
 - **Clarifiers:** FlatBottomCircularClarifier, PrimaryClarifier, IdealClarifier
 - **Sludge:** Thickener, Centrifuge, SludgeDigester, DryingBed
-- **Junctions:** ASM2dtomADM1, mADM1toASM2d, ASM2dtoADM1, ADM1toASM2d (model converters for mixed flowsheets)
+- **Junctions:** ASM2dtoADM1, ADM1toASM2d, mADM1toASM2d (model converters)
 - **Utilities:** Splitter, Mixer, Tank, StorageTank, DynamicInfluent
 
 ```bash

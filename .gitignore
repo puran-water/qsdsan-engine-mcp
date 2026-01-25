@@ -59,5 +59,3 @@ tmp_*.py
 # OS files
 .DS_Store
 Thumbs.db
-.codex/
-*.pyc

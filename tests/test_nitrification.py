@@ -208,9 +208,11 @@ class TestNitrificationIntegration:
     def test_short_simulation_warning(self):
         """Short simulation should trigger duration warning."""
         import logging
+        import warnings
 
-        # Capture warnings
-        with pytest.warns(None) as warning_list:
+        # Capture warnings using standard context manager
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter("always")
             from templates.aerobic.mle_mbr import build_and_run, get_default_influent
 
             # Very short simulation
