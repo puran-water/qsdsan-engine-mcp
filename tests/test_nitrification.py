@@ -206,11 +206,10 @@ class TestNitrificationIntegration:
         )
 
     def test_short_simulation_warning(self):
-        """Short simulation should trigger duration warning."""
-        import logging
+        """Short simulation should trigger duration warning but still complete."""
         import warnings
 
-        # Capture warnings using standard context manager
+        # Capture warnings using stdlib context manager
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
             from templates.aerobic.mle_mbr import build_and_run, get_default_influent
@@ -225,8 +224,8 @@ class TestNitrificationIntegration:
                 duration_days=10,  # Too short for equilibration
             )
 
-        # We can't easily capture logger.warning with pytest.warns
-        # But we can verify the simulation still runs
+        # Verify simulation still completes despite short duration
+        # Logger.warning isn't captured by warnings module, but we verify the simulation runs
         assert result['status'] == 'completed'
 
     def test_inoculum_x_aut_in_results(self):

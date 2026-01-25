@@ -26,6 +26,8 @@ Universal wastewater simulation engine supporting anaerobic (mADM1, 63 component
 | Phase 8D CLI Verification | `docs/completed-plans/phase8d-cli-workflow-verification.md` | Complete |
 | Phase 9 Plan | `docs/completed-plans/phase9-mixed-model-flowsheet-support.md` | Complete |
 | Phase 10 Plan | `docs/completed-plans/phase10-known-limitations.md` | Complete |
+| Phase 11 Plan | `docs/completed-plans/phase11-convergence-simulation.md` | Complete |
+| Phase 12 Plan | `docs/completed-plans/phase12-srt-controlled-simulation.md` | Complete |
 
 ---
 
@@ -47,8 +49,10 @@ Universal wastewater simulation engine supporting anaerobic (mADM1, 63 component
 | 8D | CLI Workflow Verification (Mixer ins.append, Splitter array, effluent detection, ASM1 DO_ID) | Complete |
 | 9 | Mixed-Model Flowsheet Support (junction transforms, model zones, suggestions) | Complete |
 | 10 | Known Limitations (kinetic params, native pH, auto-insert junctions, traversal depth) | Complete |
+| 11 | Convergence-Based Simulation (run-to-steady-state, abs+rel tolerance, auto stream detection) | Complete |
+| 12 | SRT-Controlled Simulation (target SRT, Q_was optimization, brentq root-finding) | Complete |
 
-**Test Count:** 355+ tests passing (Phase 10 validation: 2026-01-22)
+**Test Count:** 425+ tests passing (Phase 12 validation: 2026-01-25)
 
 ---
 
@@ -77,8 +81,12 @@ qsdsan-engine-mcp/
 │   └── sulfur_kinetics.py # SRB processes
 ├── utils/
 │   ├── simulate_madm1.py  # Simulation wrapper
-│   ├── flowsheet_builder.py # System compilation
+│   ├── flowsheet_builder.py # System compilation + sludge/effluent detection
 │   ├── flowsheet_session.py # Session state management
+│   ├── convergence.py     # Phase 11: Convergence detection utilities
+│   ├── run_to_convergence.py # Phase 11: Run-to-steady-state wrapper
+│   ├── srt_control.py     # Phase 12: SRT calculation, actuator updates, feasibility
+│   ├── run_to_srt.py      # Phase 12: SRT-controlled simulation wrapper
 │   ├── path_utils.py      # Path traversal guards
 │   ├── pipe_parser.py     # BioSTEAM notation parser
 │   ├── topo_sort.py       # Topological sort with recycles
@@ -99,6 +107,9 @@ qsdsan-engine-mcp/
 │   ├── test_nitrification.py # Phase 8B nitrification tests
 │   ├── test_mixed_model.py   # Phase 9 mixed-model flowsheet tests (30 tests)
 │   ├── test_phase10.py       # Phase 10 known limitations tests (20 tests)
+│   ├── test_convergence.py   # Phase 11 convergence unit tests
+│   ├── test_convergence_integration.py # Phase 11 convergence slow tests
+│   ├── test_srt_control.py   # Phase 12 SRT control unit tests (22 tests)
 │   ├── test_madm1_state.json  # Complete 62-component mADM1 state
 │   ├── test_asm2d_state.json  # Complete ASM2d state
 │   └── run_slow_tests.py  # Integration tests for all templates
@@ -175,6 +186,110 @@ JUNCTION_MODEL_TRANSFORMS = {
 - Fan-in warnings when mixing streams from different models
 
 **Key functions:** `normalize_model_name()`, `get_junction_output_model()`, `suggest_junction_for_conversion()`
+
+### Convergence-Based Simulation (Phase 11)
+
+The engine now supports **run-to-convergence** mode for accurate steady-state simulation:
+
+**Usage (Templates):**
+```python
+from templates.aerobic.mle_mbr import build_and_run
+
+result = build_and_run(
+    influent_state=state,
+    run_to_convergence=True,
+    convergence_atol=0.1,       # mg/L/d for ASM
+    convergence_rtol=1e-3,
+    check_interval_days=2.0,
+    max_duration_days=100,       # Safety limit
+)
+```
+
+**Usage (CLI):**
+```bash
+python cli.py flowsheet simulate \
+    --session abc123 \
+    --run-to-convergence \
+    --convergence-atol 0.1 \
+    --max-duration 100
+```
+
+**Usage (MCP):**
+```python
+await simulate_built_system(
+    session_id="abc123",
+    run_to_convergence=True,
+    convergence_atol=0.1,
+    max_duration_days=100,
+)
+```
+
+**Key Features:**
+- **Abs+Rel Tolerance:** `|slope| < atol + rtol * max(|mean|, floor)` handles mixed-basis systems
+- **Multi-Stream Tracking:** Effluent (nutrients) + WAS/sludge (biomass) for complete convergence
+- **Auto Stream Detection:** `_detect_effluent_streams()` and `_detect_sludge_streams()` in flowsheet builder
+- **BDF Solver:** Implicit solver for stability over long time spans
+- **Oscillation Detection:** Detects systems that haven't truly converged
+
+**Stream Detection Logic:**
+- Effluent: "effluent" in name → clarifier outs[0] → lowest TSS terminal
+- Sludge: Clarifier WAS (outs[2]) → MBR retentate (outs[1]) → name-based → highest biomass terminal
+
+**Default Components by Model:**
+| Model | Effluent Components | Sludge Components |
+|-------|---------------------|-------------------|
+| ASM2d | S_NH4, S_NO3, S_O2 | X_AUT, X_H, X_PAO |
+| A2O | + S_PO4 | + X_PP |
+| mADM1 | S_ac, S_IC, S_IN | X_ac, X_h2, X_hSRB |
+
+### SRT-Controlled Simulation (Phase 12)
+
+For systems with MBR or clarifier that **decouple HRT and SRT**, the engine supports SRT-controlled simulation where Q_was is iteratively adjusted to achieve a target SRT at true steady state.
+
+**Problem Solved:** Without SRT control, inoculated systems can "converge" quickly (11 days) to a pre-seeded equilibrium with unrealistic achieved SRT (633 days). True steady state requires 2-3× SRT to reach equilibrium.
+
+**Usage (Templates):**
+```python
+from templates.aerobic.mle_mbr import build_and_run
+
+result = build_and_run(
+    influent_state=state,
+    target_srt_days=15.0,           # Enable SRT control
+    srt_tolerance=0.1,              # 10% tolerance on achieved SRT
+    max_srt_iterations=10,          # Max Q_was adjustments
+    convergence_atol=0.1,           # Also enables convergence detection
+)
+```
+
+**Usage (CLI):**
+```bash
+python cli.py simulate \
+    --template mle_mbr_asm2d \
+    --influent tests/test_asm2d_state.json \
+    --target-srt 15 \
+    --srt-tolerance 0.1 \
+    --run-to-convergence
+```
+
+**Key Features:**
+- **Bracketed Root-Finding:** Uses `scipy.brentq` with adaptive bracket expansion
+- **Flow-Scaled Bounds:** Auto-computes Q_was bounds from `get_influent_flow()` and reactor volumes
+- **Physical Feasibility:** Validates `Q_was >= 0` and `Q_ras + Q_was <= Q_in * 1.5`
+- **Minimum Simulation Time:** Enforces 2× target SRT for dynamics equilibration
+- **Unit-Specific Actuators:** MBR.pumped_flow, Clarifier.wastage, or Splitter.split
+
+**Algorithm:**
+1. Compute flow-scaled Q_was bounds from system characteristics
+2. Define objective: `f(Q_was) = achieved_SRT - target_SRT`
+3. Use brentq root-finding with adaptive bracket expansion
+4. Each evaluation runs full convergence simulation (min 2× SRT days)
+5. Return achieved SRT, optimal Q_was, and convergence metrics
+
+**Files:**
+- `utils/srt_control.py`: SRT calculation, actuator updates, feasibility checks
+- `utils/run_to_srt.py`: SRT-controlled wrapper with brentq
+
+**Scope:** Systems with HRT/SRT decoupling (MBR, clarifier). Plain CSTR has SRT ≈ HRT.
 
 ---
 
