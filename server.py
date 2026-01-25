@@ -117,6 +117,7 @@ async def simulate_system(
     timestep_hours: Optional[float] = None,
     reactor_config: Optional[Dict[str, Any]] = None,
     parameters: Optional[Dict[str, Any]] = None,
+    timeout_seconds: float = 300.0,
 ) -> Dict[str, Any]:
     """
     Run QSDsan dynamic simulation using a flowsheet template.
@@ -136,6 +137,9 @@ async def simulate_system(
                     half-saturation coefficients (K_su, K_aa, K_ac, etc.), inhibition constants
                     (KI_h2_fa, KI_nh3, etc.), and SRB parameters. See core/kinetic_params.py
                     for the full schema and validation. ASM2d templates also accept kinetics.
+        timeout_seconds: Maximum simulation runtime in seconds (default 300 = 5 minutes).
+                        If exceeded, the job is terminated with status="timeout".
+                        Set to 0 for no timeout (not recommended for production).
 
     Returns:
         Dict with job_id, status, and instructions for monitoring
@@ -144,7 +148,8 @@ async def simulate_system(
         >>> result = await simulate_system(
         ...     template="anaerobic_cstr_madm1",
         ...     influent={"model_type": "mADM1", "flow_m3_d": 1000, "concentrations": {...}},
-        ...     duration_days=30.0
+        ...     duration_days=30.0,
+        ...     timeout_seconds=600  # 10 minutes for complex anaerobic model
         ... )
         >>> job_id = result["job_id"]
         >>> # Then call get_job_status(job_id) and get_job_results(job_id)
@@ -173,6 +178,7 @@ async def simulate_system(
             "timestep_hours": timestep_hours,
             "reactor_config": reactor_cfg,
             "parameters": params,
+            "timeout_seconds": timeout_seconds,
         }
         with open(job_dir / "config.json", "w") as f:
             json.dump(config, f, indent=2)
@@ -198,15 +204,22 @@ async def simulate_system(
         if parameters:
             cmd.extend(["--parameters", json.dumps(parameters)])
 
-        # Execute as background job
+        # Execute as background job with timeout
         cwd = str(Path(__file__).parent.absolute())
-        job = await job_manager.execute(cmd=cmd, cwd=cwd, job_id=job_id)
+        effective_timeout = timeout_seconds if timeout_seconds > 0 else None
+        job = await job_manager.execute(
+            cmd=cmd,
+            cwd=cwd,
+            job_id=job_id,
+            timeout_seconds=effective_timeout,
+        )
 
         return {
             "job_id": job["id"],
             "status": job["status"],
             "template": template,
             "duration_days": duration_days,
+            "timeout_seconds": timeout_seconds,
             "message": f"Simulation started. Use get_job_status('{job['id']}') to monitor progress.",
         }
     except Exception as e:
@@ -1355,6 +1368,7 @@ async def simulate_built_system(
     diagram: bool = True,
     include_components: bool = False,
     export_state_to: Optional[str] = None,
+    timeout_seconds: float = 300.0,
 ) -> Dict[str, Any]:
     """
     Simulate a compiled flowsheet with comprehensive reporting.
@@ -1377,6 +1391,9 @@ async def simulate_built_system(
         diagram: Generate flowsheet diagram
         include_components: Include full component breakdown in results
         export_state_to: Path to export final effluent state as PlantState JSON
+        timeout_seconds: Maximum simulation runtime in seconds (default 300 = 5 minutes).
+                        If exceeded, the job is terminated with status="timeout".
+                        Set to 0 for no timeout (not recommended for production).
 
     Returns:
         Dict with job_id for tracking via get_job_status/get_job_results
@@ -1511,15 +1528,22 @@ async def simulate_built_system(
         if export_state_to:
             cmd.extend(["--export-state-to", export_state_to])
 
-        # Execute as background job
+        # Execute as background job with timeout
         cwd = str(Path(__file__).parent.absolute())
-        job = await job_manager.execute(cmd=cmd, cwd=cwd, job_id=job_id)
+        effective_timeout = timeout_seconds if timeout_seconds > 0 else None
+        job = await job_manager.execute(
+            cmd=cmd,
+            cwd=cwd,
+            job_id=job_id,
+            timeout_seconds=effective_timeout,
+        )
 
         return {
             "job_id": job["id"],
             "status": job["status"],
             "session_id": session_id,
             "duration_days": duration_days,
+            "timeout_seconds": timeout_seconds,
             "message": f"Simulation started. Use get_job_status('{job['id']}') to monitor progress.",
         }
 

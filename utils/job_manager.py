@@ -11,6 +11,7 @@ Key Features:
 - Per-job output isolation to prevent file conflicts
 - Progress tracking via stdout parsing
 - Automatic cleanup of orphaned processes
+- Configurable timeout to prevent runaway simulations (Phase 8)
 
 Architecture:
     User -> MCP Tool -> JobManager.execute() -> Returns job_id immediately
@@ -154,7 +155,14 @@ class JobManager:
                 except Exception as e:
                     logger.error(f"Failed to terminate job {job_id}: {e}")
 
-    async def execute(self, cmd: List[str], cwd: str = ".", env: Optional[Dict[str, str]] = None, job_id: Optional[str] = None) -> dict:
+    async def execute(
+        self,
+        cmd: List[str],
+        cwd: str = ".",
+        env: Optional[Dict[str, str]] = None,
+        job_id: Optional[str] = None,
+        timeout_seconds: Optional[float] = None,
+    ) -> dict:
         """
         Execute command in background subprocess.
 
@@ -163,6 +171,8 @@ class JobManager:
             cwd: Working directory for subprocess
             env: Optional environment variables
             job_id: Optional pre-determined job ID (for pre-created directories)
+            timeout_seconds: Maximum runtime in seconds. If exceeded, job is terminated
+                           with status="timeout". Default None (no timeout).
 
         Returns:
             Job metadata dict with job_id, status, command, etc.
@@ -192,7 +202,8 @@ class JobManager:
             "status": "starting",
             "started_at": time.time(),
             "job_dir": str(job_dir.absolute()),
-            "env": env or {}
+            "env": env or {},
+            "timeout_seconds": timeout_seconds,
         }
 
         logger.info(f"Starting job {job_id}: {' '.join(cmd_with_id)}")
@@ -209,9 +220,14 @@ class JobManager:
                 return job
             self._running_count += 1
 
+        # Prepare log file paths
+        stdout_path = job_dir / "stdout.log"
+        stderr_path = job_dir / "stderr.log"
+
         try:
-            # Prepare environment
+            # Prepare environment with PYTHONUNBUFFERED for immediate output flushing
             proc_env = os.environ.copy()
+            proc_env["PYTHONUNBUFFERED"] = "1"
             if env:
                 proc_env.update(env)
 
@@ -219,7 +235,9 @@ class JobManager:
             cmd_normalized = [normalize_path_for_wsl(arg) for arg in cmd_with_id]
             cwd_normalized = normalize_path_for_wsl(cwd)
 
-            # Start subprocess
+            # Start subprocess with PIPE for stdout/stderr
+            # We'll use async stream readers to capture output line-by-line to files
+            # This ensures real-time capture even on Windows where file handles don't flush properly
             proc = await asyncio.create_subprocess_exec(
                 *cmd_normalized,
                 cwd=cwd_normalized,
@@ -238,7 +256,11 @@ class JobManager:
             logger.info(f"Job {job_id} started with PID {proc.pid}")
 
             # Monitor in background with release-on-completion
-            asyncio.create_task(self._monitor_job_with_release(job_id, proc))
+            # Pass paths for log file writing
+            asyncio.create_task(self._monitor_job_with_release(
+                job_id, proc, timeout_seconds,
+                stdout_path, stderr_path
+            ))
 
         except Exception as e:
             # Decrement counter on failure
@@ -253,41 +275,208 @@ class JobManager:
 
         return job
 
-    async def _monitor_job_with_release(self, job_id: str, proc: asyncio.subprocess.Process):
+    async def _monitor_job_with_release(
+        self,
+        job_id: str,
+        proc: asyncio.subprocess.Process,
+        timeout_seconds: Optional[float] = None,
+        stdout_path: Optional[Path] = None,
+        stderr_path: Optional[Path] = None,
+    ):
         """
         Monitor job completion, capture output, and release counter.
 
         This runs in the background and properly decrements _running_count when complete.
         """
         try:
-            await self._monitor_job(job_id, proc)
+            await self._monitor_job(
+                job_id, proc, timeout_seconds,
+                stdout_path, stderr_path
+            )
         finally:
             # Always release counter when job completes (success, failure, or exception)
             async with self._running_lock:
                 self._running_count -= 1
             logger.debug(f"Job {job_id}: released slot, running={self._running_count}/{self.max_concurrent_jobs}")
 
-    async def _monitor_job(self, job_id: str, proc: asyncio.subprocess.Process):
+    async def _stream_to_file(
+        self,
+        stream: asyncio.StreamReader,
+        file_path: Path,
+        stop_event: asyncio.Event,
+    ) -> None:
         """
-        Monitor job completion and capture output.
+        Read from async stream and write to file line by line.
+
+        This ensures output is captured in real-time, even on Windows.
+        """
+        try:
+            with open(file_path, "wb") as f:
+                while not stop_event.is_set():
+                    try:
+                        # Read with short timeout to check stop_event periodically
+                        line = await asyncio.wait_for(stream.readline(), timeout=0.5)
+                        if line:
+                            f.write(line)
+                            f.flush()  # Flush immediately for real-time capture
+                        elif stream.at_eof():
+                            break
+                    except asyncio.TimeoutError:
+                        continue
+                    except Exception:
+                        break
+
+                # Drain any remaining data after stop signal
+                while True:
+                    try:
+                        line = await asyncio.wait_for(stream.readline(), timeout=0.1)
+                        if line:
+                            f.write(line)
+                        else:
+                            break
+                    except (asyncio.TimeoutError, Exception):
+                        break
+        except Exception as e:
+            logger.debug(f"Stream reader error for {file_path}: {e}")
+
+    async def _monitor_job(
+        self,
+        job_id: str,
+        proc: asyncio.subprocess.Process,
+        timeout_seconds: Optional[float] = None,
+        stdout_path: Optional[Path] = None,
+        stderr_path: Optional[Path] = None,
+    ):
+        """
+        Monitor job completion and capture output using async stream readers.
 
         This runs in the background and updates job status when complete.
+        Output is captured line-by-line and written to files in real-time,
+        ensuring output is available even on timeout or crash.
+
+        If timeout_seconds is specified, the job will be terminated if it exceeds
+        the timeout limit.
         """
         job = self.jobs[job_id]
         job_dir = Path(job["job_dir"])
 
-        stdout_path = job_dir / "stdout.log"
-        stderr_path = job_dir / "stderr.log"
+        # Use passed paths or derive from job_dir
+        if stdout_path is None:
+            stdout_path = job_dir / "stdout.log"
+        if stderr_path is None:
+            stderr_path = job_dir / "stderr.log"
+
+        # Create stop event for stream readers
+        stop_event = asyncio.Event()
+
+        # Start stream reader tasks
+        stdout_task = None
+        stderr_task = None
+        if proc.stdout:
+            stdout_task = asyncio.create_task(
+                self._stream_to_file(proc.stdout, stdout_path, stop_event)
+            )
+        if proc.stderr:
+            stderr_task = asyncio.create_task(
+                self._stream_to_file(proc.stderr, stderr_path, stop_event)
+            )
 
         try:
-            # Drain stdout/stderr to files (prevents pipe buffer overflow)
-            stdout_data, stderr_data = await proc.communicate()
+            if timeout_seconds and timeout_seconds > 0:
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=timeout_seconds)
+                except asyncio.TimeoutError:
+                    # Timeout exceeded - terminate the process
+                    logger.warning(f"Job {job_id} exceeded timeout of {timeout_seconds}s, terminating...")
 
-            # Write to log files
-            with open(stdout_path, "wb") as f:
-                f.write(stdout_data)
-            with open(stderr_path, "wb") as f:
-                f.write(stderr_data)
+                    # Signal stream readers to stop
+                    stop_event.set()
+
+                    # Try graceful termination first
+                    try:
+                        proc.terminate()
+                        try:
+                            await asyncio.wait_for(proc.wait(), timeout=2.0)
+                        except asyncio.TimeoutError:
+                            logger.warning(f"Job {job_id} did not terminate gracefully, killing...")
+                            proc.kill()
+                            await proc.wait()
+                    except ProcessLookupError:
+                        pass
+
+                    # Wait for stream readers to finish capturing
+                    if stdout_task:
+                        try:
+                            await asyncio.wait_for(stdout_task, timeout=1.0)
+                        except (asyncio.TimeoutError, Exception):
+                            stdout_task.cancel()
+                    if stderr_task:
+                        try:
+                            await asyncio.wait_for(stderr_task, timeout=1.0)
+                        except (asyncio.TimeoutError, Exception):
+                            stderr_task.cancel()
+
+                    # Calculate elapsed time
+                    elapsed = time.time() - job["started_at"]
+
+                    # Extract template name from command
+                    template_name = "unknown"
+                    cmd = job.get("command", [])
+                    for i, arg in enumerate(cmd):
+                        if arg in ("--template", "-t") and i + 1 < len(cmd):
+                            template_name = cmd[i + 1]
+                            break
+
+                    # Read last progress message from stdout
+                    last_progress = None
+                    try:
+                        with open(stdout_path, "r", errors="replace") as f:
+                            lines = f.readlines()
+                            for line in reversed(lines):
+                                if "[PROGRESS]" in line:
+                                    last_progress = line.strip()
+                                    break
+                    except Exception as e:
+                        logger.debug(f"Could not read last progress: {e}")
+
+                    # Append enhanced timeout context to stderr
+                    try:
+                        with open(stderr_path, "a") as f:
+                            f.write("\n\n")
+                            f.write("=" * 60 + "\n")
+                            f.write(f"[TIMEOUT] Job exceeded {timeout_seconds}s limit and was terminated.\n")
+                            f.write(f"Template: {template_name}\n")
+                            f.write(f"Elapsed: {elapsed:.1f}s\n")
+                            if last_progress:
+                                f.write(f"Last progress: {last_progress}\n")
+                            f.write("=" * 60 + "\n")
+                    except Exception as e:
+                        logger.debug(f"Could not write timeout context to stderr: {e}")
+
+                    # Update job status
+                    job["status"] = "timeout"
+                    job["error"] = f"Simulation exceeded {timeout_seconds}s timeout limit"
+                    job["exit_code"] = -1
+                    job["completed_at"] = time.time()
+
+                    logger.info(f"Job {job_id} terminated due to timeout after {timeout_seconds}s")
+                    return
+            else:
+                # No timeout - wait indefinitely
+                await proc.wait()
+
+            # Signal stream readers to stop and wait for completion
+            stop_event.set()
+            if stdout_task:
+                try:
+                    await asyncio.wait_for(stdout_task, timeout=2.0)
+                except (asyncio.TimeoutError, Exception):
+                    stdout_task.cancel()
+            if stderr_task:
+                try:
+                    await asyncio.wait_for(stderr_task, timeout=2.0)
+                except (asyncio.TimeoutError, Exception):
+                    stderr_task.cancel()
 
             # Get exit code
             exit_code = proc.returncode
@@ -298,19 +487,27 @@ class JobManager:
             job["completed_at"] = time.time()
 
             if exit_code != 0:
-                # Read first 500 chars of stderr for error message
-                with open(stderr_path, "r") as f:
-                    job["error"] = f.read(500)
+                try:
+                    with open(stderr_path, "r", errors="replace") as f:
+                        job["error"] = f.read(500)
+                except Exception:
+                    job["error"] = f"Process exited with code {exit_code}"
 
             logger.info(f"Job {job_id} {job['status']} with exit code {exit_code}")
 
         except Exception as e:
+            stop_event.set()
             job["status"] = "failed"
             job["error"] = f"Monitoring error: {str(e)}"
             job["completed_at"] = time.time()
             logger.error(f"Job {job_id} monitoring failed: {e}")
 
         finally:
+            # Cancel any remaining tasks
+            if stdout_task and not stdout_task.done():
+                stdout_task.cancel()
+            if stderr_task and not stderr_task.done():
+                stderr_task.cancel()
             # Save final metadata
             self._save_job_metadata(job)
 
@@ -375,6 +572,16 @@ class JobManager:
             status_response["error"] = job.get("error", "Unknown error")
             status_response["exit_code"] = job.get("exit_code")
 
+        if job["status"] == "timeout":
+            status_response["error"] = job.get("error", "Timeout exceeded")
+            status_response["timeout_seconds"] = job.get("timeout_seconds")
+
+        # Show timeout info for running jobs
+        if job["status"] == "running" and job.get("timeout_seconds"):
+            timeout = job["timeout_seconds"]
+            status_response["timeout_seconds"] = timeout
+            status_response["time_remaining_seconds"] = round(max(0, timeout - elapsed), 1)
+
         return status_response
 
     def _parse_progress(self, job_dir: str) -> Optional[dict]:
@@ -382,9 +589,10 @@ class JobManager:
         Parse progress hints from stdout.
 
         Looks for patterns like:
+        - "[PROGRESS] Starting MLE-MBR simulation..."
+        - "[PROGRESS] Day 100 - still converging..."
         - "Progress: 45%"
         - "Day 15/20"
-        - JSON fragments with progress field
         """
         stdout_file = Path(job_dir) / "stdout.log"
         if not stdout_file.exists():
@@ -396,6 +604,14 @@ class JobManager:
 
             # Look for progress patterns in last 20 lines
             for line in reversed(lines[-20:]):
+                # Pattern: "[PROGRESS] ..." (our structured format)
+                if "[PROGRESS]" in line:
+                    msg = line.replace("[PROGRESS]", "").strip()
+                    # Try to extract percentage if present
+                    if "100%" in line or "complete" in line.lower():
+                        return {"percent": 100, "message": msg}
+                    return {"message": msg}
+
                 # Pattern: "Progress: 45%"
                 if "progress:" in line.lower():
                     parts = line.split(":")
