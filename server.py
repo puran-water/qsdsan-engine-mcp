@@ -43,8 +43,6 @@ from typing import Dict, Any, Optional, Literal, List
 
 from mcp.server.fastmcp import FastMCP
 
-from core.version import __version__
-
 from core.plant_state import PlantState, ModelType, ValidationResult
 from core.model_registry import (
     get_model_info,
@@ -60,6 +58,12 @@ from core.unit_registry import (
     validate_unit_params,
     validate_model_compatibility,
     get_units_by_category,
+    # Phase 9: Junction model transforms
+    normalize_model_name,
+    get_junction_output_model,
+    suggest_junction_for_conversion,
+    # Phase 10: Auto-insert junctions
+    find_junction_for_conversion,
 )
 from utils.job_manager import JobManager
 from utils.path_utils import normalize_path_for_wsl, get_python_executable
@@ -77,53 +81,11 @@ logger = logging.getLogger(__name__)
 # Initialize MCP server
 mcp = FastMCP("qsdsan-engine")
 
-# Use absolute paths relative to this file to avoid CWD issues when run from Claude Desktop
-_BASE_DIR = Path(__file__).parent.absolute()
-_JOBS_DIR = _BASE_DIR / "jobs"
-
 # Initialize job manager (singleton)
-job_manager = JobManager(max_concurrent_jobs=3, jobs_base_dir=str(_JOBS_DIR))
+job_manager = JobManager(max_concurrent_jobs=3, jobs_base_dir="jobs")
 
 # Initialize flowsheet session manager (singleton)
-session_manager = FlowsheetSessionManager(sessions_dir=_JOBS_DIR)
-
-
-# =============================================================================
-# Tool 0: get_version (Discovery)
-# =============================================================================
-@mcp.tool()
-async def get_version() -> Dict[str, Any]:
-    """
-    Get version information for the QSDsan Engine MCP server.
-
-    Returns version numbers for the engine and its key dependencies.
-    Use this tool to verify the server is running and check compatibility.
-
-    Returns:
-        Dict with engine_version, qsdsan_version, biosteam_version, and python_version
-    """
-    import sys
-    from importlib.metadata import version, PackageNotFoundError
-
-    # Get QSDsan version from package metadata (fast - no module import)
-    try:
-        qsdsan_version = version("qsdsan")
-    except PackageNotFoundError:
-        qsdsan_version = "not installed"
-
-    # Get BioSTEAM version from package metadata (fast - no module import)
-    try:
-        biosteam_version = version("biosteam")
-    except PackageNotFoundError:
-        biosteam_version = "not installed"
-
-    return {
-        "engine_version": __version__,
-        "qsdsan_version": qsdsan_version,
-        "biosteam_version": biosteam_version,
-        "python_version": sys.version.split()[0],
-        "jobs_dir": str(_JOBS_DIR),
-    }
+session_manager = FlowsheetSessionManager(sessions_dir=Path("jobs"))
 
 
 # =============================================================================
@@ -137,7 +99,6 @@ async def simulate_system(
     timestep_hours: Optional[float] = None,
     reactor_config: Optional[Dict[str, Any]] = None,
     parameters: Optional[Dict[str, Any]] = None,
-    timeout_seconds: float = 300.0,
 ) -> Dict[str, Any]:
     """
     Run QSDsan dynamic simulation using a flowsheet template.
@@ -152,12 +113,11 @@ async def simulate_system(
         duration_days: Simulation duration in days (default 1.0)
         timestep_hours: Output timestep in hours (aerobic templates only, optional)
         reactor_config: Optional reactor configuration overrides
-        parameters: Optional kinetic parameter overrides. Note: Currently supported
-                    for ASM2d/aerobic templates only. mADM1 template uses QSDsan
-                    defaults and ignores this parameter.
-        timeout_seconds: Maximum simulation runtime in seconds (default 300 = 5 minutes).
-                        If exceeded, the job is terminated with status="timeout".
-                        Set to 0 for no timeout (not recommended for production).
+        parameters: Optional kinetic parameter overrides. For mADM1 templates, supports
+                    80+ kinetic parameters including rate constants (k_su, k_aa, k_ac, etc.),
+                    half-saturation coefficients (K_su, K_aa, K_ac, etc.), inhibition constants
+                    (KI_h2_fa, KI_nh3, etc.), and SRB parameters. See core/kinetic_params.py
+                    for the full schema and validation. ASM2d templates also accept kinetics.
 
     Returns:
         Dict with job_id, status, and instructions for monitoring
@@ -166,8 +126,7 @@ async def simulate_system(
         >>> result = await simulate_system(
         ...     template="anaerobic_cstr_madm1",
         ...     influent={"model_type": "mADM1", "flow_m3_d": 1000, "concentrations": {...}},
-        ...     duration_days=30.0,
-        ...     timeout_seconds=600  # 10 minutes for complex anaerobic model
+        ...     duration_days=30.0
         ... )
         >>> job_id = result["job_id"]
         >>> # Then call get_job_status(job_id) and get_job_results(job_id)
@@ -180,11 +139,10 @@ async def simulate_system(
         reactor_cfg = reactor_config or {}
         params = parameters or {}
 
-        # Create job directory (use absolute path relative to this file to avoid CWD issues)
+        # Create job directory
         import uuid
         job_id = str(uuid.uuid4())[:8]
-        base_dir = Path(__file__).parent.absolute()
-        job_dir = base_dir / "jobs" / job_id
+        job_dir = Path("jobs") / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
 
         # Save influent state to job directory
@@ -197,7 +155,6 @@ async def simulate_system(
             "timestep_hours": timestep_hours,
             "reactor_config": reactor_cfg,
             "parameters": params,
-            "timeout_seconds": timeout_seconds,
         }
         with open(job_dir / "config.json", "w") as f:
             json.dump(config, f, indent=2)
@@ -223,22 +180,15 @@ async def simulate_system(
         if parameters:
             cmd.extend(["--parameters", json.dumps(parameters)])
 
-        # Execute as background job with timeout
+        # Execute as background job
         cwd = str(Path(__file__).parent.absolute())
-        effective_timeout = timeout_seconds if timeout_seconds > 0 else None
-        job = await job_manager.execute(
-            cmd=cmd,
-            cwd=cwd,
-            job_id=job_id,
-            timeout_seconds=effective_timeout,
-        )
+        job = await job_manager.execute(cmd=cmd, cwd=cwd, job_id=job_id)
 
         return {
             "job_id": job["id"],
             "status": job["status"],
             "template": template,
             "duration_days": duration_days,
-            "timeout_seconds": timeout_seconds,
             "message": f"Simulation started. Use get_job_status('{job['id']}') to monitor progress.",
         }
     except Exception as e:
@@ -461,11 +411,10 @@ async def convert_state(
                 "supported": [f"{f.value} -> {t.value}" for f, t in supported_conversions],
             }
 
-        # Create job directory (use absolute path relative to this file to avoid CWD issues)
+        # Create job directory
         import uuid
         job_id = str(uuid.uuid4())[:8]
-        base_dir = Path(__file__).parent.absolute()
-        job_dir = base_dir / "jobs" / job_id
+        job_dir = Path("jobs") / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
 
         # Save input state
@@ -685,6 +634,295 @@ async def create_stream(
         return {"error": str(e)}
 
 
+# =============================================================================
+# Phase 9: Model Zone Computation for Mixed-Model Flowsheets
+# =============================================================================
+
+def compute_effective_model_at_unit(
+    session: "FlowsheetSessionManager",
+    unit_inputs: List[str],
+    explicit_model: Optional[str] = None,
+    _depth: int = 0,
+) -> tuple[str, List[str]]:
+    """
+    Compute effective model for a unit based on upstream junctions.
+
+    This function enables mixed-model flowsheet construction by tracing upstream
+    through junctions to determine the effective model at any point in the flowsheet.
+
+    Priority:
+    1. Explicit model_type if provided (user override)
+    2. Output model of upstream junction (if any)
+    3. Upstream unit's explicit model_type
+    4. Session primary_model_type
+
+    Args:
+        session: FlowsheetSession instance
+        unit_inputs: List of input port notations or stream IDs
+        explicit_model: User-provided model_type override
+        _depth: Internal recursion depth counter (Phase 10 cycle guard)
+
+    Returns:
+        Tuple of (effective_model, list of warnings)
+
+    Raises:
+        ValueError: If traversal depth exceeds 20 (possible cycle)
+    """
+    from utils.pipe_parser import parse_port_notation, is_tuple_notation, parse_tuple_notation
+
+    # Phase 10: Guard against infinite loops from cycles
+    if _depth > 20:
+        raise ValueError(
+            "Junction chain too deep (>20 levels). Possible cycle detected in flowsheet. "
+            "Check for circular unit connections involving junctions."
+        )
+
+    warnings = []
+
+    # Priority 1: Honor explicit override
+    if explicit_model:
+        return normalize_model_name(explicit_model), warnings
+
+    # Collect models from all inputs for fan-in validation
+    input_models = []
+
+    for inp in unit_inputs:
+        # Handle tuple notation for fan-in
+        if is_tuple_notation(inp):
+            port_strs = parse_tuple_notation(inp)
+        else:
+            port_strs = [inp]
+
+        for port_str in port_strs:
+            try:
+                ref = parse_port_notation(port_str)
+                upstream_unit_id = ref.unit_id
+
+                if upstream_unit_id in session.units:
+                    upstream_config = session.units[upstream_unit_id]
+                    junction_transform = get_junction_output_model(upstream_config.unit_type)
+
+                    if junction_transform:
+                        # This is a junction - use its output model
+                        input_models.append(normalize_model_name(junction_transform[1]))
+                    elif upstream_config.model_type:
+                        # Upstream has explicit model
+                        input_models.append(normalize_model_name(upstream_config.model_type))
+                    else:
+                        # Recursively trace upstream (for junction chains)
+                        # Phase 10: Pass depth counter to prevent infinite loops
+                        upstream_model, _ = compute_effective_model_at_unit(
+                            session, upstream_config.inputs, upstream_config.model_type, _depth + 1
+                        )
+                        input_models.append(upstream_model)
+                elif upstream_unit_id in session.streams:
+                    # Stream input - use stream's model if set, else session primary
+                    stream_config = session.streams[upstream_unit_id]
+                    if stream_config.model_type:
+                        input_models.append(normalize_model_name(stream_config.model_type))
+                    else:
+                        input_models.append(normalize_model_name(session.primary_model_type))
+                else:
+                    # Unknown input (deferred recycle) - use session primary
+                    input_models.append(normalize_model_name(session.primary_model_type))
+            except ValueError:
+                # Parse error - skip this input, use session primary as fallback
+                input_models.append(normalize_model_name(session.primary_model_type))
+
+    # Fan-in validation: warn if multiple different models
+    unique_models = set(input_models)
+    if len(unique_models) > 1:
+        warnings.append(
+            f"Multiple input models detected: {sorted(unique_models)}. "
+            f"Consider adding junctions to unify component sets before mixing."
+        )
+
+    # Return first input's model (or session primary if no inputs)
+    if input_models:
+        return input_models[0], warnings
+    return normalize_model_name(session.primary_model_type), warnings
+
+
+def _auto_insert_junction(
+    session: "FlowsheetSessionManager",
+    source_unit_id: str,
+    source_port: int,
+    source_model: str,
+    target_model: str,
+) -> tuple[Optional[str], str, Optional[str]]:
+    """
+    Phase 10: Auto-insert a junction unit to convert source_model to target_model.
+
+    Creates a junction unit in the session to bridge model mismatches at fan-in points.
+
+    NOTE: For our custom mADM1 (63 components), we use our custom junction
+    implementations in core/junction_units.py, NOT upstream QSDsan junctions.
+    Upstream junctions target ADM1_p_extension, not our 63-component model.
+
+    Args:
+        session: FlowsheetSession instance
+        source_unit_id: ID of the upstream unit
+        source_port: Output port index of the upstream unit
+        source_model: Model type of the source (e.g., "mADM1")
+        target_model: Target model type (e.g., "ASM2d")
+
+    Returns:
+        Tuple of (junction_unit_id, junction_output_port, warning_message)
+        Returns (None, original_port, None) if no junction available
+    """
+    junction_type = find_junction_for_conversion(source_model, target_model)
+    if not junction_type:
+        # No junction available - can't auto-insert
+        return None, f"{source_unit_id}-{source_port}", None
+
+    # Generate unique junction ID
+    junction_id = f"_auto_{junction_type}_{source_unit_id}"
+    counter = 1
+    while junction_id in session.units:
+        junction_id = f"_auto_{junction_type}_{source_unit_id}_{counter}"
+        counter += 1
+
+    # Create junction unit config
+    junction_config = UnitConfig(
+        unit_id=junction_id,
+        unit_type=junction_type,
+        params={},
+        inputs=[f"{source_unit_id}-{source_port}"],
+        outputs=[f"{junction_id}-0"],
+        model_type=target_model,  # Output model
+        auto_inserted=True,  # Track for debugging
+    )
+    session.units[junction_id] = junction_config
+
+    logger.info(f"Phase 10: Auto-inserted {junction_type} junction '{junction_id}' to convert {source_model} -> {target_model}")
+
+    warning = f"Auto-inserted junction '{junction_id}' to convert {source_model} -> {target_model} for input '{source_unit_id}-{source_port}'"
+    return junction_id, f"{junction_id}-0", warning
+
+
+def _rewrite_inputs_with_junctions(
+    session: "FlowsheetSessionManager",
+    inputs: List[str],
+    target_model: str,
+) -> tuple[List[str], List[str]]:
+    """
+    Phase 10: Rewrite inputs to auto-insert junctions where needed.
+
+    Scans inputs for model mismatches and auto-inserts junction units to unify
+    component sets at fan-in points.
+
+    Args:
+        session: FlowsheetSession instance
+        inputs: Original list of input port notations or stream IDs
+        target_model: Target model type for the unit being created
+
+    Returns:
+        Tuple of (rewritten_inputs, auto_insert_warnings)
+    """
+    from utils.pipe_parser import parse_port_notation, is_tuple_notation, parse_tuple_notation
+
+    rewritten_inputs = []
+    warnings = []
+    target_norm = normalize_model_name(target_model)
+
+    for inp in inputs:
+        # Handle tuple notation for fan-in
+        if is_tuple_notation(inp):
+            port_strs = parse_tuple_notation(inp)
+            rewritten_ports = []
+            for port_str in port_strs:
+                try:
+                    ref = parse_port_notation(port_str)
+                    inp_model = _get_model_for_input(session, ref)
+
+                    if inp_model and normalize_model_name(inp_model) != target_norm:
+                        # Model mismatch - try to auto-insert junction
+                        junction_id, new_port, warning = _auto_insert_junction(
+                            session, ref.unit_id, ref.port_index, inp_model, target_model
+                        )
+                        if junction_id:
+                            rewritten_ports.append(new_port)
+                            if warning:
+                                warnings.append(warning)
+                        else:
+                            # No junction available - keep original and warn
+                            rewritten_ports.append(port_str)
+                            warnings.append(
+                                f"No junction available to convert {inp_model} -> {target_model} "
+                                f"for input '{port_str}'. Component mismatch may cause build failure."
+                            )
+                    else:
+                        rewritten_ports.append(port_str)
+                except ValueError:
+                    # Parse error - keep original
+                    rewritten_ports.append(port_str)
+
+            # Reconstruct tuple notation
+            rewritten_inputs.append("(" + ", ".join(rewritten_ports) + ")")
+        else:
+            # Single input
+            try:
+                ref = parse_port_notation(inp)
+                inp_model = _get_model_for_input(session, ref)
+
+                if inp_model and normalize_model_name(inp_model) != target_norm:
+                    # Model mismatch - try to auto-insert junction
+                    junction_id, new_port, warning = _auto_insert_junction(
+                        session, ref.unit_id, ref.port_index, inp_model, target_model
+                    )
+                    if junction_id:
+                        rewritten_inputs.append(new_port)
+                        if warning:
+                            warnings.append(warning)
+                    else:
+                        # No junction available - keep original and warn
+                        rewritten_inputs.append(inp)
+                        warnings.append(
+                            f"No junction available to convert {inp_model} -> {target_model} "
+                            f"for input '{inp}'. Component mismatch may cause build failure."
+                        )
+                else:
+                    rewritten_inputs.append(inp)
+            except ValueError:
+                # Parse error - keep original
+                rewritten_inputs.append(inp)
+
+    return rewritten_inputs, warnings
+
+
+def _get_model_for_input(session, ref) -> Optional[str]:
+    """
+    Get the effective model for an input reference.
+
+    Args:
+        session: FlowsheetSession instance
+        ref: Parsed port reference
+
+    Returns:
+        Model type string or None if unknown
+    """
+    upstream_unit_id = ref.unit_id
+
+    if upstream_unit_id in session.units:
+        upstream_config = session.units[upstream_unit_id]
+        junction_transform = get_junction_output_model(upstream_config.unit_type)
+
+        if junction_transform:
+            # This is a junction - use its output model
+            return junction_transform[1]
+        elif upstream_config.model_type:
+            return upstream_config.model_type
+        else:
+            # Fall through to session primary
+            return session.primary_model_type
+    elif upstream_unit_id in session.streams:
+        stream_config = session.streams[upstream_unit_id]
+        return stream_config.model_type or session.primary_model_type
+    else:
+        # Unknown input (deferred recycle)
+        return session.primary_model_type
+
+
 @mcp.tool()
 async def create_unit(
     session_id: str,
@@ -719,6 +957,8 @@ async def create_unit(
         ...     inputs=["influent", "RAS"],
         ... )
     """
+    from utils.pipe_parser import parse_port_notation, is_tuple_notation, parse_tuple_notation
+
     try:
         # Validate unit type exists
         try:
@@ -733,12 +973,82 @@ async def create_unit(
 
         # Load session to check model compatibility
         session = session_manager.get_session(session_id)
-        effective_model = model_type or session.primary_model_type
 
-        # Validate model compatibility
+        # Phase 9: Compute effective model considering upstream junctions
+        # This enables mixed-model flowsheets (e.g., ASM2d with mADM1 digester via junction)
+        effective_model, zone_warnings = compute_effective_model_at_unit(
+            session, inputs or [], model_type
+        )
+
+        # Validate model compatibility with computed effective model
         is_compatible, compat_error = validate_model_compatibility(unit_type, effective_model)
         if not is_compatible:
-            return {"error": compat_error}
+            # Provide helpful error with junction suggestion
+            suggestion = suggest_junction_for_conversion(
+                session.primary_model_type,
+                spec.compatible_models
+            )
+
+            error_msg = compat_error
+            if suggestion:
+                error_msg += f" {suggestion}"
+
+            return {"error": error_msg}
+
+        # Phase 10: Auto-insert junctions for model mismatches at fan-in
+        # If zone_warnings indicate multiple input models, rewrite inputs with junctions
+        auto_insert_warnings = []
+        if any("Multiple input models detected" in w for w in zone_warnings):
+            # Determine target model (session primary for consistency)
+            target_model = normalize_model_name(session.primary_model_type)
+
+            # Rewrite inputs to auto-insert junctions where needed
+            inputs, auto_insert_warnings = _rewrite_inputs_with_junctions(
+                session, inputs or [], target_model
+            )
+
+            # Recompute effective model after junction insertion
+            effective_model, zone_warnings = compute_effective_model_at_unit(
+                session, inputs, model_type
+            )
+
+        # Pre-compilation input validation (Phase 8A)
+        # Validate that all input references exist (streams or upstream units)
+        input_warnings = []
+        for inp in inputs:
+            # Handle tuple notation for fan-in
+            if is_tuple_notation(inp):
+                port_strs = parse_tuple_notation(inp)
+            else:
+                port_strs = [inp]
+
+            for port_str in port_strs:
+                try:
+                    ref = parse_port_notation(port_str)
+                    if ref.port_type == "stream":
+                        # Direct stream reference or unit ID
+                        if ref.unit_id not in session.streams and ref.unit_id not in session.units:
+                            # Could be a deferred recycle - add as warning, not error
+                            input_warnings.append(
+                                f"Input '{port_str}' not found in session. "
+                                f"Will be treated as deferred connection (recycle)."
+                            )
+                    elif ref.port_type == "output":
+                        # Output port reference (e.g., "A1-0")
+                        if ref.unit_id not in session.units:
+                            input_warnings.append(
+                                f"Input '{port_str}' references unit '{ref.unit_id}' which doesn't exist yet. "
+                                f"Will be treated as deferred connection."
+                            )
+                    elif ref.port_type == "input":
+                        # Input port notation can't be used as input source
+                        return {
+                            "error": f"Invalid input '{port_str}': input port notation "
+                            f"(e.g., '1-M1') cannot be used as an input source. "
+                            f"Use output notation (e.g., 'M1-0') or stream ID instead."
+                        }
+                except ValueError as parse_error:
+                    return {"error": f"Invalid input notation '{port_str}': {parse_error}"}
 
         # Junction units now supported via core/junction_units.py custom classes
         # which work with our 63-component ModifiedADM1 model
@@ -754,13 +1064,15 @@ async def create_unit(
 
         result = session_manager.add_unit(session_id, config)
 
-        # Add warnings to result
-        if param_warnings:
-            result["warnings"] = param_warnings
+        # Add warnings to result (combine param, input, zone, and auto-insert warnings)
+        all_warnings = param_warnings + input_warnings + zone_warnings + auto_insert_warnings
+        if all_warnings:
+            result["warnings"] = all_warnings
 
-        # Add port info
+        # Add port info and effective model (Phase 9)
         result["n_ins"] = spec.n_ins
         result["n_outs"] = spec.n_outs
+        result["effective_model"] = effective_model
 
         return result
 
@@ -1025,7 +1337,6 @@ async def simulate_built_system(
     diagram: bool = True,
     include_components: bool = False,
     export_state_to: Optional[str] = None,
-    timeout_seconds: float = 300.0,
 ) -> Dict[str, Any]:
     """
     Simulate a compiled flowsheet with comprehensive reporting.
@@ -1048,9 +1359,6 @@ async def simulate_built_system(
         diagram: Generate flowsheet diagram
         include_components: Include full component breakdown in results
         export_state_to: Path to export final effluent state as PlantState JSON
-        timeout_seconds: Maximum simulation runtime in seconds (default 300 = 5 minutes).
-                        If exceeded, the job is terminated with status="timeout".
-                        Set to 0 for no timeout (not recommended for production).
 
     Returns:
         Dict with job_id for tracking via get_job_status/get_job_results
@@ -1068,7 +1376,6 @@ async def simulate_built_system(
         ...     session_id="abc123",
         ...     duration_days=15,
         ...     report=True,
-        ...     timeout_seconds=600,  # 10 minutes
         ... )
         >>> # Or using system_id from build_system output
         >>> result = await simulate_built_system(
@@ -1096,7 +1403,7 @@ async def simulate_built_system(
         if system_id:
             # Search for session with matching system_id in build_config
             found_session_id = None
-            sessions_dir = _JOBS_DIR / "flowsheets"
+            sessions_dir = Path("jobs") / "flowsheets"
             if sessions_dir.exists():
                 for session_dir in sessions_dir.iterdir():
                     if session_dir.is_dir():
@@ -1126,10 +1433,9 @@ async def simulate_built_system(
                 f"Run build_system(session_id='{session_id}', ...) first."
             }
 
-        # Create job directory (use absolute path relative to this file to avoid CWD issues)
+        # Create job directory
         job_id = str(uuid.uuid4())[:8]
-        base_dir = Path(__file__).parent.absolute()
-        job_dir = base_dir / "jobs" / job_id
+        job_dir = Path("jobs") / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
 
         # Copy session info to job dir
@@ -1153,7 +1459,6 @@ async def simulate_built_system(
             "diagram": diagram,
             "include_components": include_components,
             "export_state_to": export_state_to,
-            "timeout_seconds": timeout_seconds,
         }
         with open(job_dir / "sim_config.json", "w") as f:
             json.dump(sim_config, f, indent=2)
@@ -1188,22 +1493,15 @@ async def simulate_built_system(
         if export_state_to:
             cmd.extend(["--export-state-to", export_state_to])
 
-        # Execute as background job with timeout
+        # Execute as background job
         cwd = str(Path(__file__).parent.absolute())
-        effective_timeout = timeout_seconds if timeout_seconds > 0 else None
-        job = await job_manager.execute(
-            cmd=cmd,
-            cwd=cwd,
-            job_id=job_id,
-            timeout_seconds=effective_timeout,
-        )
+        job = await job_manager.execute(cmd=cmd, cwd=cwd, job_id=job_id)
 
         return {
             "job_id": job["id"],
             "status": job["status"],
             "session_id": session_id,
             "duration_days": duration_days,
-            "timeout_seconds": timeout_seconds,
             "message": f"Simulation started. Use get_job_status('{job['id']}') to monitor progress.",
         }
 
@@ -1501,7 +1799,7 @@ async def get_flowsheet_timeseries(
     try:
         # Validate job_id format and prevent path traversal
         validate_id(job_id, "job_id")
-        job_dir = validate_safe_path(_JOBS_DIR, job_id, "job_id")
+        job_dir = validate_safe_path(Path("jobs"), job_id, "job_id")
         ts_path = job_dir / "timeseries.json"
 
         if not ts_path.exists():
@@ -1984,7 +2282,7 @@ async def get_artifact(
     try:
         # Validate job_id format and prevent path traversal
         validate_id(job_id, "job_id")
-        job_dir = validate_safe_path(_JOBS_DIR, job_id, "job_id")
+        job_dir = validate_safe_path(Path("jobs"), job_id, "job_id")
 
         if not job_dir.exists():
             return {"error": f"Job {job_id} not found"}
@@ -2073,6 +2371,293 @@ async def get_artifact(
     except Exception as e:
         logger.error(f"get_artifact failed: {e}", exc_info=True)
         return {"error": str(e)}
+
+
+# =============================================================================
+# Phase 8C: TEA (Techno-Economic Analysis) Tools
+# =============================================================================
+
+@mcp.tool()
+async def create_tea(
+    job_id: str,
+    discount_rate: float = 0.05,
+    lifetime_years: int = 20,
+    uptime_ratio: float = 0.95,
+    annual_labor: float = 0.0,
+    annual_maintenance_factor: float = 0.03,
+    electricity_price: float = 0.07,
+) -> Dict[str, Any]:
+    """
+    Create TEA (Techno-Economic Analysis) for a completed simulation.
+
+    This tool creates a SimpleTEA object for economic analysis of the
+    simulated wastewater treatment system.
+
+    IMPORTANT: Many QSDsan units (CSTR, Splitter, Mixer) lack _cost() methods.
+    CAPEX values may be underestimated. Use heuristic sizing for detailed costing.
+
+    Args:
+        job_id: Job identifier from completed simulation
+        discount_rate: Annual discount rate (default 0.05 = 5%)
+        lifetime_years: Project lifetime in years (default 20)
+        uptime_ratio: Operating time fraction (default 0.95 = 95%)
+        annual_labor: Annual labor cost in USD (default 0)
+        annual_maintenance_factor: Maintenance as fraction of TCI (default 0.03 = 3%)
+        electricity_price: Electricity price in USD/kWh (default 0.07)
+
+    Returns:
+        Dict with TEA summary including CAPEX, OPEX, and annualized costs
+
+    Example:
+        >>> result = await create_tea(job_id="abc123", discount_rate=0.05)
+        >>> print(f"TCI: ${result['capex']['TCI']:,.0f}")
+    """
+    from utils.path_utils import validate_safe_path, validate_id
+    from utils.tea_wrapper import create_tea as _create_tea, get_tea_summary
+
+    try:
+        # Validate job_id
+        validate_id(job_id, "job_id")
+        job_dir = validate_safe_path(Path("jobs"), job_id, "job_id")
+
+        if not job_dir.exists():
+            return {"error": f"Job {job_id} not found"}
+
+        # Check if simulation completed
+        results_file = job_dir / "results.json"
+        if not results_file.exists():
+            results_file = job_dir / "simulation_results.json"
+
+        if not results_file.exists():
+            return {"error": f"No results found for job {job_id}. Ensure simulation completed."}
+
+        # Load results to get flow rate
+        with open(results_file, "r") as f:
+            results = json.load(f)
+
+        flow_m3_d = results.get("influent", {}).get("flow_m3_d", 0)
+
+        # Try to reconstruct the system for TEA
+        # This is complex because QSDsan systems don't persist well
+        # For now, return a simplified TEA estimate based on results
+
+        # Estimate CAPEX using typical cost curves (simplified)
+        # Reference: Metcalf & Eddy (2014), EPA cost estimation guidelines
+        total_v = results.get("reactor", {}).get("V_total_m3", 0)
+
+        # Simplified CAPEX estimation ($/m³ reactor volume)
+        # Typical range: $500-2000/m³ for activated sludge
+        capex_per_m3 = 1000  # USD/m³ (mid-range estimate)
+        estimated_equipment_cost = total_v * capex_per_m3
+
+        # Apply cost hierarchy factors (typical)
+        # Reference: QSDsan/BioSTEAM TEA hierarchy
+        installation_factor = 1.5
+        site_factor = 0.15  # Site development as fraction of installed cost
+        warehouse_factor = 0.04  # Warehouse/storage
+        contingency_factor = 0.10  # Contingency
+        working_capital_factor = 0.05  # Working capital as fraction of FCI
+
+        installed_cost = estimated_equipment_cost * installation_factor
+        dpi = installed_cost * (1 + site_factor)  # Direct Permanent Investment
+        tdc = dpi * (1 + warehouse_factor)  # Total Depreciable Capital
+        fci = tdc * (1 + contingency_factor)  # Fixed Capital Investment
+        tci = fci * (1 + working_capital_factor)  # Total Capital Investment
+
+        # Estimate OPEX
+        # Power: Use aeration estimate if available
+        aeration_power_kW = 0
+        if results.get("reactor", {}).get("type") in ("MLE-MBR", "A2O-MBR", "AO-MBR"):
+            # Estimate aeration power: ~0.02-0.05 kW/m³
+            aeration_power_kW = total_v * 0.03
+
+        hours_per_year = 8760 * uptime_ratio
+        electricity_kWh_year = aeration_power_kW * hours_per_year
+        electricity_cost_year = electricity_kWh_year * electricity_price
+
+        # Maintenance: configurable fraction of TCI
+        maintenance_cost = tci * annual_maintenance_factor
+
+        # Heating/cooling estimation (minimal for aerobic systems)
+        # Most aerobic systems don't require significant heating
+        heating_GJ_year = 0.0
+        cooling_GJ_year = 0.0
+        # MBR systems may have some cooling needs from membrane fouling control
+        if results.get("reactor", {}).get("type") in ("MLE-MBR", "A2O-MBR", "AO-MBR"):
+            # Estimate ~1% of aeration power equivalent for cooling
+            cooling_GJ_year = aeration_power_kW * 0.01 * hours_per_year * 3.6 / 1000  # kWh to GJ
+
+        # Total OPEX
+        aoc = annual_labor + maintenance_cost + electricity_cost_year
+
+        # Annualized CAPEX (using capital recovery factor)
+        crf = discount_rate * (1 + discount_rate) ** lifetime_years / \
+              ((1 + discount_rate) ** lifetime_years - 1)
+        annualized_capex = tci * crf
+
+        # Per-m³ costs
+        m3_per_year = flow_m3_d * 365 * uptime_ratio if flow_m3_d > 0 else 1
+
+        return {
+            "job_id": job_id,
+            "tea_params": {
+                "discount_rate": discount_rate,
+                "lifetime_years": lifetime_years,
+                "uptime_ratio": uptime_ratio,
+                "annual_maintenance_factor": annual_maintenance_factor,
+                "electricity_price": electricity_price,
+            },
+            "capex": {
+                "estimated_equipment_cost": estimated_equipment_cost,
+                "installed_equipment_cost": installed_cost,
+                "DPI": dpi,
+                "TDC": tdc,
+                "FCI": fci,
+                "TCI": tci,
+                "note": "Estimated using typical cost curves. Many QSDsan units lack _cost() methods.",
+            },
+            "opex": {
+                "annual_labor": annual_labor,
+                "annual_maintenance": maintenance_cost,
+                "annual_electricity": electricity_cost_year,
+                "AOC": aoc,
+            },
+            "annualized": {
+                "CAPEX": annualized_capex,
+                "OPEX": aoc,
+                "total": annualized_capex + aoc,
+            },
+            "per_m3": {
+                "TCI_per_m3_capacity": tci / (flow_m3_d * 365) if flow_m3_d > 0 else 0,
+                "total_annualized_per_m3": (annualized_capex + aoc) / m3_per_year,
+            },
+            "utilities": {
+                "aeration_power_kW": aeration_power_kW,
+                "electricity_kWh_year": electricity_kWh_year,
+                "heating_GJ_year": heating_GJ_year,
+                "cooling_GJ_year": cooling_GJ_year,
+            },
+            "currency": "USD",
+            "warning": (
+                "TEA values are estimates. QSDsan units (CSTR, Splitter, Mixer) "
+                "lack detailed _cost() methods. Use equipment-specific costing "
+                "for detailed analysis."
+            ),
+        }
+
+    except Exception as e:
+        logger.error(f"create_tea failed: {e}", exc_info=True)
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def get_capex_breakdown(
+    job_id: str,
+) -> Dict[str, Any]:
+    """
+    Get CAPEX (Capital Expenditure) breakdown for a simulation.
+
+    Returns the capital cost hierarchy:
+    - Installed equipment cost
+    - DPI (Direct Permanent Investment)
+    - TDC (Total Depreciable Capital)
+    - FCI (Fixed Capital Investment)
+    - TCI (Total Capital Investment)
+
+    Args:
+        job_id: Job identifier from completed simulation
+
+    Returns:
+        Dict with CAPEX breakdown
+
+    Note:
+        Many QSDsan units lack _cost() methods. This returns estimates.
+    """
+    # Call create_tea and extract CAPEX portion
+    tea_result = await create_tea(job_id)
+
+    if "error" in tea_result:
+        return tea_result
+
+    return {
+        "job_id": job_id,
+        "capex": tea_result.get("capex", {}),
+        "currency": "USD",
+    }
+
+
+@mcp.tool()
+async def get_opex_summary(
+    job_id: str,
+) -> Dict[str, Any]:
+    """
+    Get OPEX (Operating Expenditure) summary for a simulation.
+
+    Returns operating cost components:
+    - FOC (Fixed Operating Cost): Labor, maintenance
+    - VOC (Variable Operating Cost): Utilities
+    - AOC (Annual Operating Cost): Total
+
+    Args:
+        job_id: Job identifier from completed simulation
+
+    Returns:
+        Dict with OPEX breakdown
+    """
+    # Call create_tea and extract OPEX portion
+    tea_result = await create_tea(job_id)
+
+    if "error" in tea_result:
+        return tea_result
+
+    return {
+        "job_id": job_id,
+        "opex": tea_result.get("opex", {}),
+        "annualized": tea_result.get("annualized", {}),
+        "per_m3": tea_result.get("per_m3", {}),
+        "currency": "USD",
+        "period": "per_year",
+    }
+
+
+@mcp.tool()
+async def get_utility_costs(
+    job_id: str,
+) -> Dict[str, Any]:
+    """
+    Get utility consumption and costs for a simulation.
+
+    Returns:
+    - Electricity consumption (kWh/year)
+    - Estimated aeration power (kW)
+    - Heating/cooling if applicable
+
+    Args:
+        job_id: Job identifier from completed simulation
+
+    Returns:
+        Dict with utility breakdown
+    """
+    # Call create_tea and extract utilities portion
+    tea_result = await create_tea(job_id)
+
+    if "error" in tea_result:
+        return tea_result
+
+    utilities = tea_result.get("utilities", {})
+    return {
+        "job_id": job_id,
+        "utilities": utilities,
+        "electricity": {
+            "power_kW": utilities.get("aeration_power_kW", 0),
+            "consumption_kWh_year": utilities.get("electricity_kWh_year", 0),
+            "price_per_kWh": tea_result.get("tea_params", {}).get("electricity_price", 0.07),
+            "cost_per_year": tea_result.get("opex", {}).get("annual_electricity", 0),
+        },
+        "heating_GJ_year": utilities.get("heating_GJ_year", 0),
+        "cooling_GJ_year": utilities.get("cooling_GJ_year", 0),
+        "currency": "USD",
+    }
 
 
 # =============================================================================

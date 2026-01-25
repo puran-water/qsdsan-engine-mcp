@@ -76,7 +76,9 @@ UNIT_REGISTRY: Dict[str, UnitSpec] = {
     "CSTR": UnitSpec(
         unit_type="CSTR",
         category=UnitCategory.REACTOR,
-        description="Continuous stirred-tank reactor with optional aeration",
+        # Note: CSTR has _cost() method but it's empty/pass (no equipment costing).
+        # TEA tools use heuristic estimation for CSTR units.
+        description="Continuous stirred-tank reactor with optional aeration. Note: lacks equipment costing.",
         compatible_models=["ASM2d", "mASM2d", "ASM1"],  # Primary: ASM2d
         required_params={},  # V_max is optional with default 1000
         optional_params={
@@ -552,13 +554,16 @@ UNIT_REGISTRY: Dict[str, UnitSpec] = {
     "Mixer": UnitSpec(
         unit_type="Mixer",
         category=UnitCategory.UTILITY,
-        description="Stream mixer combining multiple inputs",
+        # Note: Mixer uses BioSTEAM's variable fan-in pattern via ins=(s1, s2, ...) tuple.
+        # The flowsheet builder creates Mixer with ins=(tuple_of_streams) not n_ins=-1.
+        # Additional inputs (e.g., recycles) are wired to empty input slots dynamically.
+        description="Stream mixer combining multiple inputs. Uses ins=(...) tuple pattern for variable fan-in.",
         compatible_models=[],
         required_params={},
         optional_params={},
         qsdsan_class="qsdsan.sanunits.Mixer",
         is_dynamic=True,
-        n_ins=-1,  # Variable inputs
+        n_ins=-1,  # Variable inputs (implementation uses ins=(tuple) pattern)
         n_outs=1,
     ),
     "ComponentSplitter": UnitSpec(
@@ -906,13 +911,144 @@ def validate_model_compatibility(
     if not spec.compatible_models:
         return True, None
 
-    if model_type in spec.compatible_models:
-        return True, None
+    # Normalize model name for comparison
+    normalized_model = normalize_model_name(model_type)
+
+    # Check compatibility with normalized names
+    for compat_model in spec.compatible_models:
+        if normalize_model_name(compat_model) == normalized_model:
+            return True, None
 
     return False, (
         f"Unit '{unit_type}' is not compatible with model '{model_type}'. "
         f"Compatible models: {spec.compatible_models}"
     )
+
+
+# =============================================================================
+# Junction Model Transform Registry (Phase 9)
+# =============================================================================
+
+# Model name aliases (QSDsan uses ADM1_p_extension/ADM1p, we use mADM1 internally)
+MODEL_ALIASES: Dict[str, set] = {
+    "mADM1": {"mADM1", "ADM1p", "ADM1_p_extension"},
+    "ADM1p": {"mADM1", "ADM1p", "ADM1_p_extension"},
+    "ADM1_p_extension": {"mADM1", "ADM1p", "ADM1_p_extension"},
+    "mASM2d": {"mASM2d"},
+    "ASM2d": {"ASM2d"},
+    "ASM1": {"ASM1"},
+    "ADM1": {"ADM1"},
+}
+
+
+def normalize_model_name(model: str) -> str:
+    """
+    Normalize model name to internal convention.
+
+    Args:
+        model: Model name (e.g., "ADM1p", "ADM1_p_extension", "mADM1")
+
+    Returns:
+        Normalized model name (e.g., "mADM1" for all ADM1 with P/S/Fe extensions)
+    """
+    if model in ("ADM1p", "ADM1_p_extension"):
+        return "mADM1"  # Our internal name for ADM1 with P/S/Fe extensions
+    return model
+
+
+# Junction transforms: (input_model, output_model)
+# Note: "mADM1" = "ADM1p/ADM1_p_extension" in upstream QSDsan
+JUNCTION_MODEL_TRANSFORMS: Dict[str, Tuple[str, str]] = {
+    "ASM2dtomADM1": ("ASM2d", "mADM1"),      # ASM2d -> mADM1 (63 components)
+    "mADM1toASM2d": ("mADM1", "ASM2d"),      # mADM1 -> ASM2d
+    "ASM2dtoADM1": ("ASM2d", "ADM1"),        # ASM2d -> ADM1 (35 components)
+    "ADM1toASM2d": ("ADM1", "ASM2d"),        # ADM1 -> ASM2d
+    "ADM1ptomASM2d": ("mADM1", "mASM2d"),    # mADM1/ADM1p -> mASM2d
+    "mASM2dtoADM1p": ("mASM2d", "mADM1"),    # mASM2d -> mADM1/ADM1p
+    "ASMtoADM": ("ASM1", "ADM1"),            # Generic ASM1 -> ADM1
+    "ADMtoASM": ("ADM1", "ASM1"),            # Generic ADM1 -> ASM1
+}
+
+
+def get_junction_output_model(unit_type: str) -> Optional[Tuple[str, str]]:
+    """
+    Return (input_model, output_model) for junction unit types.
+
+    Args:
+        unit_type: Unit type identifier (e.g., "ASM2dtomADM1")
+
+    Returns:
+        Tuple of (input_model, output_model) if unit is a junction, None otherwise
+    """
+    return JUNCTION_MODEL_TRANSFORMS.get(unit_type)
+
+
+def models_compatible(model_a: str, model_b: str) -> bool:
+    """
+    Check if two model names refer to the same model (accounting for aliases).
+
+    Args:
+        model_a: First model name
+        model_b: Second model name
+
+    Returns:
+        True if models are equivalent (considering aliases)
+    """
+    norm_a = normalize_model_name(model_a)
+    norm_b = normalize_model_name(model_b)
+    return norm_a == norm_b
+
+
+def suggest_junction_for_conversion(from_model: str, to_models: List[str]) -> Optional[str]:
+    """
+    Suggest junction unit type to convert from one model to another.
+
+    Args:
+        from_model: Current model type (e.g., "ASM2d")
+        to_models: List of target model types the unit supports
+
+    Returns:
+        Suggestion string with junction name, or None if no conversion available
+    """
+    from_norm = normalize_model_name(from_model)
+    for to_model in to_models:
+        to_norm = normalize_model_name(to_model)
+        for junction, (inp, out) in JUNCTION_MODEL_TRANSFORMS.items():
+            if normalize_model_name(inp) == from_norm and normalize_model_name(out) == to_norm:
+                return f"Add '{junction}' before this unit to convert from {from_model} to {to_model}"
+    return None
+
+
+def find_junction_for_conversion(from_model: str, to_model: str) -> Optional[str]:
+    """
+    Find junction unit type that converts from_model to to_model.
+
+    Phase 10: Used by server.py for auto-inserting junctions on fan-in mismatch.
+
+    NOTE: For our custom mADM1 (63 components), we use our custom junction
+    implementations in core/junction_units.py, NOT upstream QSDsan junctions.
+    JUNCTION_MODEL_TRANSFORMS maps to our custom implementations.
+
+    Args:
+        from_model: Source model type (e.g., "mADM1", "ASM2d")
+        to_model: Target model type (e.g., "ASM2d", "mADM1")
+
+    Returns:
+        Junction unit type name if available, None otherwise.
+
+    Example:
+        >>> find_junction_for_conversion("mADM1", "ASM2d")
+        "mADM1toASM2d"
+        >>> find_junction_for_conversion("ASM2d", "mADM1")
+        "ASM2dtomADM1"
+    """
+    from_norm = normalize_model_name(from_model)
+    to_norm = normalize_model_name(to_model)
+
+    for junction, (inp, out) in JUNCTION_MODEL_TRANSFORMS.items():
+        if normalize_model_name(inp) == from_norm and normalize_model_name(out) == to_norm:
+            return junction
+    return None
 
 
 def list_available_units(
@@ -997,4 +1133,13 @@ __all__ = [
     'validate_model_compatibility',
     'list_available_units',
     'get_units_by_category',
+    # Phase 9: Junction model transforms
+    'MODEL_ALIASES',
+    'JUNCTION_MODEL_TRANSFORMS',
+    'normalize_model_name',
+    'get_junction_output_model',
+    'models_compatible',
+    'suggest_junction_for_conversion',
+    # Phase 10: Auto-insert junctions
+    'find_junction_for_conversion',
 ]

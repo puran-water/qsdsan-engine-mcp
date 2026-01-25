@@ -74,6 +74,7 @@ class UnitConfig:
         inputs: List of input sources (stream IDs or pipe notation)
         outputs: Optional list of output stream names
         model_type: Process model for this unit (e.g., "ASM2d", "mADM1")
+        auto_inserted: Phase 10: True if unit was auto-inserted by engine (e.g., junction for model mismatch)
     """
     unit_id: str
     unit_type: str
@@ -81,6 +82,7 @@ class UnitConfig:
     inputs: List[str]  # Port notations or stream IDs
     outputs: Optional[List[str]] = None
     model_type: Optional[str] = None  # None = inherit from session
+    auto_inserted: bool = False  # Phase 10: Track auto-inserted junctions
 
 
 @dataclass
@@ -899,6 +901,7 @@ class FlowsheetSessionManager:
                     "inputs": uconfig.inputs,
                     "outputs": uconfig.outputs,
                     "model_type": uconfig.model_type,
+                    "auto_inserted": getattr(uconfig, 'auto_inserted', False),  # Phase 10
                 }
                 for uid, uconfig in session.units.items()
             },

@@ -9,6 +9,28 @@ Our mADM1 components have chemical formulas that make these properties read-only
 so we create formula-free copies specifically for junction operations.
 
 Reference: QSDsan sanunits/_junction.py check_component_properties()
+
+IMPORTANT: Custom mADM1 vs Upstream Junction Behavior (Phase 10 Note)
+======================================================================
+Our `ModifiedADM1` is a CUSTOM 63-component model defined in `models/madm1.py`,
+NOT the upstream `ADM1_p_extension` (which is commented out in QSDsan).
+
+**Upstream QSDsan junction limitations:**
+- `ASM2dtomADM1` and `mADM1toASM2d` target upstream's planned `ADM1_p_extension`
+- Upstream balancing via `balance_cod_tkn_tp()` only preserves COD/TKN/TP
+- Our custom extensions (SRB, Fe/Al, minerals) are NOT balanced by upstream junctions
+
+**Our custom 63-component mADM1 includes:**
+- SRB processes (X_hSRB, X_aSRB, X_pSRB, X_c4SRB)
+- H2S speciation (S_IS, S_SO4)
+- Fe chemistry (S_Fe2, S_Fe3, X_FeS, X_Fe3PO42)
+- Al chemistry (S_Al, X_AlPO4)
+- Mineral precipitation (10+ precipitates)
+
+**COMPONENT_ALIGNMENT below is for PROPERTY MATCHING ONLY:**
+- Ensures compatible i_COD, i_C, i_N, i_P, measured_as for stoichiometry
+- Actual mass conversion uses QSDsan's `_compile_reactions()`
+- For our mADM1, S/Fe/Al species require custom handling in core/junction_units.py
 """
 
 import logging
