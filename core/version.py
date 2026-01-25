@@ -4,7 +4,7 @@ Version information for QSDsan Engine MCP.
 Single source of truth for version number, importable by all modules.
 """
 
-__version__ = "3.0.6"
+__version__ = "3.0.7"
 
 
 def get_version_info() -> dict:
