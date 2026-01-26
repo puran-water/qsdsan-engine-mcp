@@ -1,6 +1,6 @@
 [project]
 name = "qsdsan-engine-mcp"
-version = "3.0.7"
+version = "3.0.8"
 description = "Universal QSDsan simulation engine with MCP and CLI adapters"
 readme = "README.md"
 requires-python = ">=3.10"
