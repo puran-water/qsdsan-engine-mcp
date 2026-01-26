@@ -154,6 +154,31 @@ class TestBiomassIDs:
         assert 'X_ac' in BIOMASS_IDS['mADM1']
         assert 'X_h2' in BIOMASS_IDS['mADM1']
 
+    def test_madm1_includes_pao(self):
+        """Test mADM1 includes X_PAO from ADM1p extension (Phase 12B)."""
+        from utils.srt_control import BIOMASS_IDS
+
+        assert 'X_PAO' in BIOMASS_IDS['mADM1'], "mADM1 should include X_PAO from ADM1p"
+
+    def test_madm1_includes_srb_biomass(self):
+        """Test mADM1 includes SRB biomass components (Phase 12B)."""
+        from utils.srt_control import BIOMASS_IDS
+
+        srb_components = ['X_hSRB', 'X_aSRB', 'X_pSRB', 'X_c4SRB']
+        for comp in srb_components:
+            assert comp in BIOMASS_IDS['mADM1'], f"mADM1 should include {comp}"
+
+    def test_madm1_complete_biomass_count(self):
+        """Test mADM1 has complete set of biomass IDs (12 total)."""
+        from utils.srt_control import BIOMASS_IDS
+
+        # Standard ADM1: 7, ADM1p: 1 (X_PAO), SRB: 4
+        expected_count = 12
+        assert len(BIOMASS_IDS['mADM1']) == expected_count, (
+            f"mADM1 should have {expected_count} biomass IDs, "
+            f"got {len(BIOMASS_IDS['mADM1'])}"
+        )
+
 
 class TestSRTCalculation:
     """Test SRT calculation - covered by template integration tests above."""
@@ -168,10 +193,16 @@ class TestSRTCalculation:
 
 
 class TestHasSRTDecoupling:
-    """Test SRT decoupling detection."""
+    """Test SRT decoupling detection.
+
+    Phase 12B: Detection is limited to units with known SRT control actuators.
+    Only CompletelyMixedMBR (pumped_flow) and FlatBottomCircularClarifier (wastage)
+    are supported. Other units like AnMBR, IdealClarifier, Sedimentation are NOT
+    supported because they lack controllable Q_was actuators.
+    """
 
     def test_detects_mbr(self):
-        """Test detection of MBR for SRT decoupling."""
+        """Test detection of CompletelyMixedMBR for SRT decoupling."""
         from utils.srt_control import has_srt_decoupling
 
         system = MagicMock()
@@ -185,7 +216,7 @@ class TestHasSRTDecoupling:
         assert has_srt_decoupling(system) is True
 
     def test_detects_clarifier(self):
-        """Test detection of clarifier for SRT decoupling."""
+        """Test detection of FlatBottomCircularClarifier for SRT decoupling."""
         from utils.srt_control import has_srt_decoupling
 
         system = MagicMock()
@@ -209,6 +240,78 @@ class TestHasSRTDecoupling:
         system.units = [cstr]
 
         assert has_srt_decoupling(system) is False
+
+    def test_no_decoupling_for_anmbr(self):
+        """Test AnMBR NOT detected (yield-based, no Q_was actuator) (Phase 12B)."""
+        from utils.srt_control import has_srt_decoupling
+
+        system = MagicMock()
+
+        anmbr = MagicMock()
+        anmbr.__class__.__name__ = 'AnMBR'
+
+        system.units = [anmbr]
+
+        assert has_srt_decoupling(system) is False, (
+            "AnMBR should NOT be detected - no Q_was actuator"
+        )
+
+    def test_no_decoupling_for_ideal_clarifier(self):
+        """Test IdealClarifier NOT detected (no wastage actuator) (Phase 12B)."""
+        from utils.srt_control import has_srt_decoupling
+
+        system = MagicMock()
+
+        clarifier = MagicMock()
+        clarifier.__class__.__name__ = 'IdealClarifier'
+
+        system.units = [clarifier]
+
+        assert has_srt_decoupling(system) is False, (
+            "IdealClarifier should NOT be detected - uses sludge_flow_rate, not wastage"
+        )
+
+    def test_no_decoupling_for_primary_clarifier(self):
+        """Test PrimaryClarifier NOT detected (no wastage actuator) (Phase 12B)."""
+        from utils.srt_control import has_srt_decoupling
+
+        system = MagicMock()
+
+        clarifier = MagicMock()
+        clarifier.__class__.__name__ = 'PrimaryClarifier'
+
+        system.units = [clarifier]
+
+        assert has_srt_decoupling(system) is False, (
+            "PrimaryClarifier should NOT be detected - uses sludge_flow_rate"
+        )
+
+    def test_no_decoupling_for_sedimentation(self):
+        """Test Sedimentation NOT detected (no Q_was actuator) (Phase 12B)."""
+        from utils.srt_control import has_srt_decoupling
+
+        system = MagicMock()
+
+        sed = MagicMock()
+        sed.__class__.__name__ = 'Sedimentation'
+
+        system.units = [sed]
+
+        assert has_srt_decoupling(system) is False, (
+            "Sedimentation should NOT be detected - no Q_was actuator"
+        )
+
+    def test_srt_actuator_units_constant_defined(self):
+        """Test SRT_ACTUATOR_UNITS constant is properly defined (Phase 12B)."""
+        from utils.srt_control import SRT_ACTUATOR_UNITS
+
+        assert 'CompletelyMixedMBR' in SRT_ACTUATOR_UNITS
+        assert 'FlatBottomCircularClarifier' in SRT_ACTUATOR_UNITS
+
+        # Verify unsupported units are NOT in the set
+        assert 'AnMBR' not in SRT_ACTUATOR_UNITS
+        assert 'IdealClarifier' not in SRT_ACTUATOR_UNITS
+        assert 'Sedimentation' not in SRT_ACTUATOR_UNITS
 
 
 class TestUpdateWastageActuator:

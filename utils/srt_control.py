@@ -25,8 +25,22 @@ BIOMASS_IDS = {
     'ASM2d': ['X_H', 'X_AUT', 'X_PAO', 'X_PHA', 'X_PP'],
     'ASM1': ['X_B_H', 'X_B_A'],
     'mASM2d': ['X_H', 'X_AUT', 'X_PAO', 'X_PHA', 'X_PP'],
-    'mADM1': ['X_su', 'X_aa', 'X_fa', 'X_c4', 'X_pro', 'X_ac', 'X_h2'],
+    'mADM1': [
+        # Standard ADM1 biomass
+        'X_su', 'X_aa', 'X_fa', 'X_c4', 'X_pro', 'X_ac', 'X_h2',
+        # ADM1p extension
+        'X_PAO',
+        # SRB biomass (this repo's extension)
+        'X_hSRB', 'X_aSRB', 'X_pSRB', 'X_c4SRB',
+    ],
     'ADM1': ['X_su', 'X_aa', 'X_fa', 'X_c4', 'X_pro', 'X_ac', 'X_h2'],
+}
+
+# Units with known SRT control actuators (Phase 12B)
+# Only these units have controllable Q_was actuators for SRT control
+SRT_ACTUATOR_UNITS = {
+    'CompletelyMixedMBR',           # pumped_flow actuator
+    'FlatBottomCircularClarifier',  # wastage actuator
 }
 
 # Design setpoint MLSS concentrations (mg/L) for Q_was estimation
@@ -639,7 +653,14 @@ def _update_downstream_splitter(mbr_unit: Any, q_ras: float, q_was: float) -> No
 
 def has_srt_decoupling(system: Any) -> bool:
     """
-    Check if system has HRT/SRT decoupling (MBR or clarifier).
+    Check if system has HRT/SRT decoupling with a controllable actuator.
+
+    Only returns True for units with known Q_was actuators:
+    - CompletelyMixedMBR: pumped_flow property
+    - FlatBottomCircularClarifier: wastage property
+
+    Other separation units (AnMBR, IdealClarifier, Sedimentation, etc.)
+    are excluded because they lack controllable waste flow actuators.
 
     Parameters
     ----------
@@ -649,11 +670,11 @@ def has_srt_decoupling(system: Any) -> bool:
     Returns
     -------
     bool
-        True if system has MBR or clarifier.
+        True if system has a unit with known SRT control actuator.
     """
     for unit in getattr(system, 'units', []):
         unit_type = type(unit).__name__
-        if 'MBR' in unit_type or 'Clarifier' in unit_type:
+        if unit_type in SRT_ACTUATOR_UNITS:
             return True
     return False
 

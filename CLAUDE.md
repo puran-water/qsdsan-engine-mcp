@@ -28,6 +28,7 @@ Universal wastewater simulation engine supporting anaerobic (mADM1, 63 component
 | Phase 10 Plan | `docs/completed-plans/phase10-known-limitations.md` | Complete |
 | Phase 11 Plan | `docs/completed-plans/phase11-convergence-simulation.md` | Complete |
 | Phase 12 Plan | `docs/completed-plans/phase12-srt-controlled-simulation.md` | Complete |
+| Phase 12B Plan | `docs/completed-plans/phase12b-srt-control-feature-parity.md` | Complete |
 
 ---
 
@@ -51,8 +52,9 @@ Universal wastewater simulation engine supporting anaerobic (mADM1, 63 component
 | 10 | Known Limitations (kinetic params, native pH, auto-insert junctions, traversal depth) | Complete |
 | 11 | Convergence-Based Simulation (run-to-steady-state, abs+rel tolerance, auto stream detection) | Complete |
 | 12 | SRT-Controlled Simulation (target SRT, Q_was optimization, brentq root-finding) | Complete |
+| 12B | SRT Control Feature Parity (ao_mbr/a2o_mbr inoculation, mADM1 biomass IDs, detection refinement) | Complete |
 
-**Test Count:** 425+ tests passing (Phase 12 validation: 2026-01-25)
+**Test Count:** 430+ tests passing (Phase 12B validation: 2026-01-25)
 
 ---
 
@@ -109,7 +111,7 @@ qsdsan-engine-mcp/
 │   ├── test_phase10.py       # Phase 10 known limitations tests (20 tests)
 │   ├── test_convergence.py   # Phase 11 convergence unit tests
 │   ├── test_convergence_integration.py # Phase 11 convergence slow tests
-│   ├── test_srt_control.py   # Phase 12 SRT control unit tests (22 tests)
+│   ├── test_srt_control.py   # Phase 12/12B SRT control unit tests (28 tests)
 │   ├── test_madm1_state.json  # Complete 62-component mADM1 state
 │   ├── test_asm2d_state.json  # Complete ASM2d state
 │   └── run_slow_tests.py  # Integration tests for all templates
@@ -242,11 +244,39 @@ await simulate_built_system(
 | A2O | + S_PO4 | + X_PP |
 | mADM1 | S_ac, S_IC, S_IN | X_ac, X_h2, X_hSRB |
 
-### SRT-Controlled Simulation (Phase 12)
+### SRT-Controlled Simulation (Phase 12 + 12B)
 
 For systems with MBR or clarifier that **decouple HRT and SRT**, the engine supports SRT-controlled simulation where Q_was is iteratively adjusted to achieve a target SRT at true steady state.
 
 **Problem Solved:** Without SRT control, inoculated systems can "converge" quickly (11 days) to a pre-seeded equilibrium with unrealistic achieved SRT (633 days). True steady state requires 2-3× SRT to reach equilibrium.
+
+**Supported Units (Phase 12B):**
+
+| Unit | Actuator | How Q_was is Controlled |
+|------|----------|------------------------|
+| `CompletelyMixedMBR` | `pumped_flow` | Retentate split via downstream Splitter |
+| `FlatBottomCircularClarifier` | `wastage` | Direct `wastage` property sets Q_was |
+
+**Unsupported Units (No Actuators):**
+
+| Unit | Issue | Status |
+|------|-------|--------|
+| `AnMBR` | Yield-based (not dynamic), uses `solids_conc`/`split`, no biomass inventory | Out of scope |
+| `IdealClarifier` | Uses `sludge_flow_rate`, 2 outlets | Out of scope |
+| `PrimaryClarifier` | Uses `sludge_flow_rate`, 2 outlets | Out of scope |
+| `Sedimentation` | No Q_was actuator | Out of scope |
+
+**mADM1 Biomass IDs (Phase 12B):**
+```python
+BIOMASS_IDS['mADM1'] = [
+    # Standard ADM1 biomass
+    'X_su', 'X_aa', 'X_fa', 'X_c4', 'X_pro', 'X_ac', 'X_h2',
+    # ADM1p extension
+    'X_PAO',
+    # SRB biomass (this repo's extension)
+    'X_hSRB', 'X_aSRB', 'X_pSRB', 'X_c4SRB',
+]
+```
 
 **Usage (Templates):**
 ```python
@@ -274,7 +304,7 @@ python cli.py simulate \
 **Key Features:**
 - **Bracketed Root-Finding:** Uses `scipy.brentq` with adaptive bracket expansion
 - **Flow-Scaled Bounds:** Auto-computes Q_was bounds from `get_influent_flow()` and reactor volumes
-- **Physical Feasibility:** Validates `Q_was >= 0` and `Q_ras + Q_was <= Q_in * 1.5`
+- **Physical Feasibility:** Validates `0 ≤ Q_was ≤ Q_in` and non-negative `Q_ras` (no upper limit; internal recycle)
 - **Minimum Simulation Time:** Enforces 2× target SRT for dynamics equilibration
 - **Unit-Specific Actuators:** MBR.pumped_flow, Clarifier.wastage, or Splitter.split
 

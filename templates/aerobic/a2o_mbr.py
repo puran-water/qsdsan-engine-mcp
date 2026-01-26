@@ -33,6 +33,10 @@ from utils.analysis.aerobic import (
     DEFAULT_ASM2D_KWARGS,
     DEFAULT_DOMESTIC_WW,
 )
+from utils.aerobic_inoculum_generator import (
+    generate_aerobic_inoculum,
+    estimate_equilibration_time,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -226,6 +230,42 @@ def build_and_run(
 
         SP = su.Splitter('SP', ins=MBR-1, outs=[RAS, WAS], split=split_ras)
 
+        # =====================================================================
+        # PHASE 12B: Initialize reactors with acclimated sludge inoculum
+        # =====================================================================
+        # This solves the nitrification failure problem where reactors
+        # initialized with influent composition (~5 mg/L X_AUT) fail to
+        # achieve >80% NH4 removal due to insufficient nitrifier biomass.
+        #
+        # CRITICAL: CSTR does NOT accept initial_state parameter.
+        # Must use set_init_conc(**kwargs) method after unit creation.
+        #
+        # A2O has EBPR: use higher PAO fraction for phosphorus removal.
+        # =====================================================================
+
+        # Generate inoculum with established nitrifier and PAO population
+        # Target: 3500 mg VSS/L MLSS, ~5% nitrifiers, ~10% PAOs for EBPR
+        reactor_inoculum = generate_aerobic_inoculum(
+            target_mlvss_mg_L=config.get('target_mlvss_mg_L', 3500),
+            x_aut_fraction=0.05,  # 5% nitrifiers (IWA typical for nitrifying AS)
+            x_pao_fraction=0.10,  # 10% PAOs (higher for EBPR systems)
+            x_h_fraction=0.77,    # 77% heterotrophs (balanced for EBPR)
+        )
+
+        # Apply inoculum to all reactors
+        all_reactors = [AN, A1, O1, O2, MBR]
+        for reactor in all_reactors:
+            try:
+                reactor.set_init_conc(**reactor_inoculum)
+                logger.debug(f"Initialized {reactor.ID} with inoculum")
+            except Exception as e:
+                logger.warning(f"Could not initialize {reactor.ID}: {e}")
+
+        logger.info(
+            f"Reactor inoculation complete: X_AUT={reactor_inoculum.get('X_AUT', 0):.0f} mg COD/L, "
+            f"X_PAO={reactor_inoculum.get('X_PAO', 0):.0f} mg COD/L"
+        )
+
         sys = qs.System(
             'A2O_MBR',
             path=(AN, A1, O1, O2, MBR, SP),
@@ -242,6 +282,18 @@ def build_and_run(
         converged_at = None
         conv_status = None
         conv_metrics = None
+
+        # =====================================================================
+        # PHASE 12B: Simulation duration warning / equilibration time
+        # =====================================================================
+        # Nitrifiers grow slowly (μ_AUT ~1.0 d⁻¹ at 20°C).
+        # A2O EBPR systems need longer equilibration for PAO dynamics.
+        # =====================================================================
+        equil_estimate = estimate_equilibration_time(
+            target_mlvss_mg_L=config.get('target_mlvss_mg_L', 3500),
+            x_aut_fraction=0.05,
+            srt_days=20.0,  # Typical A2O SRT (longer for EBPR)
+        )
 
         # Determine simulation mode
         # Phase 12: SRT control takes precedence if target_srt_days is set
@@ -297,9 +349,9 @@ def build_and_run(
         elif run_to_convergence:
             from utils.run_to_convergence import run_system_to_steady_state
 
-            # Set default max_duration (longer for A2O due to EBPR equilibration)
+            # Set default max_duration from equilibration estimate
             if max_duration_days is None:
-                max_duration_days = 100.0  # ~5x typical SRT for A2O with EBPR
+                max_duration_days = equil_estimate['recommended_days']
 
             # Include phosphorus components for EBPR convergence
             convergence_components = {
@@ -328,7 +380,16 @@ def build_and_run(
             simulation_method = 'BDF'
 
         else:
-            logger.info(f"Simulating for {duration_days} days...")
+            # Fixed-duration simulation (original behavior)
+            if duration_days < equil_estimate['minimum_days']:
+                logger.warning(
+                    f"Simulation duration {duration_days}d may be insufficient for nitrifier/PAO "
+                    f"equilibration. Minimum recommended: {equil_estimate['minimum_days']:.0f}d, "
+                    f"optimal: {equil_estimate['recommended_days']:.0f}d. "
+                    f"Consider longer simulation or use run_to_convergence=True."
+                )
+
+            logger.info(f"Simulating for {duration_days} days (fixed duration)...")
 
             # Build simulation kwargs
             sim_kwargs = {
@@ -365,6 +426,26 @@ def build_and_run(
         total_V = V_ana + V_an + n_ae * V_ae + V_mbr
         hrt_hours = total_V / Q * 24
 
+        # =====================================================================
+        # PHASE 12B: Calculate SRT using QSDsan utilities
+        # =====================================================================
+        # When SRT control was used, srt_days is already set from controller result
+        # Otherwise, calculate SRT post-hoc for reporting purposes
+        # =====================================================================
+        if target_srt_days is None:
+            try:
+                from utils.srt_control import calculate_srt, detect_wastage_streams
+                wastage_streams = detect_wastage_streams(sys)
+                srt_days = calculate_srt(
+                    system=sys,
+                    wastage_streams=wastage_streams,
+                    model_type='ASM2d',
+                )
+                logger.info(f"Calculated SRT: {srt_days:.1f} days")
+            except Exception as e:
+                logger.warning(f"Could not calculate SRT: {e}")
+                srt_days = None
+
         # Check EBPR activity
         pao_conc = eff_analysis.get('biomass', {}).get('X_PAO_mg_COD_L', 0)
         pp_conc = eff_analysis.get('phosphorus', {}).get('PP_mg_P_L', 0)
@@ -387,10 +468,13 @@ def build_and_run(
                 "V_mbr_m3": V_mbr,
                 "V_total_m3": total_V,
                 "HRT_hours": hrt_hours,
+                "SRT_days": srt_days,
                 "DO_aerobic_mg_L": DO_ae,
                 "DO_mbr_mg_L": DO_mbr,
                 "Q_ras_m3_d": Q_ras,
                 "Q_was_m3_d": Q_was,
+                "inoculum_X_AUT_mg_COD_L": reactor_inoculum.get('X_AUT', 0),
+                "inoculum_X_PAO_mg_COD_L": reactor_inoculum.get('X_PAO', 0),
             },
             "effluent": {
                 "COD_mg_L": eff_analysis.get('COD_mg_L', 0),
@@ -414,10 +498,21 @@ def build_and_run(
         }
 
         # Add convergence info if applicable
-        if run_to_convergence:
+        if run_to_convergence or target_srt_days is not None:
             result["simulation"]["converged_at_days"] = converged_at
             result["simulation"]["convergence_status"] = conv_status
             result["simulation"]["convergence_metrics"] = conv_metrics
+
+        # Add SRT control info if applicable (Phase 12B)
+        if target_srt_days is not None:
+            result["simulation"]["srt_control"] = {
+                "target_srt_days": target_srt_days,
+                "achieved_srt_days": srt_days,
+                "srt_tolerance": srt_tolerance,
+                "srt_status": conv_status,
+                "q_was_optimal": conv_metrics.get('q_was_optimal') if conv_metrics else None,
+                "srt_iterations": conv_metrics.get('srt_iterations') if conv_metrics else None,
+            }
 
         # Add deterministic metadata (Phase 3C)
         import datetime
@@ -451,17 +546,6 @@ def build_and_run(
             "model_type": "ASM2d",
             "applied_kinetic_params": applied_params if applied_params else None,
         }
-
-        # Add SRT control info if applicable (Phase 12)
-        if target_srt_days is not None:
-            result["srt_control"] = {
-                "target_srt_days": target_srt_days,
-                "achieved_srt_days": srt_days,
-                "srt_tolerance": srt_tolerance,
-                "status": conv_status,
-                "q_was_optimal": conv_metrics.get('q_was_optimal') if conv_metrics else None,
-                "srt_iterations": conv_metrics.get('srt_iterations') if conv_metrics else None,
-            }
 
         # Generate diagram and mass balance data
         try:
