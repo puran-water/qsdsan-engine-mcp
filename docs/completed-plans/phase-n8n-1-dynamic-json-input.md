@@ -1,38 +1,53 @@
-# Phase N8N-1: Dynamic JSON Input Structure for n8n Workflow
+# Phase N8N-1: Dynamic JSON Input & Study Management for n8n Workflow
 
-**Status:** Planning
+**Status:** Implemented
+
 **Created:** 2026-02-03
+
+**Updated:** 2026-02-04
+
 **Author:** Claude Code
+
+**Target Version:** v9.0 (builds on v8.0)
 
 ---
 
 ## Executive Summary
 
-This plan proposes adapting the n8n workflow (v8) to accept a dynamic JSON input structure for **simulation parameters only**, provided by an upstream process. The existing **Env Parameters node is retained** as a hardcoded configuration (server endpoints, credentials, AI settings), maintaining the clean separation of concerns from v7. Only the WW Parameters node is replaced with a flexible, schema-validated JSON input that matches the full capabilities of the QSDsan engine.
+This plan proposes adapting the n8n workflow (currently v8.0) to support **two input modes**:
+
+1. **Study Mode** - Pass a `study_id` to fetch a predefined configuration from Supabase
+2. **Direct Mode** - Pass a full simulation JSON configuration directly
+
+Both modes support optional **overrides** to customize specific parameters. The existing **Env Parameters node is retained** for infrastructure settings. This combines the original dynamic JSON input plan with the Study Configuration Management feature into a single workflow version.
 
 ---
 
 ## Current State Analysis
 
-### Current Workflow Structure (v7)
+### Current Workflow Structure (v8.0)
 
-The v7 workflow uses **two hardcoded parameter nodes**:
+The v8.0 workflow uses **two hardcoded parameter nodes** plus a **Generate Session ID** node:
 
-**1. Env Parameters Node** (Infrastructure)
+**1. Env Parameters Node** (Infrastructure + Session Management)
+
 ```json
 {
   "server_ip": "34.28.104.162",
   "server_port": "8080",
   "gotenberg_url": "http://34.28.104.162:3000",
   "supabase_url": "https://xxx.supabase.co",
-  "supabase_key": "eyJ...",
+  "supabase_key": "YOUR_SUPABASE_JWT_KEY_HERE",
   "supabase_bucket": "panicleDevelop_1",
   "ai_model": "gpt-4o",
-  "override_prompt": ""
+  "override_prompt": "",
+  "session_id": "",
+  "analysis_type": "WasteWater"
 }
 ```
 
-**2. WW Parameters Node** (Simulation)
+**2. WW Parameters Node** (Simulation - Hardcoded)
+
 ```json
 {
   "template": "mle_mbr_asm2d",
@@ -48,15 +63,29 @@ The v7 workflow uses **two hardcoded parameter nodes**:
 }
 ```
 
+**3. Generate Session ID Node** (v8.0 addition)
+
+Auto-generates session_id if not provided, sanitizes for path safety.
+
+### v8.0 Key Features (Already Implemented)
+
+- Hierarchical Supabase folder structure: `{session_id}/{analysis_type}/{filename}`
+- Server-side AI analysis via `/api/analyze_results` endpoint
+- Session ID auto-generation with timestamp formatting
+- Four parallel upload paths: PDF, CSV, JSON, AI Analysis markdown
+
+### Supabase Studies Table (Already Created)
+
+The `studies` table exists in Supabase with 9 default studies:
+- 2 templates (aerobic MBR, anaerobic CSTR)
+- 7 food & beverage industry studies (dairy, brewery, winery, soft drink, meat processing, fruit/vegetable, dairy anaerobic)
+
 ### Current Limitations
 
-1. **Hardcoded COD/TSS distribution** - Fixed percentages (50%/15%/35%) don't allow for different wastewater characteristics
-2. **Limited to ASM2d** - Model type is hardcoded; no mADM1 support
-3. **No kinetic parameter control** - Cannot tune biological kinetics
-4. **No reactor configuration** - Fixed reactor sizing
-5. **No convergence control** - Fixed duration, no steady-state detection
-6. **No SRT control** - Cannot target specific SRT values
-7. **Limited influent specification** - Only 6 aggregate parameters vs 19+ ASM2d or 63 mADM1 components
+1. **Hardcoded parameters** - Must edit workflow to change simulation settings
+2. **No study reuse** - Cannot run predefined configurations
+3. **No external triggering** - Cannot receive configuration from upstream systems
+4. **Limited model support** - ASM2d only; no mADM1 support in workflow
 
 ---
 
@@ -64,16 +93,86 @@ The v7 workflow uses **two hardcoded parameter nodes**:
 
 ### Design Principles
 
-1. **No extraneous parameters** - Every field must map to a QSDsan engine parameter
-2. **Separation of concerns** - Environment/infrastructure config remains hardcoded in workflow; only simulation parameters come from upstream
-3. **Backward compatible** - Support simplified inputs with sensible defaults
-4. **Schema-validated** - Clear structure with type enforcement
-5. **Model-aware** - Different schemas for ASM2d vs mADM1
-6. **Upstream-providable** - Single JSON object from prior workflow step
+1. **Dual input modes** - Study ID or direct JSON configuration
+2. **Override capability** - Customize any parameter in either mode
+3. **Separation of concerns** - Infrastructure stays in Env Parameters
+4. **Backward compatible** - Support v8-style inputs via legacy mode
+5. **External triggerable** - Webhook support for upstream systems
 
-### Environment Parameters (Retained from v7 - Hardcoded in Workflow)
+### Input Modes
 
-The following parameters remain as a hardcoded "Env Parameters" Set node in the workflow. These are infrastructure/deployment settings that don't change per simulation:
+#### Mode 1: Study Mode (Recommended for Predefined Scenarios)
+
+Pass a `study_id` to fetch configuration from Supabase:
+
+```json
+{
+  "study_id": "dairy_baseline"
+}
+```
+
+With optional overrides:
+
+```json
+{
+  "study_id": "dairy_baseline",
+  "overrides": {
+    "influent": {
+      "flow_m3_d": 1200,
+      "simplified": {
+        "COD_mg_L": 5500
+      }
+    }
+  }
+}
+```
+
+#### Mode 2: Direct Mode (Full Configuration)
+
+Pass complete simulation configuration directly:
+
+```json
+{
+  "simulation": {
+    "template": "mle_mbr_asm2d",
+    "model_type": "ASM2d",
+    "timeout_seconds": 600
+  },
+  "influent": {
+    "flow_m3_d": 4000,
+    "simplified": {
+      "COD_mg_L": 350,
+      "NH4_mg_L": 25,
+      "TP_mg_L": 8,
+      "TSS_mg_L": 220,
+      "temperature_C": 20
+    }
+  },
+  "convergence": {
+    "run_to_convergence": true,
+    "convergence_atol": 0.1
+  }
+}
+```
+
+#### Mode 3: Legacy Mode (v8 Compatibility)
+
+Support existing v8 parameter format:
+
+```json
+{
+  "legacy_mode": true,
+  "template": "mle_mbr_asm2d",
+  "flow_m3_d": 4000,
+  "COD_mg_L": 350,
+  "NH4_mg_L": 25,
+  "TP_mg_L": 8,
+  "TSS_mg_L": 220,
+  "temperature_C": 20
+}
+```
+
+### Environment Parameters (Retained - Hardcoded in Workflow)
 
 ```json
 {
@@ -81,16 +180,20 @@ The following parameters remain as a hardcoded "Env Parameters" Set node in the 
   "server_port": "8080",
   "gotenberg_url": "http://34.28.104.162:3000",
   "supabase_url": "https://xxx.supabase.co",
-  "supabase_key": "eyJ...",
+  "supabase_key": "YOUR_SUPABASE_JWT_KEY_HERE",
   "supabase_bucket": "panicleDevelop_1",
   "ai_model": "gpt-4o",
-  "override_prompt": ""
+  "override_prompt": "",
+  "session_id": "",
+  "analysis_type": "WasteWater"
 }
 ```
 
-### Proposed Simulation Input JSON Schema (Replaces WW Parameters)
+---
 
-This JSON structure is provided by an upstream process and contains only simulation-specific parameters:
+## Simulation Input JSON Schema
+
+Full schema for Direct Mode (also stored in `studies.config` for Study Mode):
 
 ```json
 {
@@ -102,39 +205,16 @@ This JSON structure is provided by an upstream process and contains only simulat
     "duration_days": "number (optional, default: 1.0)",
     "timestep_hours": "number (optional)",
     "timeout_seconds": "number (optional, default: 300)",
-    "check_interval_seconds": "number (optional, default: 60)"
+    "check_interval_seconds": "number (optional, default: 60)",
+    "hard_cancel_buffer": "number (optional, default: 120)"
   },
 
   "influent": {
     "flow_m3_d": "number (required)",
     "temperature_K": "number (optional, default: 293.15)",
     "concentrations": {
-      "// ASM2d components (mg/L)": "",
-      "S_O2": "number (optional, default: 0)",
-      "S_F": "number (optional)",
-      "S_A": "number (optional)",
-      "S_I": "number (optional, default: 10)",
-      "S_NH4": "number (optional)",
-      "S_N2": "number (optional, default: 0)",
-      "S_NO3": "number (optional, default: 0)",
-      "S_PO4": "number (optional)",
-      "S_ALK": "number (optional, default: 300)",
-      "X_I": "number (optional)",
-      "X_S": "number (optional)",
-      "X_H": "number (optional, default: 30)",
-      "X_PAO": "number (optional, default: 0)",
-      "X_PP": "number (optional, default: 0)",
-      "X_PHA": "number (optional, default: 0)",
-      "X_AUT": "number (optional, default: 0)",
-      "X_MeOH": "number (optional, default: 0)",
-      "X_MeP": "number (optional, default: 0)",
-
-      "// mADM1 components (kg/m³) - alternative": "",
-      "S_su": "number", "S_aa": "number", "S_fa": "number",
-      "// ... (63 components total)"
+      "// ASM2d components (mg/L) or mADM1 components (kg/m³)": ""
     },
-
-    "// Simplified input (alternative to concentrations)": "",
     "simplified": {
       "COD_mg_L": "number",
       "NH4_mg_L": "number",
@@ -154,62 +234,25 @@ This JSON structure is provided by an upstream process and contains only simulat
   },
 
   "reactor_config": {
-    "// Anaerobic CSTR (mADM1)": "",
-    "V_liq": "number (optional, default: flow × HRT)",
-    "V_gas": "number (optional, default: V_liq × 0.1)",
-    "T": "number (optional, default: 308.15 K)",
-    "headspace_P": "number (optional, default: 101325 Pa)",
-
-    "// Aerobic MBR systems": "",
+    "V_liq": "number (optional)",
+    "V_gas": "number (optional)",
+    "T": "number (optional)",
     "V_anoxic_m3": "number (optional)",
     "V_aerobic_m3": "number (optional)",
     "V_mbr_m3": "number (optional)",
-    "V_anaerobic_m3": "number (optional, A2O only)",
-    "DO_aerobic_mg_L": "number (optional, default: 2.3)",
-    "DO_mbr_mg_L": "number (optional, default: 2.2)",
-    "SCR": "number (optional, default: 0.999)",
-    "Q_ras_multiplier": "number (optional, default: 4.0)",
-    "Q_was_m3_d": "number (optional)"
+    "DO_aerobic_mg_L": "number (optional, default: 2.3)"
   },
 
   "kinetic_params": {
-    "// Only include parameters you want to override": "",
-    "// Hydrolysis rates (d⁻¹)": "",
-    "q_ch_hyd": "number (optional)",
-    "q_pr_hyd": "number (optional)",
-    "q_li_hyd": "number (optional)",
-
-    "// Uptake rates (d⁻¹)": "",
-    "k_su": "number (optional)",
-    "k_aa": "number (optional)",
-    "k_fa": "number (optional)",
-    "k_c4": "number (optional)",
-    "k_pro": "number (optional)",
+    "// Only include parameters to override": "",
     "k_ac": "number (optional)",
-    "k_h2": "number (optional)",
-
-    "// Half-saturation (kg COD/m³)": "",
-    "K_su": "number (optional)",
-    "K_ac": "number (optional)",
-
-    "// Yields (kg COD/kg COD)": "",
-    "Y_su": "number (optional)",
-    "Y_ac": "number (optional)",
-
-    "// Decay rates (d⁻¹)": "",
-    "b_su": "number (optional)",
-    "b_ac": "number (optional)",
-
-    "// Inhibition (various units)": "",
-    "KI_nh3": "number (optional)",
-    "KI_h2s_ac": "number (optional)"
+    "K_ac": "number (optional)"
   },
 
   "convergence": {
     "run_to_convergence": "boolean (optional, default: false)",
-    "convergence_atol": "number (optional, default: 0.1 mg/L/d)",
+    "convergence_atol": "number (optional, default: 0.1)",
     "convergence_rtol": "number (optional, default: 1e-3)",
-    "check_interval_days": "number (optional, default: 2.0)",
     "max_duration_days": "number (optional)"
   },
 
@@ -221,389 +264,185 @@ This JSON structure is provided by an upstream process and contains only simulat
 
   "output": {
     "report": "boolean (optional, default: true)",
-    "diagram": "boolean (optional, default: true)",
-    "include_components": "boolean (optional, default: false)",
-    "track_streams": ["string array (optional)"],
-    "export_state_to": "string (optional)"
+    "diagram": "boolean (optional, default: true)"
   }
 }
 ```
-
----
-
-## Implementation Plan
-
-### Phase 1: Input Schema Definition
-
-**Task 1.1: Create JSON Schema File**
-- Create `n8n/schemas/simulation-input-v1.schema.json`
-- Define all fields with types, defaults, and descriptions
-- Include validation rules (required fields, ranges, enums)
-
-**Task 1.2: Document Schema**
-- Create `n8n/docs/input-schema-reference.md`
-- Provide examples for common scenarios
-- Document model-specific requirements
-
-### Phase 2: Workflow Modification
-
-**Task 2.1: Create v8 Workflow Base**
-- Copy v7 as starting point
-- Add webhook/manual trigger with JSON input
-
-**Task 2.2: Replace WW Parameter Node**
-- Retain hardcoded "Env Parameters" node (unchanged)
-- Remove hardcoded "WW Parameters" node
-- Add "Parse Input JSON" code node for simulation parameters
-
-**Task 2.3: Input Validation Node**
-- Add JavaScript validation against schema
-- Provide clear error messages for invalid input
-- Apply defaults for missing optional fields
-
-**Task 2.4: Update Prepare Simulation Node**
-- Accept either `concentrations` (direct) or `simplified` input
-- Perform COD/TSS distribution only when using simplified mode
-- Pass through direct concentrations unchanged
-
-**Task 2.5: Add Model-Aware Logic**
-- Route to correct template based on `model_type`
-- Validate concentrations match model requirements
-- Handle unit conversion (mg/L vs kg/m³) appropriately
-
-### Phase 3: API Request Construction
-
-**Task 3.1: Build Simulation Request**
-- Construct `/api/simulate_system` payload from parsed input
-- Include all optional parameters when provided
-- Map `kinetic_params` directly to request
-
-**Task 3.2: Handle Convergence/SRT Options**
-- Add `run_to_convergence` and related params
-- Add `target_srt_days` and SRT control params
-- Set appropriate timeouts based on convergence mode
-
-### Phase 4: Testing & Documentation
-
-**Task 4.1: Create Test Inputs**
-- Minimal ASM2d input (simplified)
-- Full ASM2d input (concentrations)
-- mADM1 input with kinetic overrides
-- Convergence mode input
-- SRT control input
-
-**Task 4.2: Update README**
-- Document new v8 input format
-- Provide migration guide from v7
-- Add troubleshooting section
-
----
-
-## Example Input Scenarios
-
-> **Note:** All examples below show only the simulation input JSON. Environment parameters (server_ip, server_port, etc.) are configured separately in the workflow's Env Parameters node.
-
-### Scenario 1: Simple ASM2d (Current Behavior)
-
-```json
-{
-  "simulation": {
-    "template": "mle_mbr_asm2d",
-    "model_type": "ASM2d"
-  },
-  "influent": {
-    "flow_m3_d": 4000,
-    "simplified": {
-      "COD_mg_L": 350,
-      "NH4_mg_L": 25,
-      "TP_mg_L": 8,
-      "TSS_mg_L": 220,
-      "temperature_C": 20
-    }
-  }
-}
-```
-
-### Scenario 2: Full ASM2d with Convergence
-
-```json
-{
-  "simulation": {
-    "template": "a2o_mbr_asm2d",
-    "model_type": "ASM2d",
-    "timeout_seconds": 600
-  },
-  "influent": {
-    "flow_m3_d": 5000,
-    "temperature_K": 298.15,
-    "concentrations": {
-      "S_O2": 0,
-      "S_F": 100,
-      "S_A": 30,
-      "S_I": 15,
-      "S_NH4": 35,
-      "S_NO3": 0,
-      "S_PO4": 10,
-      "S_ALK": 350,
-      "X_I": 55,
-      "X_S": 180,
-      "X_H": 30
-    }
-  },
-  "reactor_config": {
-    "V_anaerobic_m3": 150,
-    "V_anoxic_m3": 200,
-    "V_aerobic_m3": 300,
-    "V_mbr_m3": 400,
-    "DO_aerobic_mg_L": 2.5
-  },
-  "convergence": {
-    "run_to_convergence": true,
-    "convergence_atol": 0.1,
-    "max_duration_days": 100
-  },
-  "output": {
-    "report": true,
-    "diagram": true
-  }
-}
-```
-
-### Scenario 3: Anaerobic mADM1 with Kinetic Tuning
-
-```json
-{
-  "simulation": {
-    "template": "anaerobic_cstr_madm1",
-    "model_type": "mADM1",
-    "timeout_seconds": 900
-  },
-  "influent": {
-    "flow_m3_d": 100,
-    "temperature_K": 308.15,
-    "concentrations": {
-      "S_su": 1.011,
-      "S_aa": 1.522,
-      "S_fa": 1.739,
-      "S_ac": 0.038,
-      "S_IC": 0.1896,
-      "S_IN": 0.311,
-      "S_IP": 0.028,
-      "X_ch": 0.318,
-      "X_pr": 1.061,
-      "X_li": 0.743,
-      "X_su": 0.011,
-      "X_ac": 0.009,
-      "S_SO4": 0.1,
-      "X_hSRB": 0.006,
-      "X_aSRB": 0.006
-    }
-  },
-  "reactor_config": {
-    "V_liq": 2000,
-    "V_gas": 200,
-    "T": 308.15
-  },
-  "kinetic_params": {
-    "k_ac": 10.0,
-    "K_ac": 0.12,
-    "k_hSRB": 45.0,
-    "KI_h2s_ac": 0.5
-  },
-  "convergence": {
-    "run_to_convergence": true,
-    "convergence_atol": 0.05,
-    "max_duration_days": 60
-  }
-}
-```
-
-### Scenario 4: SRT-Controlled MLE-MBR
-
-```json
-{
-  "simulation": {
-    "template": "mle_mbr_asm2d",
-    "model_type": "ASM2d",
-    "timeout_seconds": 1200
-  },
-  "influent": {
-    "flow_m3_d": 4000,
-    "simplified": {
-      "COD_mg_L": 400,
-      "NH4_mg_L": 30,
-      "TP_mg_L": 10,
-      "TSS_mg_L": 250,
-      "temperature_C": 18
-    }
-  },
-  "srt_control": {
-    "target_srt_days": 15,
-    "srt_tolerance": 0.1,
-    "max_srt_iterations": 10
-  },
-  "convergence": {
-    "run_to_convergence": true,
-    "convergence_atol": 0.1
-  }
-}
-```
-
----
-
-## Workflow Node Changes
-
-### Nodes to Retain (Unchanged)
-- `Env Parameters` (Set node) - Hardcoded infrastructure/deployment settings
-
-### Nodes to Remove
-- `WW Parameters` (Set node) - Replaced by dynamic JSON input
-
-### Nodes to Add
-1. **Webhook/Manual Trigger** - Receives simulation JSON input from upstream process
-2. **Parse & Validate Input** - JavaScript node for schema validation
-3. **Apply Defaults** - Merge defaults for missing optional fields
-4. **Route by Model** - Branch based on model_type
-
-### Nodes to Modify
-1. **Prepare Simulation** - Accept either `concentrations` (direct) or `simplified` input
-2. **Submit Simulation** - Include all optional parameters in request
-3. **Check Status** - Adjust polling based on convergence mode timeout
-
----
-
-## Validation Rules
-
-### Required Fields (Simulation Input JSON)
-- `simulation.template`
-- `simulation.model_type`
-- `influent.flow_m3_d`
-- Either `influent.concentrations` OR `influent.simplified`
-
-### Required Fields (Env Parameters - Hardcoded in Workflow)
-- `server_ip`
-- `server_port`
-
-### Model-Specific Validation
-- **ASM2d**: Concentrations in mg/L, warn if values > 50,000
-- **mADM1**: Concentrations in kg/m³, warn if values < 0.001
-- **Template/Model Match**: Validate template is compatible with model_type
-
-### Range Validation
-- `flow_m3_d`: > 0
-- `temperature_K`: 273.15 - 373.15
-- `convergence_atol`: > 0
-- `srt_tolerance`: 0 - 1
-- `timeout_seconds`: > 0
-
----
-
-## Backward Compatibility
-
-The v8 workflow will support a "legacy mode" that accepts the v7 WW parameter structure:
-
-```json
-{
-  "legacy_mode": true,
-  "template": "mle_mbr_asm2d",
-  "flow_m3_d": 4000,
-  "COD_mg_L": 350,
-  "NH4_mg_L": 25,
-  "TP_mg_L": 8,
-  "TSS_mg_L": 220,
-  "temperature_C": 20
-}
-```
-
-When `legacy_mode: true`, the workflow will transform this to the new schema internally. Environment parameters are always taken from the hardcoded Env Parameters node.
-
----
-
-## Files to Create/Modify
-
-| File | Action | Description |
-|------|--------|-------------|
-| `n8n/schemas/simulation-input-v1.schema.json` | Create | JSON Schema definition |
-| `n8n/docs/input-schema-reference.md` | Create | Schema documentation |
-| `n8n/n8n-qsd-test/qsdsan-simulation-v8.json` | Create | New workflow version |
-| `n8n/n8n-qsd-test/README.md` | Modify | Update with v8 documentation |
-| `n8n/examples/` | Create | Example input files |
-
----
-
-## Risk Assessment
-
-| Risk | Likelihood | Impact | Mitigation |
-|------|------------|--------|------------|
-| Breaking existing integrations | Medium | High | Maintain v7 alongside v8; add legacy mode |
-| Schema validation too strict | Low | Medium | Start permissive, tighten based on feedback |
-| Timeout issues with convergence | Medium | Medium | Dynamic timeout calculation based on input |
-| Complex error messages | Medium | Low | Provide clear, actionable error messages |
-
----
-
-## Success Criteria
-
-1. v8 workflow accepts all documented QSDsan parameters
-2. No extraneous fields that aren't used by the engine
-3. Backward compatible with v7 inputs via legacy mode
-4. Clear validation errors for invalid inputs
-5. All four example scenarios execute successfully
-6. Documentation complete and accurate
-
----
-
-## Approval Checklist
-
-- [ ] Schema covers all QSDsan engine parameters
-- [ ] No unused/extraneous parameters included
-- [ ] Backward compatibility approach acceptable
-- [ ] Example scenarios cover target use cases
-- [ ] Implementation phases are appropriately scoped
-
----
-
-## Questions for Approval
-
-1. Should legacy mode be supported, or require all upstream processes to migrate?
-2. Are there any additional parameters from the QSDsan engine that should be exposed?
-3. Should the schema include validation ranges (min/max) or leave that to the engine?
-4. Is the phased implementation approach acceptable?
 
 ---
 
 ## Architecture Diagram
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         n8n Workflow (v8)                          │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  ┌──────────────────────┐    ┌───────────────────────────────────┐ │
-│  │   Env Parameters     │    │  Simulation Input (from upstream) │ │
-│  │   (Hardcoded Node)   │    │  (Webhook/Manual Trigger)         │ │
-│  ├──────────────────────┤    ├───────────────────────────────────┤ │
-│  │ • server_ip          │    │ • simulation                      │ │
-│  │ • server_port        │    │ • influent                        │ │
-│  │ • gotenberg_url      │    │ • reactor_config                  │ │
-│  │ • supabase_url       │    │ • kinetic_params                  │ │
-│  │ • supabase_key       │    │ • convergence                     │ │
-│  │ • supabase_bucket    │    │ • srt_control                     │ │
-│  │ • ai_model           │    │ • output                          │ │
-│  │ • override_prompt    │    │                                   │ │
-│  └──────────┬───────────┘    └─────────────┬─────────────────────┘ │
-│             │                              │                       │
-│             └──────────────┬───────────────┘                       │
-│                            ▼                                       │
-│                 ┌──────────────────────┐                           │
-│                 │  Prepare Simulation  │                           │
-│                 │  (Merge & Validate)  │                           │
-│                 └──────────┬───────────┘                           │
-│                            ▼                                       │
-│                 ┌──────────────────────┐                           │
-│                 │  Submit to QSDsan    │                           │
-│                 │  Engine API          │                           │
-│                 └──────────────────────┘                           │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         n8n Workflow (v9)                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  ┌────────────────────────────────────────────────────────────────────┐ │
+│  │                    INPUT (Webhook or Manual)                       │ │
+│  ├────────────────────────────────────────────────────────────────────┤ │
+│  │  Option A: { "study_id": "dairy_baseline", "overrides": {...} }    │ │
+│  │  Option B: { "simulation": {...}, "influent": {...}, ... }         │ │
+│  │  Option C: { "legacy_mode": true, "template": "...", ... }         │ │
+│  └────────────────────────────────────────────────────────────────────┘ │
+│                                    │                                    │
+│                                    ▼                                    │
+│  ┌──────────────────┐    ┌────────────────────┐                        │
+│  │  Env Parameters  │    │  Determine Input   │                        │
+│  │  (Hardcoded)     │    │  Mode              │                        │
+│  └────────┬─────────┘    └─────────┬──────────┘                        │
+│           │                        │                                    │
+│           │         ┌──────────────┼──────────────┐                    │
+│           │         ▼              ▼              ▼                    │
+│           │  ┌────────────┐ ┌────────────┐ ┌────────────┐              │
+│           │  │ Study Mode │ │Direct Mode │ │Legacy Mode │              │
+│           │  │            │ │            │ │            │              │
+│           │  │ Fetch from │ │ Use config │ │ Transform  │              │
+│           │  │ Supabase   │ │ directly   │ │ to new     │              │
+│           │  │            │ │            │ │ schema     │              │
+│           │  └─────┬──────┘ └─────┬──────┘ └─────┬──────┘              │
+│           │        │              │              │                      │
+│           │        └──────────────┼──────────────┘                      │
+│           │                       ▼                                     │
+│           │              ┌────────────────┐                             │
+│           │              │ Apply Overrides│                             │
+│           │              │ (if provided)  │                             │
+│           │              └───────┬────────┘                             │
+│           │                      │                                      │
+│           ▼                      ▼                                      │
+│    ┌──────────────────────────────────────┐                            │
+│    │         Generate Session ID          │                            │
+│    └──────────────────┬───────────────────┘                            │
+│                       ▼                                                 │
+│    ┌──────────────────────────────────────┐                            │
+│    │         Prepare Simulation           │                            │
+│    │  (Build API request from config)     │                            │
+│    └──────────────────┬───────────────────┘                            │
+│                       ▼                                                 │
+│    ┌──────────────────────────────────────┐                            │
+│    │         Submit to QSDsan API         │                            │
+│    └──────────────────────────────────────┘                            │
+│                       │                                                 │
+│                       ▼                                                 │
+│    ... (polling, results, AI analysis, uploads - same as v8) ...       │
+│                                                                         │
+│    ┌──────────────────────────────────────────────────────────────────┐│
+│    │  Hierarchical Storage: {session_id}/{analysis_type}/...          ││
+│    │  • PDF report  • CSV data  • JSON results  • AI analysis         ││
+│    └──────────────────────────────────────────────────────────────────┘│
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## Implementation Summary
+
+### Files Created
+
+| File | Description |
+|------|-------------|
+| `n8n/n8n-qsd-test/qsdsan-simulation-v9.json` | v9 workflow with dynamic input |
+| `n8n/n8n-qsd-test/webhook-test-examples.ps1` | PowerShell test script with interactive menu |
+| `n8n/n8n-qsd-test/webhook-test-examples.sh` | Bash/curl test script with interactive menu |
+| `n8n/n8n-qsd-test/webhook-payloads.json` | JSON reference for all payload examples |
+
+### Workflow Node Changes (v8 → v9)
+
+#### Nodes Removed
+
+| Node | Reason |
+|------|--------|
+| `WW Parameters` | Replaced by dynamic input |
+
+#### Nodes Added
+
+| Node | Purpose |
+|------|---------|
+| `Webhook Trigger` | Receive input from external systems |
+| `Determine Input Mode` | Route based on input type (study/direct/legacy) |
+| `Is Study Mode?` | Conditional branch for study mode |
+| `Fetch Study Config` | Get config from Supabase (study mode) |
+| `Is Legacy Mode?` | Conditional branch for legacy mode |
+| `Transform Legacy` | Convert v8 format (legacy mode) |
+| `Pass Direct Mode` | Handle direct JSON configuration |
+| `Merge Input Modes` | Combine all three input paths |
+| `Apply Overrides` | Deep merge overrides into config |
+
+#### Nodes Modified
+
+| Node | Changes |
+|------|---------|
+| `Generate Session ID` | Include study_id in auto-generated names |
+| `Prepare Simulation` | Accept config from any mode; handle concentrations OR simplified |
+| `Submit Simulation` | Include kinetic_params, reactor_config, convergence, srt_control |
+| `Evaluate Status` | Get timeout from config instead of hardcoded WW Parameters |
+| `Wait 60s` | Get check_interval from config |
+| `Process Results` | Include study metadata (study_id, study_name, category) |
+| `Generate Report` | New study banner, mode badge, v9 branding |
+| `Generate CSV Data` | Include study metadata columns |
+| `Upload AI Analysis` | Include v9 study context |
+
+---
+
+## Test Examples
+
+### Available Studies (in Supabase)
+
+| Study ID | Description |
+|----------|-------------|
+| `template_aerobic_mbr` | Template - Aerobic MBR (ASM2d) |
+| `template_anaerobic_cstr` | Template - Anaerobic CSTR (mADM1) |
+| `dairy_baseline` | Dairy Processing - Baseline |
+| `brewery_baseline` | Brewery - Baseline |
+| `winery_baseline` | Winery - Baseline |
+| `soft_drink_baseline` | Soft Drink Manufacturing |
+| `meat_processing_baseline` | Meat Processing |
+| `fruit_vegetable_baseline` | Fruit & Vegetable Processing |
+| `dairy_anaerobic` | Dairy - Anaerobic Treatment (mADM1) |
+
+### Test Script Examples
+
+| # | Mode | Description |
+|---|------|-------------|
+| 1 | Study | Dairy Baseline |
+| 2 | Study | Dairy with Overrides |
+| 3 | Study | Brewery Baseline |
+| 4 | Study | Dairy Anaerobic (mADM1) |
+| 5 | Direct | ASM2d Basic |
+| 6 | Direct | With Convergence |
+| 7 | Direct | With SRT Control |
+| 8 | Legacy | v8 Compatible |
+| 9 | Legacy | Explicit Flag (A/O MBR) |
+| 10 | Direct | High-Strength Industrial |
+
+### Quick Start
+
+1. Update the webhook URL in the test script
+2. In n8n, click on **Webhook Trigger** → **"Listen for Test Event"**
+3. Run the PowerShell script: `.\webhook-test-examples.ps1`
+4. Select an example from the menu
+5. Watch the workflow execute in n8n
+
+---
+
+## Success Criteria
+
+1. ✅ Study mode: Fetch and run any study from Supabase
+2. ✅ Direct mode: Accept full JSON configuration
+3. ✅ Legacy mode: Run v8-style inputs unchanged
+4. ✅ Overrides: Apply partial overrides in any mode
+5. ⏳ All 9 default studies execute successfully (requires testing)
+6. ✅ External webhook triggering works
+7. ✅ Hierarchical storage paths preserved from v8
+
+---
+
+## Version History
+
+| Version | Date | Changes |
+|---------|------|---------|
+| 1.0 | 2026-02-03 | Initial planning (Dynamic JSON only) |
+| 1.1 | 2026-02-04 | Updated baseline to v8.0 |
+| 1.2 | 2026-02-04 | Merged Study Management (N8N-3) into this plan |
+| 1.3 | 2026-02-04 | **Implementation complete** - v9 workflow created |

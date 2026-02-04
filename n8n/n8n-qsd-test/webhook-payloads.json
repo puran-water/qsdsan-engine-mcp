@@ -1,0 +1,256 @@
+{
+  "_description": "QSDsan v9 Webhook Payload Examples - Copy/paste these into tools like Postman, Insomnia, or n8n's webhook test",
+  "_webhook_url": "https://n8n.panicle.org/webhook/qsdsan-simulate",
+  "_webhook_test_url": "https://n8n.panicle.org/webhook-test/qsdsan-simulate",
+
+  "examples": {
+    "study_mode": {
+      "basic": {
+        "_description": "Fetch and run a predefined study from Supabase",
+        "study_id": "dairy_baseline"
+      },
+
+      "with_overrides": {
+        "_description": "Run a study with modified parameters",
+        "study_id": "dairy_baseline",
+        "overrides": {
+          "influent": {
+            "flow_m3_d": 1500,
+            "simplified": {
+              "COD_mg_L": 6000
+            }
+          }
+        }
+      },
+
+      "brewery": {
+        "_description": "Brewery wastewater baseline study",
+        "study_id": "brewery_baseline"
+      },
+
+      "winery": {
+        "_description": "Winery wastewater baseline study",
+        "study_id": "winery_baseline"
+      },
+
+      "anaerobic": {
+        "_description": "Dairy anaerobic treatment (mADM1 model)",
+        "study_id": "dairy_anaerobic"
+      }
+    },
+
+    "direct_mode": {
+      "basic_asm2d": {
+        "_description": "Full ASM2d configuration with simplified influent",
+        "simulation": {
+          "template": "mle_mbr_asm2d",
+          "model_type": "ASM2d",
+          "timeout_seconds": 300,
+          "duration_days": 1.0
+        },
+        "influent": {
+          "flow_m3_d": 4000,
+          "simplified": {
+            "COD_mg_L": 350,
+            "NH4_mg_L": 25,
+            "TP_mg_L": 8,
+            "TSS_mg_L": 220,
+            "temperature_C": 20
+          }
+        }
+      },
+
+      "with_convergence": {
+        "_description": "Run simulation to steady-state convergence",
+        "simulation": {
+          "template": "mle_mbr_asm2d",
+          "model_type": "ASM2d",
+          "timeout_seconds": 600
+        },
+        "influent": {
+          "flow_m3_d": 4000,
+          "simplified": {
+            "COD_mg_L": 500,
+            "NH4_mg_L": 40,
+            "TP_mg_L": 10,
+            "TSS_mg_L": 300,
+            "temperature_C": 18
+          }
+        },
+        "convergence": {
+          "run_to_convergence": true,
+          "convergence_atol": 0.1,
+          "max_duration_days": 60
+        }
+      },
+
+      "with_srt_control": {
+        "_description": "Target specific SRT with waste sludge optimization",
+        "simulation": {
+          "template": "mle_mbr_asm2d",
+          "model_type": "ASM2d",
+          "timeout_seconds": 900
+        },
+        "influent": {
+          "flow_m3_d": 4000,
+          "simplified": {
+            "COD_mg_L": 400,
+            "NH4_mg_L": 30,
+            "TP_mg_L": 8,
+            "TSS_mg_L": 250,
+            "temperature_C": 20
+          }
+        },
+        "convergence": {
+          "run_to_convergence": true
+        },
+        "srt_control": {
+          "target_srt_days": 15,
+          "srt_tolerance": 0.1
+        }
+      },
+
+      "high_strength_industrial": {
+        "_description": "High-strength industrial wastewater with custom COD distribution",
+        "simulation": {
+          "template": "mle_mbr_asm2d",
+          "model_type": "ASM2d",
+          "timeout_seconds": 600,
+          "duration_days": 2.0
+        },
+        "influent": {
+          "flow_m3_d": 2000,
+          "simplified": {
+            "COD_mg_L": 2500,
+            "NH4_mg_L": 80,
+            "TP_mg_L": 25,
+            "TSS_mg_L": 800,
+            "temperature_C": 25,
+            "cod_distribution": {
+              "f_soluble": 0.4,
+              "f_fermentable": 0.6,
+              "f_acetate": 0.2
+            }
+          }
+        }
+      },
+
+      "ao_mbr": {
+        "_description": "A/O MBR template for enhanced phosphorus removal",
+        "simulation": {
+          "template": "ao_mbr_asm2d",
+          "model_type": "ASM2d",
+          "timeout_seconds": 300
+        },
+        "influent": {
+          "flow_m3_d": 3000,
+          "simplified": {
+            "COD_mg_L": 450,
+            "NH4_mg_L": 35,
+            "TP_mg_L": 12,
+            "TSS_mg_L": 280,
+            "temperature_C": 20
+          }
+        }
+      },
+
+      "a2o_mbr": {
+        "_description": "A2O MBR template for biological nutrient removal",
+        "simulation": {
+          "template": "a2o_mbr_asm2d",
+          "model_type": "ASM2d",
+          "timeout_seconds": 400
+        },
+        "influent": {
+          "flow_m3_d": 5000,
+          "simplified": {
+            "COD_mg_L": 380,
+            "NH4_mg_L": 28,
+            "TP_mg_L": 10,
+            "TSS_mg_L": 250,
+            "temperature_C": 18
+          }
+        }
+      },
+
+      "with_raw_concentrations": {
+        "_description": "Direct ASM2d component concentrations (advanced)",
+        "simulation": {
+          "template": "mle_mbr_asm2d",
+          "model_type": "ASM2d",
+          "timeout_seconds": 300
+        },
+        "influent": {
+          "flow_m3_d": 4000,
+          "temperature_K": 293.15,
+          "concentrations": {
+            "S_O2": 0,
+            "S_F": 87.5,
+            "S_A": 26.25,
+            "S_I": 10,
+            "S_NH4": 25,
+            "S_N2": 0,
+            "S_NO3": 0,
+            "S_PO4": 8,
+            "S_ALK": 300,
+            "X_I": 55,
+            "X_S": 205,
+            "X_H": 30,
+            "X_PAO": 0,
+            "X_PP": 0,
+            "X_PHA": 0,
+            "X_AUT": 0,
+            "X_MeOH": 0,
+            "X_MeP": 0,
+            "H2O": 1000
+          }
+        }
+      }
+    },
+
+    "legacy_mode": {
+      "v8_compatible": {
+        "_description": "Flat parameter format (backward compatible with v8)",
+        "template": "mle_mbr_asm2d",
+        "flow_m3_d": 4000,
+        "COD_mg_L": 350,
+        "NH4_mg_L": 25,
+        "TP_mg_L": 8,
+        "TSS_mg_L": 220,
+        "temperature_C": 20,
+        "timeout_seconds": 300
+      },
+
+      "explicit_flag": {
+        "_description": "Explicit legacy_mode flag with A/O MBR template",
+        "legacy_mode": true,
+        "template": "ao_mbr_asm2d",
+        "flow_m3_d": 3000,
+        "COD_mg_L": 400,
+        "NH4_mg_L": 35,
+        "TP_mg_L": 10,
+        "TSS_mg_L": 280,
+        "temperature_C": 22
+      }
+    }
+  },
+
+  "available_studies": [
+    {"study_id": "template_aerobic_mbr", "description": "Template - Aerobic MBR (ASM2d)"},
+    {"study_id": "template_anaerobic_cstr", "description": "Template - Anaerobic CSTR (mADM1)"},
+    {"study_id": "dairy_baseline", "description": "Dairy Processing - Baseline"},
+    {"study_id": "brewery_baseline", "description": "Brewery - Baseline"},
+    {"study_id": "winery_baseline", "description": "Winery - Baseline"},
+    {"study_id": "soft_drink_baseline", "description": "Soft Drink Manufacturing"},
+    {"study_id": "meat_processing_baseline", "description": "Meat Processing"},
+    {"study_id": "fruit_vegetable_baseline", "description": "Fruit & Vegetable Processing"},
+    {"study_id": "dairy_anaerobic", "description": "Dairy - Anaerobic Treatment (mADM1)"}
+  ],
+
+  "available_templates": [
+    {"template": "mle_mbr_asm2d", "description": "MLE MBR - Modified Ludzack-Ettinger with Membrane Bioreactor"},
+    {"template": "ao_mbr_asm2d", "description": "A/O MBR - Anaerobic/Oxic with Membrane Bioreactor"},
+    {"template": "a2o_mbr_asm2d", "description": "A2O MBR - Anaerobic/Anoxic/Oxic with Membrane Bioreactor"},
+    {"template": "anaerobic_cstr_madm1", "description": "Anaerobic CSTR with mADM1 model"}
+  ]
+}

@@ -1,25 +1,161 @@
-# QSDsan Wastewater Simulation - n8n Workflow
+# QSDsan n8n Workflow - Test Files
 
-This n8n workflow implements the same wastewater simulation logic as the Claude Desktop skill, transposed into n8n nodes.
+This folder contains the n8n workflow files and testing utilities for the QSDsan wastewater simulation engine.
 
-## Version
+## Workflow Versions
 
-**v1.0**
+| File | Version | Description |
+|------|---------|-------------|
+| `qsdsan-simulation-v8.json` | v8.0 | Hierarchical storage, hardcoded parameters |
+| `qsdsan-simulation-v9.json` | v9.0 | Dynamic JSON input, study management, webhook support |
 
-## Overview
+## v9 Features
 
-The workflow orchestrates wastewater treatment simulations via the QSDsan REST API, including:
+- **Study Mode**: Fetch predefined configurations from Supabase
+- **Direct Mode**: Pass full JSON simulation configuration
+- **Legacy Mode**: Backward compatible with v8 flat parameters
+- **Overrides**: Customize any parameter in any mode
+- **Webhook Trigger**: External system integration
+
+## Test Files
+
+| File | Description |
+|------|-------------|
+| `webhook-test-examples.ps1` | PowerShell script with interactive menu (Windows) |
+| `webhook-test-examples.sh` | Bash/curl script with interactive menu (Linux/Mac) |
+| `webhook-payloads.json` | JSON reference for all payload examples |
+
+## Quick Start
+
+### 1. Import Workflow into n8n
+
+1. Open n8n
+2. Go to **Workflows** → **Import from File**
+3. Select `qsdsan-simulation-v9.json`
+4. Update **Env Parameters** node with your credentials
+
+### 2. Test with Manual Trigger
+
+1. Click **Execute Workflow** - runs with default parameters
+
+### 3. Test with Webhook
+
+1. Click on **Webhook Trigger** node
+2. Click **"Listen for Test Event"**
+3. Run test script:
+
+**PowerShell (Windows):**
+```powershell
+# Update webhook URL in script first
+.\webhook-test-examples.ps1
+```
+
+**Bash (Linux/Mac/Git Bash):**
+```bash
+chmod +x webhook-test-examples.sh
+./webhook-test-examples.sh
+```
+
+## Input Modes
+
+### Study Mode
+```json
+{
+  "study_id": "dairy_baseline"
+}
+```
+
+### Study Mode with Overrides
+```json
+{
+  "study_id": "dairy_baseline",
+  "overrides": {
+    "influent": {
+      "flow_m3_d": 1500
+    }
+  }
+}
+```
+
+### Direct Mode
+```json
+{
+  "simulation": {
+    "template": "mle_mbr_asm2d",
+    "model_type": "ASM2d"
+  },
+  "influent": {
+    "flow_m3_d": 4000,
+    "simplified": {
+      "COD_mg_L": 350,
+      "NH4_mg_L": 25,
+      "TP_mg_L": 8,
+      "TSS_mg_L": 220,
+      "temperature_C": 20
+    }
+  }
+}
+```
+
+### Legacy Mode (v8 Compatible)
+```json
+{
+  "template": "mle_mbr_asm2d",
+  "flow_m3_d": 4000,
+  "COD_mg_L": 350,
+  "NH4_mg_L": 25,
+  "TP_mg_L": 8,
+  "TSS_mg_L": 220,
+  "temperature_C": 20
+}
+```
+
+## Available Studies
+
+| Study ID | Description |
+|----------|-------------|
+| `template_aerobic_mbr` | Template - Aerobic MBR (ASM2d) |
+| `template_anaerobic_cstr` | Template - Anaerobic CSTR (mADM1) |
+| `dairy_baseline` | Dairy Processing - Baseline |
+| `brewery_baseline` | Brewery - Baseline |
+| `winery_baseline` | Winery - Baseline |
+| `soft_drink_baseline` | Soft Drink Manufacturing |
+| `meat_processing_baseline` | Meat Processing |
+| `fruit_vegetable_baseline` | Fruit & Vegetable Processing |
+| `dairy_anaerobic` | Dairy - Anaerobic Treatment (mADM1) |
+
+## Available Templates
+
+| Template | Description |
+|----------|-------------|
+| `mle_mbr_asm2d` | MLE MBR - Modified Ludzack-Ettinger |
+| `ao_mbr_asm2d` | A/O MBR - Anaerobic/Oxic |
+| `a2o_mbr_asm2d` | A2O MBR - Anaerobic/Anoxic/Oxic |
+| `anaerobic_cstr_madm1` | Anaerobic CSTR with mADM1 |
+
+---
+
+## v8 Reference (Legacy)
+
+### Overview
+
+The v8 workflow orchestrates wastewater treatment simulations via the QSDsan REST API, including:
 - Health check verification
 - Simulation submission
 - Status polling with timeout handling
 - Result processing and report generation
+- Hierarchical Supabase storage
 
-## Workflow Structure
+### Workflow Structure (v8)
 
 ```
 Manual Trigger
     ↓
-Set Parameters (configure inputs)
+Env Parameters (configure infrastructure)
+    ↓
+WW Parameters (configure simulation - REMOVED in v9)
+    ↓
+Generate Session ID
     ↓
 Health Check (GET /health)
     ↓
@@ -49,26 +185,25 @@ Store Job ID
 │                   ↓
 │             Process Results
 │                   ↓
-│             Generate Report (Markdown)
+│             AI Analysis (server-side)
 │                   ↓
-│             ┌─────┴─────┐
-│             ↓           ↓
-│         Convert to   Output JSON
-│           PDF           ↓
-│             ↓         End (Success)
-│         Output PDF
-│             ↓
-│         End (Success)
+│             Generate Report
+│                   ↓
+│         ┌────┬────┬────┐
+│         ↓    ↓    ↓    ↓
+│       PDF  CSV  JSON  AI.md
+│         ↓    ↓    ↓    ↓
+│     Upload to Supabase (hierarchical paths)
+│         ↓
+│     End (Success)
 ```
 
-## Configuration
+### Configuration (v8)
 
-Edit the **Set Parameters** node to configure:
+Edit the **WW Parameters** node to configure:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `server_ip` | 35.225.205.140 | QSDsan server IP address |
-| `server_port` | 8080 | Server port |
 | `template` | mle_mbr_asm2d | Simulation template |
 | `timeout_seconds` | 300 | Simulation timeout (5 min) |
 | `check_interval_seconds` | 60 | Status polling interval |
@@ -80,16 +215,7 @@ Edit the **Set Parameters** node to configure:
 | `TP_mg_L` | 8 | Influent total phosphorus |
 | `TSS_mg_L` | 220 | Influent TSS |
 
-## Available Templates
-
-| Template | Description |
-|----------|-------------|
-| `mle_mbr_asm2d` | MLE-MBR for nitrogen removal |
-| `a2o_mbr_asm2d` | A2O-MBR for N+P removal (EBPR) |
-| `ao_mbr_asm2d` | Simple A/O-MBR |
-| `anaerobic_cstr_madm1` | Anaerobic CSTR |
-
-## Exit Conditions
+### Exit Conditions
 
 The workflow exits the polling loop when:
 
@@ -98,34 +224,38 @@ The workflow exits the polling loop when:
 3. **Timeout** - Elapsed time >= timeout_seconds (retrieves partial results)
 4. **Hard Cancel** - Elapsed time >= timeout + 120s (terminates job, retrieves results)
 
-## Output
+### Output
 
-The workflow produces:
+The workflow produces (uploaded to Supabase):
 - **PDF report** with professional formatting (via Gotenberg)
+- **CSV file** with summary data
 - **JSON file** containing all raw data
+- **AI Analysis** markdown file
 
-### PDF Conversion
+Storage path: `{session_id}/{analysis_type}/{filename}`
 
-The workflow uses [Gotenberg](https://gotenberg.dev/) to convert the Markdown report to a styled PDF. The PDF includes:
-- Professional typography with Arial font
-- Color-coded headers and tables
-- Assessment badges with status colors (Excellent=green, Poor=red, etc.)
-- Warning callouts for incomplete simulations
+---
 
-## Installation
+## API Endpoints Used
 
-1. Open n8n
-2. Go to **Workflows** → **Import**
-3. Select `qsdsan-wastewater-simulation.json`
-4. Configure the **Set Parameters** node with your values
-5. Save and activate
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/health` | GET | Server health check |
+| `/api/simulate_system` | POST | Start simulation |
+| `/api/get_job_status` | GET | Poll status |
+| `/api/get_job_results` | GET | Get results |
+| `/api/terminate_job` | POST | Cancel job |
+| `/api/analyze_results` | POST | Server-side AI analysis |
 
-## Requirements
+---
 
-- n8n v1.0+
-- Gotenberg service (for PDF conversion)
-- Network access to QSDsan VM (35.225.205.140:8080)
-- VM must be running
+## Related Documentation
+
+- [Phase N8N-1 Plan](../../docs/completed-plans/phase-n8n-1-dynamic-json-input.md) - Dynamic JSON & Study Management
+- [Phase N8N-2 Plan](../../docs/completed-plans/phase-n8n-2-supabase-folder-structure.md) - Hierarchical storage
+- [Phase N8N-3 Plan](../../docs/completed-plans/phase-n8n-3-study-configuration-management.md) - Study management
+
+---
 
 ## Running with Docker Compose
 
@@ -137,10 +267,10 @@ docker-compose up -d
 ```
 
 This starts:
-- **n8n** at http://localhost:5678 (admin/changeme)
+- **n8n** at https://n8n.panicle.org
 - **Gotenberg** at http://localhost:3000 (internal API)
 
-## Starting the Server
+## Starting the QSDsan Server
 
 If the health check fails:
 
@@ -151,38 +281,3 @@ gcloud compute instances start qsdsan-vm \
 ```
 
 Wait 60 seconds for startup.
-
-## API Endpoints Used
-
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/health` | GET | Server health check |
-| `/api/simulate_system` | POST | Start simulation |
-| `/api/get_job_status` | GET | Poll status |
-| `/api/get_job_results` | GET | Get results |
-| `/api/terminate_job` | POST | Cancel job |
-
-## Nodes Overview
-
-| Node | Type | Purpose |
-|------|------|---------|
-| Manual Trigger | Trigger | Start workflow |
-| Set Parameters | Set | Configure inputs |
-| Health Check | HTTP Request | Verify server |
-| Server Healthy? | If | Branch on health |
-| Prepare Simulation | Code | Build payload |
-| Submit Simulation | HTTP Request | POST to API |
-| Store Job ID | Code | Save job_id |
-| Wait 60s | Wait | Polling interval |
-| Check Job Status | HTTP Request | GET status |
-| Evaluate Status | Code | Check conditions |
-| Continue Polling? | If | Loop decision |
-| Loop Back | Code | Continue loop |
-| Need Terminate? | If | Hard cancel check |
-| Terminate Job | HTTP Request | POST terminate |
-| Get Results | HTTP Request | GET results |
-| Process Results | Code | Parse response |
-| Generate Report | Code | Create markdown |
-| Convert to PDF | HTTP Request | Gotenberg Markdown→PDF |
-| Output PDF | Convert to File | Export PDF file |
-| Output JSON | Convert to File | Export raw data |
