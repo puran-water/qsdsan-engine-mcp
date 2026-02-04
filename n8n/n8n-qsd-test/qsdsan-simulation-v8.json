@@ -1,0 +1,1763 @@
+{
+  "name": "QSDsan Simulation v8.0",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "61442d83-0886-47a2-ae7d-fa2a50d6e87f",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -3936,
+        -224
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=http://{{ $('Env Parameters').item.json.server_ip }}:{{ $('Env Parameters').item.json.server_port }}/health",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "4160387a-446a-46eb-b485-3bae99f92a63",
+      "name": "Health Check",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -3136,
+        -224
+      ],
+      "notesInFlow": true,
+      "onError": "continueErrorOutput",
+      "notes": "Step 1: Verify server connection"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "health-ok",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "healthy",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "8acf6aba-3bfa-4c2a-986c-09ebc6fd0c1e",
+      "name": "Server Healthy?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -2928,
+        -240
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "a26fa46a-9080-43a5-b936-5e52607c6b90",
+      "name": "Server Error",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -2704,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build simulation payload from Env and WW Parameters\nconst env = $('Env Parameters').first().json;\nconst ww = $('WW Parameters').first().json;\nconst sessionData = $('Generate Session ID').first().json;\nconst healthData = $input.first().json;\n\nconst version = healthData.version || 'unknown';\nconst environment = healthData.environment || 'unknown';\n\n// Calculate temperature in Kelvin\nconst temperature_K = ww.temperature_C + 273.15;\n\n// Distribute COD among components (50% S_F, 15% S_A, 35% X_S)\nconst S_F = ww.COD_mg_L * 0.5 * 0.5;\nconst S_A = ww.COD_mg_L * 0.5 * 0.15;\nconst X_S = ww.COD_mg_L * 0.35;\n\n// Distribute TSS (25% X_I, 75% added to X_S)\nconst X_I = ww.TSS_mg_L * 0.25;\nconst X_S_total = X_S + (ww.TSS_mg_L * 0.75 * 0.5);\n\nreturn {\n  json: {\n    startup_message: `Processing with procedure: qsdsan-engine v${version}`,\n    server_version: version,\n    environment: environment,\n    template: ww.template,\n    flow_m3_d: ww.flow_m3_d,\n    temperature_K: temperature_K,\n    session_id: sessionData.session_id,\n    analysis_type: sessionData.analysis_type,\n    concentrations: {\n      S_O2: 0,\n      S_F: Math.round(S_F * 10) / 10,\n      S_A: Math.round(S_A * 10) / 10,\n      S_I: 10,\n      S_NH4: ww.NH4_mg_L,\n      S_N2: 0,\n      S_NO3: 0,\n      S_PO4: ww.TP_mg_L,\n      S_ALK: 300,\n      X_I: Math.round(X_I * 10) / 10,\n      X_S: Math.round(X_S_total * 10) / 10,\n      X_H: 30,\n      X_PAO: 0,\n      X_PP: 0,\n      X_PHA: 0,\n      X_AUT: 0,\n      X_MeOH: 0,\n      X_MeP: 0,\n      H2O: 1000\n    },\n    input_COD: ww.COD_mg_L,\n    input_NH4: ww.NH4_mg_L,\n    input_TP: ww.TP_mg_L,\n    input_TSS: ww.TSS_mg_L,\n    input_temp_C: ww.temperature_C,\n    start_time: Date.now(),\n    iteration: 0\n  }\n};"
+      },
+      "id": "c01fafb2-b727-4c35-9058-938e2c5769e9",
+      "name": "Prepare Simulation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2720,
+        -256
+      ],
+      "notesInFlow": true,
+      "notes": "Step 2-3: Build request payload"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://{{ $('Env Parameters').item.json.server_ip }}:{{ $('Env Parameters').item.json.server_port }}/api/simulate_system",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"template\": \"{{ $json.template }}\",\n  \"influent\": {\n    \"model_type\": \"ASM2d\",\n    \"flow_m3_d\": {{ $json.flow_m3_d }},\n    \"temperature_K\": {{ $json.temperature_K }},\n    \"concentrations\": {{ JSON.stringify($json.concentrations) }}\n  },\n  \"duration_days\": 1.0\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "7835ed03-7a1b-4772-a7a3-1ddd4b1643f8",
+      "name": "Submit Simulation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -2496,
+        -256
+      ],
+      "notesInFlow": true,
+      "onError": "continueErrorOutput",
+      "notes": "Step 4: Start simulation"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "submit-ok",
+              "leftValue": "={{ $json.job_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "53f3f12b-4aa9-4119-bea5-9943678090d8",
+      "name": "Submit OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -2272,
+        -256
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Display submission error\nconst errorData = $input.first().json;\n\nreturn {\n  json: {\n    error: 'Simulation submission failed',\n    error_details: errorData.error || errorData.message || JSON.stringify(errorData),\n    suggestion: 'Check server logs or try again later'\n  }\n};"
+      },
+      "id": "2658c4af-b88f-4f87-b254-927db77a13d8",
+      "name": "Submit Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2048,
+        -80
+      ],
+      "notesInFlow": true,
+      "notes": "Display submission error"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge job_id with existing data\nconst prevData = $('Prepare Simulation').first().json;\nconst submitResponse = $input.first().json;\n\nreturn {\n  json: {\n    ...prevData,\n    job_id: submitResponse.job_id,\n    job_status: submitResponse.status,\n    submit_message: submitResponse.message\n  }\n};"
+      },
+      "id": "50179ada-eac8-40cc-8b90-68fa04c6e915",
+      "name": "Store Job ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2048,
+        -256
+      ]
+    },
+    {
+      "parameters": {
+        "amount": "={{ $('WW Parameters').item.json.check_interval_seconds }}"
+      },
+      "id": "b62983b9-9fae-4470-91f5-4db0b16b0f57",
+      "name": "Wait 60s",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -1840,
+        -256
+      ],
+      "webhookId": "qsdsan-wait"
+    },
+    {
+      "parameters": {
+        "url": "=http://{{ $('Env Parameters').item.json.server_ip }}:{{ $('Env Parameters').item.json.server_port }}/api/get_job_status?job_id={{ $json.job_id }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "df2a5dea-c4f7-492b-8fea-45d5d6e09b18",
+      "name": "Check Job Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1616,
+        -256
+      ],
+      "notesInFlow": true,
+      "notes": "Step 5: Poll status"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Evaluate status and timeout conditions\nconst ww = $('WW Parameters').first().json;\nconst prevData = $('Store Job ID').first().json;\nconst statusResponse = $input.first().json;\n\nconst elapsed_seconds = Math.round((Date.now() - prevData.start_time) / 1000);\nconst iteration = (prevData.iteration || 0) + 1;\nconst hard_cancel_threshold = ww.timeout_seconds + ww.hard_cancel_buffer;\n\n// Determine exit condition\nlet exit_condition = null;\nlet should_continue = true;\nlet should_terminate = false;\n\nif (statusResponse.status === 'completed' || statusResponse.status === 'failed') {\n  exit_condition = statusResponse.status;\n  should_continue = false;\n} else if (elapsed_seconds >= hard_cancel_threshold) {\n  exit_condition = 'hard_cancel';\n  should_continue = false;\n  should_terminate = true;\n} else if (elapsed_seconds >= ww.timeout_seconds) {\n  exit_condition = 'timeout';\n  should_continue = false;\n}\n\nreturn {\n  json: {\n    ...prevData,\n    current_status: statusResponse.status,\n    elapsed_seconds: elapsed_seconds,\n    elapsed_from_api: statusResponse.elapsed_time_seconds,\n    iteration: iteration,\n    progress_message: `Simulation running... elapsed time: ${elapsed_seconds}s (timeout: ${ww.timeout_seconds}s)`,\n    exit_condition: exit_condition,\n    should_continue: should_continue,\n    should_terminate: should_terminate\n  }\n};"
+      },
+      "id": "5f6bb790-e8d3-4742-a4c8-cc9cfc18d627",
+      "name": "Evaluate Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1392,
+        -256
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "should-continue",
+              "leftValue": "={{ $json.should_continue }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "0c9edef4-1179-4cc5-9e76-94334971851a",
+      "name": "Continue Polling?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -1168,
+        -256
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "should-terminate",
+              "leftValue": "={{ $json.should_terminate }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "5c7724e7-9122-4d28-86db-69e746367c0f",
+      "name": "Need Terminate?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -896,
+        -240
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://{{ $('Env Parameters').item.json.server_ip }}:{{ $('Env Parameters').item.json.server_port }}/api/terminate_job?job_id={{ $json.job_id }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "619d89fc-3ec6-4d7c-a47d-e8c29e214d15",
+      "name": "Terminate Job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -704,
+        -256
+      ],
+      "notesInFlow": true,
+      "notes": "Hard cancel after timeout+120s"
+    },
+    {
+      "parameters": {
+        "url": "=http://{{ $('Env Parameters').item.json.server_ip }}:{{ $('Env Parameters').item.json.server_port }}/api/get_job_results?job_id={{ $json.job_id }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "074d2de7-e5a8-46a4-a75a-425659d1b096",
+      "name": "Get Results",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -144,
+        -240
+      ],
+      "notesInFlow": true,
+      "notes": "Step 6: Retrieve results"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Combine all data for report generation\nconst ww = $('WW Parameters').first().json;\nconst evalData = $('Evaluate Status').first().json;\nconst resultsResponse = $input.first().json;\n\n// Extract results safely\nconst results = resultsResponse.results || {};\nconst performance = results.performance || {};\nconst effluent = results.effluent || {};\nconst reactor = results.reactor || {};\n\nconst cod = performance.cod || {};\nconst nitrogen = performance.nitrogen || {};\nconst phosphorus = performance.phosphorus || {};\nconst tss = performance.tss || {};\n\n// Determine overall assessment\nlet assessment = 'Incomplete';\nif (evalData.exit_condition === 'completed') {\n  const cod_removal = cod.removal_pct || 0;\n  const nh4_eff = effluent.NH4_mg_N_L || 999;\n  \n  if (cod_removal > 95 && nh4_eff < 1) {\n    assessment = 'Excellent';\n  } else if (cod_removal > 85 && nh4_eff < 5) {\n    assessment = 'Good';\n  } else if (cod_removal > 75) {\n    assessment = 'Needs Optimization';\n  } else {\n    assessment = 'Poor';\n  }\n}\n\nlet status_text = evalData.exit_condition;\nif (status_text === 'hard_cancel') status_text = 'Terminated (hard cancel)';\nif (status_text === 'timeout') status_text = 'Timed Out';\nif (status_text === 'completed') status_text = 'Completed';\nif (status_text === 'failed') status_text = 'Failed';\n\nreturn {\n  json: {\n    report_date: new Date().toISOString(),\n    job_id: evalData.job_id,\n    session_id: evalData.session_id,\n    analysis_type: evalData.analysis_type,\n    template: ww.template,\n    status: status_text,\n    elapsed_seconds: evalData.elapsed_seconds,\n    timeout_setting: ww.timeout_seconds,\n    server_version: evalData.server_version,\n    assessment: assessment,\n    influent: {\n      flow_m3_d: ww.flow_m3_d,\n      COD_mg_L: ww.COD_mg_L,\n      TSS_mg_L: ww.TSS_mg_L,\n      NH4_mg_L: ww.NH4_mg_L,\n      TP_mg_L: ww.TP_mg_L,\n      temperature_C: ww.temperature_C\n    },\n    reactor: {\n      type: reactor.type || 'N/A',\n      V_total_m3: reactor.V_total_m3 || 'N/A',\n      HRT_hours: reactor.HRT_hours || 'N/A',\n      SRT_days: typeof reactor.SRT_days === 'number' ? reactor.SRT_days.toFixed(1) : 'N/A',\n      DO_aerobic: reactor.DO_aerobic_mg_L || 'N/A'\n    },\n    effluent: {\n      COD_mg_L: effluent.COD_mg_L ? effluent.COD_mg_L.toFixed(2) : 'N/A',\n      TSS_mg_L: effluent.TSS_mg_L ? effluent.TSS_mg_L.toFixed(2) : 'N/A',\n      NH4_mg_L: effluent.NH4_mg_N_L ? effluent.NH4_mg_N_L.toFixed(2) : 'N/A',\n      NO3_mg_L: effluent.NO3_mg_N_L ? effluent.NO3_mg_N_L.toFixed(2) : 'N/A',\n      PO4_mg_L: effluent.PO4_mg_P_L ? effluent.PO4_mg_P_L.toFixed(2) : 'N/A'\n    },\n    removal: {\n      COD_pct: cod.removal_pct ? cod.removal_pct.toFixed(1) : 'N/A',\n      TSS_pct: tss.removal_pct ? tss.removal_pct.toFixed(1) : 'N/A',\n      NH4_pct: nitrogen.removal?.NH4_removal_pct ? nitrogen.removal.NH4_removal_pct.toFixed(1) : 'N/A',\n      TN_pct: nitrogen.removal?.TN_removal_pct ? nitrogen.removal.TN_removal_pct.toFixed(1) : 'N/A',\n      TP_pct: phosphorus.removal?.TP_removal_pct ? phosphorus.removal.TP_removal_pct.toFixed(1) : 'N/A'\n    },\n    nitrification_pct: nitrogen.removal?.nitrification_efficiency_pct ? nitrogen.removal.nitrification_efficiency_pct.toFixed(1) : 'N/A',\n    denitrification_pct: nitrogen.removal?.denitrification_efficiency_pct ? nitrogen.removal.denitrification_efficiency_pct.toFixed(1) : 'N/A',\n    raw_results: resultsResponse\n  }\n};"
+      },
+      "id": "a3d749ff-0078-4cc6-8886-514c8bbed23b",
+      "name": "Process Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        80,
+        -240
+      ],
+      "notesInFlow": true,
+      "notes": "Step 7: Interpret results"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare data for server-side AI analysis\n// In v8, we call the server's /api/analyze_results endpoint instead of OpenAI directly\n// This keeps the API key secure on the server side\nconst env = $('Env Parameters').first().json;\nconst data = $input.first().json;\n\n// Remove raw_results to keep payload manageable\nconst { raw_results, ...cleanData } = data;\n\n// Build input parameters object for the analysis\nconst inputParameters = {\n  template: data.template,\n  influent: data.influent,\n  reactor: data.reactor,\n  timeout_setting: data.timeout_setting\n};\n\n// Build analysis request with optional override_prompt\nconst analysisRequest = {\n  results: cleanData,\n  input_parameters: inputParameters,\n  model: env.ai_model || 'gpt-4o',\n  temperature: 0.7,\n  max_tokens: 4000\n};\n\n// Add override_prompt if provided\nif (env.override_prompt && env.override_prompt.trim()) {\n  analysisRequest.override_prompt = env.override_prompt.trim();\n}\n\nreturn {\n  json: {\n    ...data,\n    analysis_request: analysisRequest\n  }\n};"
+      },
+      "id": "chatgpt-prompt-builder",
+      "name": "Prepare AI Analysis Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        172,
+        -440
+      ],
+      "notesInFlow": true,
+      "notes": "Step 7b: Build server-side AI analysis request"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://{{ $('Env Parameters').item.json.server_ip }}:{{ $('Env Parameters').item.json.server_port }}/api/analyze_results",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.analysis_request) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "chatgpt-api-call",
+      "name": "Server AI Analysis",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        384,
+        -440
+      ],
+      "notesInFlow": true,
+      "onError": "continueErrorOutput",
+      "notes": "Step 7c: Call server's AI analysis endpoint (API key is server-side)"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract AI analysis from server response and merge with original data\nconst prevData = $('Prepare AI Analysis Request').first().json;\nconst serverResponse = $input.first().json;\n\n// Extract the markdown analysis from server response\nlet ai_analysis = '';\nlet ai_analysis_error = null;\nlet ai_model = 'unknown';\n\nif (serverResponse.status === 'success' && serverResponse.analysis) {\n  ai_analysis = serverResponse.analysis;\n  ai_model = serverResponse.model_used || 'gpt-4o';\n} else if (serverResponse.detail) {\n  // Server returned an error\n  ai_analysis_error = serverResponse.detail;\n  ai_analysis = `## AI Analysis Unavailable\\n\\nThe AI analysis could not be completed:\\n\\n\\`${ai_analysis_error}\\`\\n\\nPlease review the simulation results manually.`;\n  ai_model = 'error';\n} else {\n  ai_analysis_error = 'Unexpected response format from server';\n  ai_analysis = `## AI Analysis Unavailable\\n\\nUnexpected response format received. Please review the simulation results manually.`;\n  ai_model = 'error';\n}\n\n// Remove the analysis request data, keep the clean results\nconst { analysis_request, ...cleanPrevData } = prevData;\n\nreturn {\n  json: {\n    ...cleanPrevData,\n    ai_analysis: ai_analysis,\n    ai_analysis_error: ai_analysis_error,\n    ai_model: ai_model,\n    ai_usage: serverResponse.usage || null\n  }\n};"
+      },
+      "id": "chatgpt-response-handler",
+      "name": "Process AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        596,
+        -440
+      ],
+      "notesInFlow": true,
+      "notes": "Step 7d: Extract AI analysis markdown"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Handle AI Analysis API error - provide fallback\nconst prevData = $('Prepare AI Analysis Request').first().json;\nconst errorResponse = $input.first().json;\n\n// Remove the analysis request data\nconst { analysis_request, ...cleanPrevData } = prevData;\n\nconst errorMessage = errorResponse.detail || errorResponse.message || errorResponse.error?.message || JSON.stringify(errorResponse);\n\nreturn {\n  json: {\n    ...cleanPrevData,\n    ai_analysis: `## AI Analysis Unavailable\\n\\nThe AI analysis could not be completed due to an error:\\n\\n\\`${errorMessage}\\`\\n\\nThis may be because:\\n- The OPENAI_API_KEY is not configured on the server\\n- The server's AI analysis endpoint is unavailable\\n- Network connectivity issues\\n\\nPlease review the simulation results manually.`,\n    ai_analysis_error: errorMessage,\n    ai_model: 'error',\n    ai_usage: null\n  }\n};"
+      },
+      "id": "chatgpt-error-handler",
+      "name": "Handle AI Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        596,
+        -560
+      ],
+      "notesInFlow": true,
+      "notes": "Fallback when server AI analysis fails"
+    },
+    {
+      "parameters": {},
+      "id": "chatgpt-merge",
+      "name": "Merge AI Results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        808,
+        -500
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generate HTML report for Gotenberg PDF conversion (now includes AI analysis)\nconst data = $input.first().json;\n\n// Extract only what we need (exclude raw_results to reduce payload size)\nconst { raw_results, ...reportData } = data;\n\nconst incomplete_note = data.status !== 'Completed' \n  ? '<div class=\"warning\">Note: This simulation did not complete within the allocated time. Results shown are partial and may not represent steady-state conditions.</div>'\n  : '';\n\n// Convert markdown AI analysis to basic HTML\nlet ai_analysis_html = data.ai_analysis || 'AI analysis not available.';\n// Basic markdown to HTML conversion\nai_analysis_html = ai_analysis_html\n  .replace(/^### (.*$)/gm, '<h3>$1</h3>')\n  .replace(/^## (.*$)/gm, '<h2>$1</h2>')\n  .replace(/^# (.*$)/gm, '<h1>$1</h1>')\n  .replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>')\n  .replace(/\\*([^*]+)\\*/g, '<em>$1</em>')\n  .replace(/`([^`]+)`/g, '<code>$1</code>')\n  .replace(/^- (.*$)/gm, '<li>$1</li>')\n  .replace(/^\\d+\\. (.*$)/gm, '<li>$1</li>')\n  .replace(/\\n\\n/g, '</p><p>')\n  .replace(/\\n/g, '<br>');\n\n// Wrap list items\nai_analysis_html = ai_analysis_html.replace(/(<li>.*<\\/li>)+/g, '<ul>$&</ul>');\n\n// Generate full HTML report\nconst htmlReport = `<!DOCTYPE html>\n<html>\n<head>\n  <meta charset=\"UTF-8\">\n  <title>Wastewater Simulation Report - ${data.session_id}</title>\n  <style>\n    body { font-family: Arial, sans-serif; margin: 40px; line-height: 1.6; color: #333; }\n    h1 { color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 10px; }\n    h2 { color: #34495e; margin-top: 30px; border-bottom: 1px solid #bdc3c7; padding-bottom: 5px; }\n    h3 { color: #5d6d7e; margin-top: 20px; }\n    table { border-collapse: collapse; width: 100%; margin: 20px 0; }\n    th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }\n    th { background-color: #3498db; color: white; }\n    tr:nth-child(even) { background-color: #f2f2f2; }\n    hr { border: none; border-top: 1px solid #bdc3c7; margin: 30px 0; }\n    .warning { background: #fff3cd; border-left: 4px solid #ffc107; padding: 15px 20px; margin: 20px 0; }\n    .header-info { background: #f8f9fa; padding: 15px; border-radius: 5px; margin-bottom: 20px; }\n    .header-info p { margin: 5px 0; }\n    .assessment { font-size: 1.2em; font-weight: bold; color: #27ae60; }\n    .section { margin-bottom: 30px; }\n    .ai-analysis { background: #f0f8ff; border-left: 4px solid #3498db; padding: 20px; margin: 20px 0; }\n    .ai-analysis h2 { color: #2980b9; border-bottom: none; }\n    .ai-analysis ul { margin-left: 20px; }\n    .ai-analysis li { margin-bottom: 8px; }\n    code { background: #f4f4f4; padding: 2px 6px; border-radius: 3px; font-family: monospace; }\n    .secure-notice { background: #d4edda; border-left: 4px solid #28a745; padding: 10px 15px; margin: 10px 0; font-size: 0.9em; color: #155724; }\n  </style>\n</head>\n<body>\n  <h1>Wastewater Treatment Simulation Report</h1>\n  \n  <div class=\"header-info\">\n    <p><strong>Generated:</strong> ${new Date(data.report_date).toLocaleString()}</p>\n    <p><strong>Session ID:</strong> ${data.session_id}</p>\n    <p><strong>Job ID:</strong> ${data.job_id}</p>\n    <p><strong>Template:</strong> ${data.template}</p>\n    <p><strong>Status:</strong> ${data.status}</p>\n    <p><strong>Elapsed Time:</strong> ${data.elapsed_seconds} seconds</p>\n    <p><strong>AI Model:</strong> ${data.ai_model || 'N/A'}</p>\n  </div>\n\n  ${incomplete_note}\n\n  <div class=\"section\">\n    <h2>Executive Summary</h2>\n    <p>Simulation ${data.status.toLowerCase()} using the <strong>${data.template}</strong> template.</p>\n    <p class=\"assessment\">Overall Assessment: ${data.assessment}</p>\n  </div>\n\n  <div class=\"section\">\n    <h2>Influent Characteristics</h2>\n    <table>\n      <tr><th>Parameter</th><th>Value</th><th>Unit</th><th>Typical Range</th></tr>\n      <tr><td>Flow</td><td>${data.influent.flow_m3_d}</td><td>m3/d</td><td>-</td></tr>\n      <tr><td>COD</td><td>${data.influent.COD_mg_L}</td><td>mg/L</td><td>300-600</td></tr>\n      <tr><td>TSS</td><td>${data.influent.TSS_mg_L}</td><td>mg/L</td><td>200-400</td></tr>\n      <tr><td>NH4-N</td><td>${data.influent.NH4_mg_L}</td><td>mg/L</td><td>25-50</td></tr>\n      <tr><td>Total P</td><td>${data.influent.TP_mg_L}</td><td>mg/L</td><td>6-12</td></tr>\n      <tr><td>Temperature</td><td>${data.influent.temperature_C}</td><td>C</td><td>15-25</td></tr>\n    </table>\n  </div>\n\n  <div class=\"section\">\n    <h2>Treatment System Configuration</h2>\n    <table>\n      <tr><th>Parameter</th><th>Value</th></tr>\n      <tr><td>Template</td><td>${data.template}</td></tr>\n      <tr><td>Reactor Type</td><td>${data.reactor.type}</td></tr>\n      <tr><td>Total Volume</td><td>${data.reactor.V_total_m3} m3</td></tr>\n      <tr><td>HRT</td><td>${data.reactor.HRT_hours} hours</td></tr>\n      <tr><td>SRT</td><td>${data.reactor.SRT_days} days</td></tr>\n      <tr><td>Aerobic DO</td><td>${data.reactor.DO_aerobic} mg/L</td></tr>\n    </table>\n  </div>\n\n  <div class=\"section\">\n    <h2>Effluent Quality</h2>\n    <table>\n      <tr><th>Parameter</th><th>Influent</th><th>Effluent</th><th>Removal %</th></tr>\n      <tr><td>COD</td><td>${data.influent.COD_mg_L} mg/L</td><td>${data.effluent.COD_mg_L} mg/L</td><td>${data.removal.COD_pct}%</td></tr>\n      <tr><td>TSS</td><td>${data.influent.TSS_mg_L} mg/L</td><td>${data.effluent.TSS_mg_L} mg/L</td><td>${data.removal.TSS_pct}%</td></tr>\n      <tr><td>NH4-N</td><td>${data.influent.NH4_mg_L} mg/L</td><td>${data.effluent.NH4_mg_L} mg/L</td><td>${data.removal.NH4_pct}%</td></tr>\n      <tr><td>TN</td><td>-</td><td>-</td><td>${data.removal.TN_pct}%</td></tr>\n      <tr><td>TP</td><td>${data.influent.TP_mg_L} mg/L</td><td>${data.effluent.PO4_mg_L} mg/L</td><td>${data.removal.TP_pct}%</td></tr>\n    </table>\n  </div>\n\n  <div class=\"section\">\n    <h2>Process Performance Analysis</h2>\n    <h3>Nitrification</h3>\n    <p>Nitrification efficiency: <strong>${data.nitrification_pct}%</strong></p>\n    <h3>Denitrification</h3>\n    <p>Denitrification efficiency: <strong>${data.denitrification_pct}%</strong></p>\n  </div>\n\n  <hr>\n\n  <div class=\"ai-analysis\">\n    <h2>AI Expert Analysis</h2>\n    <div class=\"secure-notice\">AI analysis performed via secure server-side API (v8.0)</div>\n    <p>${ai_analysis_html}</p>\n  </div>\n\n  <hr>\n\n  <div class=\"section\">\n    <h2>Technical Notes</h2>\n    <ul>\n      <li>Session ID: ${data.session_id}</li>\n      <li>Timeout Setting: ${data.timeout_setting} seconds</li>\n      <li>Actual Runtime: ${data.elapsed_seconds} seconds</li>\n      <li>Server Version: ${data.server_version}</li>\n      <li>AI Analysis Model: ${data.ai_model || 'N/A'}</li>\n    </ul>\n  </div>\n\n  <hr>\n  <p><em>Report generated by QSDsan Wastewater Simulation Engine v8.0 with Hierarchical Storage</em></p>\n</body>\n</html>`;\n\nreturn {\n  json: {\n    ...reportData,\n    report_html: htmlReport,\n    report_filename: `${data.session_id}-${data.template}.pdf`\n  }\n};"
+      },
+      "id": "ebbc5cbe-eb9b-4ef3-8d6d-dbaba5bb8355",
+      "name": "Generate Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1020,
+        -500
+      ],
+      "notesInFlow": true,
+      "notes": "Step 8: Generate HTML report with AI analysis"
+    },
+    {
+      "parameters": {
+        "operation": "toText",
+        "sourceProperty": "report_html",
+        "options": {
+          "fileName": "index.html"
+        }
+      },
+      "id": "0134ee84-4baa-4ddf-a62b-99414e7e4560",
+      "name": "Create HTML File",
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        1232,
+        -612
+      ],
+      "notesInFlow": true,
+      "notes": "Convert HTML string to file"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Env Parameters').item.json.gotenberg_url }}/forms/chromium/convert/html",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "files",
+              "inputDataFieldName": "data"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          },
+          "timeout": 120000
+        }
+      },
+      "id": "4dd0c572-eba8-4a23-9c08-259ed2563ea2",
+      "name": "Convert to PDF",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1456,
+        -612
+      ],
+      "notesInFlow": true,
+      "notes": "Gotenberg HTML to PDF"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Env Parameters').item.json.supabase_url }}/storage/v1/object/{{ $('Env Parameters').item.json.supabase_bucket }}/{{ $('Generate Report').item.json.session_id }}/{{ $('Generate Report').item.json.analysis_type }}/{{ $('Generate Report').item.json.session_id }}-{{ $('Generate Report').item.json.template }}.pdf",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Env Parameters').item.json.supabase_key }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/pdf"
+            },
+            {
+              "name": "x-upsert",
+              "value": "true"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "binaryData",
+        "inputDataFieldName": "data"
+      },
+      "id": "f3fa0ba1-6460-4307-91d5-ee4e30c084b9",
+      "name": "Upload PDF to Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1680,
+        -612
+      ],
+      "notesInFlow": true,
+      "notes": "Upload PDF to Supabase Storage (hierarchical path)",
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process PDF upload result from HTTP Request node\nconst env = $('Env Parameters').first().json;\nconst reportData = $('Generate Report').item.json;\nconst response = $input.first().json;\n\nconst fileName = `${reportData.session_id}/${reportData.analysis_type}/${reportData.session_id}-${reportData.template}.pdf`;\nconst publicUrl = `${env.supabase_url}/storage/v1/object/public/${env.supabase_bucket}/${fileName}`;\n\nreturn {\n  json: {\n    success: true,\n    file_type: 'pdf',\n    path: fileName,\n    public_url: publicUrl,\n    job_id: reportData.job_id,\n    session_id: reportData.session_id,\n    upload_result: response\n  }\n};"
+      },
+      "id": "pdf-upload-success-handler",
+      "name": "Process PDF Upload Success",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1792,
+        -612
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Handle PDF upload error\nconst reportData = $('Generate Report').item.json;\nconst fileName = `${reportData.session_id}/${reportData.analysis_type}/${reportData.session_id}-${reportData.template}.pdf`;\nconst errorData = $input.first().json;\n\nreturn {\n  json: {\n    success: false,\n    error: errorData.message || JSON.stringify(errorData),\n    file_type: 'pdf',\n    path: fileName,\n    job_id: reportData.job_id,\n    session_id: reportData.session_id\n  }\n};"
+      },
+      "id": "pdf-upload-error-handler",
+      "name": "Process PDF Upload Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1792,
+        -740
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "pdf-upload-merge",
+      "name": "Merge PDF Results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        1904,
+        -676
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generate CSV data from report\nconst data = $input.first().json;\n\n// Build CSV content\nconst csvRows = [\n  ['Parameter', 'Value'],\n  ['Session ID', data.session_id],\n  ['Job ID', data.job_id],\n  ['Report Date', data.report_date],\n  ['Template', data.template],\n  ['Status', data.status],\n  ['Elapsed Seconds', data.elapsed_seconds],\n  ['Assessment', data.assessment],\n  ['AI Model', data.ai_model || 'N/A'],\n  ['', ''],\n  ['INFLUENT', ''],\n  ['Flow (m3/d)', data.influent.flow_m3_d],\n  ['COD (mg/L)', data.influent.COD_mg_L],\n  ['TSS (mg/L)', data.influent.TSS_mg_L],\n  ['NH4-N (mg/L)', data.influent.NH4_mg_L],\n  ['TP (mg/L)', data.influent.TP_mg_L],\n  ['Temperature (C)', data.influent.temperature_C],\n  ['', ''],\n  ['EFFLUENT', ''],\n  ['COD (mg/L)', data.effluent.COD_mg_L],\n  ['TSS (mg/L)', data.effluent.TSS_mg_L],\n  ['NH4-N (mg/L)', data.effluent.NH4_mg_L],\n  ['NO3-N (mg/L)', data.effluent.NO3_mg_L],\n  ['PO4-P (mg/L)', data.effluent.PO4_mg_L],\n  ['', ''],\n  ['REMOVAL (%)', ''],\n  ['COD', data.removal.COD_pct],\n  ['TSS', data.removal.TSS_pct],\n  ['NH4', data.removal.NH4_pct],\n  ['TN', data.removal.TN_pct],\n  ['TP', data.removal.TP_pct],\n  ['', ''],\n  ['PERFORMANCE', ''],\n  ['Nitrification (%)', data.nitrification_pct],\n  ['Denitrification (%)', data.denitrification_pct],\n  ['', ''],\n  ['REACTOR', ''],\n  ['Type', data.reactor.type],\n  ['Volume (m3)', data.reactor.V_total_m3],\n  ['HRT (hours)', data.reactor.HRT_hours],\n  ['SRT (days)', data.reactor.SRT_days],\n  ['DO Aerobic (mg/L)', data.reactor.DO_aerobic]\n];\n\nconst csvContent = csvRows.map(row => row.join(',')).join('\\n');\n\nreturn {\n  json: {\n    job_id: data.job_id,\n    session_id: data.session_id,\n    analysis_type: data.analysis_type,\n    template: data.template,\n    csv_content: csvContent\n  }\n};"
+      },
+      "id": "d35394fa-0c3c-4ec8-aa43-210a5282eec0",
+      "name": "Generate CSV Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1232,
+        -420
+      ],
+      "notesInFlow": true,
+      "notes": "Generate CSV from results"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Upload CSV to Supabase Storage with hierarchical path\nconst env = $('Env Parameters').first().json;\nconst data = $input.first().json;\n\nconst sessionId = data.session_id;\nconst analysisType = data.analysis_type;\nconst template = data.template;\nconst csvContent = data.csv_content;\nconst fileName = `${sessionId}/${analysisType}/${sessionId}-${template}.csv`;\n\n// Upload to Supabase Storage - send CSV as string directly\ntry {\n  const result = await this.helpers.httpRequest({\n    method: 'POST',\n    url: `${env.supabase_url}/storage/v1/object/${env.supabase_bucket}/${fileName}`,\n    headers: {\n      'Authorization': `Bearer ${env.supabase_key}`,\n      'Content-Type': 'text/csv; charset=utf-8',\n      'x-upsert': 'true'\n    },\n    body: csvContent,\n    json: false,\n    returnFullResponse: true\n  });\n\n  const publicUrl = `${env.supabase_url}/storage/v1/object/public/${env.supabase_bucket}/${fileName}`;\n\n  return {\n    json: {\n      success: true,\n      status: result.statusCode || 200,\n      file_type: 'csv',\n      path: fileName,\n      public_url: publicUrl,\n      job_id: data.job_id,\n      session_id: sessionId,\n      upload_result: result.body\n    }\n  };\n} catch (error) {\n  return {\n    json: {\n      success: false,\n      error: error.message,\n      file_type: 'csv',\n      path: fileName,\n      job_id: data.job_id,\n      session_id: sessionId\n    }\n  };\n}"
+      },
+      "id": "c23a95df-e237-4679-b3cc-97f606d67c59",
+      "name": "Upload CSV to Supabase",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1456,
+        -420
+      ],
+      "notesInFlow": true,
+      "notes": "Upload CSV to Supabase Storage (hierarchical path)"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Upload JSON results to Supabase Storage with hierarchical path\nconst env = $('Env Parameters').first().json;\nconst data = $input.first().json;\n\nconst sessionId = data.session_id;\nconst analysisType = data.analysis_type;\nconst template = data.template;\nconst fileName = `${sessionId}/${analysisType}/${sessionId}-${template}.json`;\n\n// Convert JSON to string (includes AI analysis)\nconst jsonContent = JSON.stringify(data, null, 2);\n\n// Upload to Supabase Storage using httpRequest\ntry {\n  const result = await this.helpers.httpRequest({\n    method: 'POST',\n    url: `${env.supabase_url}/storage/v1/object/${env.supabase_bucket}/${fileName}`,\n    headers: {\n      'Authorization': `Bearer ${env.supabase_key}`,\n      'Content-Type': 'application/json',\n      'x-upsert': 'true'\n    },\n    body: jsonContent,\n    returnFullResponse: true\n  });\n\n  const publicUrl = `${env.supabase_url}/storage/v1/object/public/${env.supabase_bucket}/${fileName}`;\n\n  return {\n    json: {\n      success: true,\n      status: result.statusCode || 200,\n      file_type: 'json',\n      path: fileName,\n      public_url: publicUrl,\n      job_id: data.job_id,\n      session_id: sessionId,\n      upload_result: result.body\n    }\n  };\n} catch (error) {\n  return {\n    json: {\n      success: false,\n      error: error.message,\n      file_type: 'json',\n      path: fileName,\n      job_id: data.job_id,\n      session_id: sessionId\n    }\n  };\n}"
+      },
+      "id": "c1421b5d-8b40-490d-9070-8efa159c9e5f",
+      "name": "Upload JSON to Supabase",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1232,
+        -260
+      ],
+      "notesInFlow": true,
+      "notes": "Upload JSON to Supabase Storage (hierarchical path)"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Upload AI Analysis markdown to Supabase Storage with hierarchical path\nconst env = $('Env Parameters').first().json;\nconst data = $input.first().json;\n\nconst sessionId = data.session_id;\nconst analysisType = data.analysis_type;\nconst fileName = `${sessionId}/${analysisType}/${sessionId}-AI_Analysis.md`;\n\n// Create markdown content with header\nconst markdownContent = `# AI Expert Analysis - Wastewater Simulation\n\n**Session ID:** ${sessionId}\n**Report Date:** ${data.report_date}\n**Template:** ${data.template}\n**Status:** ${data.status}\n**AI Model:** ${data.ai_model || 'N/A'}\n**Security:** Server-side API (v8.0 - API key not exposed)\n\n---\n\n## Simulation Results (JSON)\n\n\\`\\`\\`json\n${JSON.stringify({\n  influent: data.influent,\n  effluent: data.effluent,\n  removal: data.removal,\n  reactor: data.reactor,\n  nitrification_pct: data.nitrification_pct,\n  denitrification_pct: data.denitrification_pct,\n  assessment: data.assessment\n}, null, 2)}\n\\`\\`\\`\n\n---\n\n${data.ai_analysis || 'AI analysis not available.'}\n\n---\n\n*Generated by QSDsan Wastewater Simulation Engine v8.0 with Hierarchical Storage*\n`;\n\n// Upload to Supabase Storage\ntry {\n  const result = await this.helpers.httpRequest({\n    method: 'POST',\n    url: `${env.supabase_url}/storage/v1/object/${env.supabase_bucket}/${fileName}`,\n    headers: {\n      'Authorization': `Bearer ${env.supabase_key}`,\n      'Content-Type': 'text/markdown; charset=utf-8',\n      'x-upsert': 'true'\n    },\n    body: markdownContent,\n    json: false,\n    returnFullResponse: true\n  });\n\n  const publicUrl = `${env.supabase_url}/storage/v1/object/public/${env.supabase_bucket}/${fileName}`;\n\n  return {\n    json: {\n      success: true,\n      status: result.statusCode || 200,\n      file_type: 'markdown',\n      path: fileName,\n      public_url: publicUrl,\n      job_id: data.job_id,\n      session_id: sessionId,\n      upload_result: result.body\n    }\n  };\n} catch (error) {\n  return {\n    json: {\n      success: false,\n      error: error.message,\n      file_type: 'markdown',\n      path: fileName,\n      job_id: data.job_id,\n      session_id: sessionId\n    }\n  };\n}"
+      },
+      "id": "upload-ai-analysis",
+      "name": "Upload AI Analysis to Supabase",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1232,
+        -100
+      ],
+      "notesInFlow": true,
+      "notes": "Upload AI analysis as markdown file (hierarchical path)"
+    },
+    {
+      "parameters": {},
+      "id": "b66434e5-1dc2-4339-b7ce-88fb59e49dea",
+      "name": "End (Success)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        2352,
+        -516
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "958969b2-fe67-4194-a3c7-f272da76bade",
+      "name": "End (Error)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -2480,
+        0
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "79eabf7f-698f-473f-b10d-bc89be14a97d",
+      "name": "End (Submit Error)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -1840,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Loop back with updated data for next iteration\nconst evalData = $input.first().json;\n\nreturn {\n  json: {\n    ...evalData\n  }\n};"
+      },
+      "id": "21567e90-877f-4499-a35e-45b6843fa90f",
+      "name": "Loop Back",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -976,
+        -528
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pass through data after termination\nconst evalData = $('Evaluate Status').first().json;\n\nreturn {\n  json: {\n    ...evalData,\n    termination_response: $input.first().json\n  }\n};"
+      },
+      "id": "f9252766-4049-4a4f-bcaf-d134184bb65b",
+      "name": "After Terminate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -544,
+        -256
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pass through data when no termination needed\nconst evalData = $input.first().json;\n\nreturn {\n  json: evalData\n};"
+      },
+      "id": "07a5b957-2aab-46be-b3b0-03916dd1be6c",
+      "name": "Skip Terminate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -592,
+        -64
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "c814535d-f7dc-4881-bc4a-bb7020dacdef",
+      "name": "Merge Paths",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        -320,
+        -240
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "bce898b3-3c3c-43ea-b56a-3e752dddb980",
+              "name": "template",
+              "value": "mle_mbr_asm2d",
+              "type": "string"
+            },
+            {
+              "id": "fbb7c824-e1bc-4aa8-b4cc-9b0743420ada",
+              "name": "timeout_seconds",
+              "value": 300,
+              "type": "number"
+            },
+            {
+              "id": "2f2c30ee-08bc-4c09-b657-ae88dbe01f4d",
+              "name": "check_interval_seconds",
+              "value": 60,
+              "type": "number"
+            },
+            {
+              "id": "6ce0668a-c54b-4437-9809-e9249475cec0",
+              "name": "hard_cancel_buffer",
+              "value": 120,
+              "type": "number"
+            },
+            {
+              "id": "db00e2e9-40c1-466e-bbb6-7c4395426a46",
+              "name": "flow_m3_d",
+              "value": 4000,
+              "type": "number"
+            },
+            {
+              "id": "2c31fc91-8283-4c27-867c-688768b02ae0",
+              "name": "temperature_C",
+              "value": 20,
+              "type": "number"
+            },
+            {
+              "id": "a8b12c78-a185-4595-aef3-49affa5218d6",
+              "name": "COD_mg_L",
+              "value": 350,
+              "type": "number"
+            },
+            {
+              "id": "3d4094a3-8b47-4b06-a19c-11108426e764",
+              "name": "NH4_mg_L",
+              "value": 25,
+              "type": "number"
+            },
+            {
+              "id": "1a895679-8512-4b8e-b34f-f013c460b9ba",
+              "name": "TP_mg_L",
+              "value": 8,
+              "type": "number"
+            },
+            {
+              "id": "29ddd068-5996-4a65-a413-0fce470aa0a5",
+              "name": "TSS_mg_L",
+              "value": 220,
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "72548ff7-d69b-4fbd-b107-febd67297b45",
+      "name": "WW Parameters",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -3536,
+        -224
+      ],
+      "notesInFlow": true,
+      "notes": "Configure simulation parameters here"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "3e8faea6-43ed-4267-a960-e36ce924ea76",
+              "name": "server_ip",
+              "value": "34.28.104.162",
+              "type": "string"
+            },
+            {
+              "id": "deec9d42-ce50-478d-ad98-843d740327b0",
+              "name": "server_port",
+              "value": "8080",
+              "type": "string"
+            },
+            {
+              "id": "fea802b5-1952-4f57-8adb-280aa3ed3096",
+              "name": "gotenberg_url",
+              "value": "http://34.28.104.162:3000",
+              "type": "string"
+            },
+            {
+              "id": "d731cd8d-ef0e-4b64-93d5-a0e4eec6a038",
+              "name": "supabase_key",
+              "value": "YOUR_SUPABASE_JWT_KEY_HERE",
+              "type": "string"
+            },
+            {
+              "id": "23216616-d177-4965-bc20-d34087d14b03",
+              "name": "supabase_url",
+              "value": "https://egrzvwnjrtpwwmqzimff.supabase.co",
+              "type": "string"
+            },
+            {
+              "id": "ea185044-86ac-47fc-a301-cbdf3cbc3677",
+              "name": "supabase_bucket",
+              "value": "panicleDevelop_1",
+              "type": "string"
+            },
+            {
+              "id": "ai-model-001",
+              "name": "ai_model",
+              "value": "gpt-4o",
+              "type": "string"
+            },
+            {
+              "id": "override-prompt-001",
+              "name": "override_prompt",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "session-id-001",
+              "name": "session_id",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "analysis-type-001",
+              "name": "analysis_type",
+              "value": "WasteWater",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "9debba0e-8106-4219-9583-3222814cf157",
+      "name": "Env Parameters",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -3728,
+        -224
+      ],
+      "notesInFlow": true,
+      "notes": "Configure environment settings here (includes session_id and analysis_type for v8)"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generate or validate session_id\n// v8.0: Hierarchical folder structure support\nconst env = $('Env Parameters').first().json;\n\nlet session_id = env.session_id;\nlet analysis_type = env.analysis_type || 'WasteWater';\n\n// Auto-generate session_id if not provided\nif (!session_id || session_id.trim() === '') {\n  const now = new Date();\n  const year = now.getFullYear();\n  const month = String(now.getMonth() + 1).padStart(2, '0');\n  const day = String(now.getDate()).padStart(2, '0');\n  const hours = String(now.getHours()).padStart(2, '0');\n  const minutes = String(now.getMinutes()).padStart(2, '0');\n  session_id = `Test_Session-${year}-${month}-${day}_${hours}-${minutes}`;\n}\n\n// Sanitize session_id for safe path usage\nsession_id = session_id\n  .replace(/:/g, '-')           // Replace colons with hyphens (Windows compatibility)\n  .replace(/\\s+/g, '_')         // Replace spaces with underscores\n  .replace(/[<>\"|?*]/g, '')     // Remove invalid path characters\n  .substring(0, 60);            // Enforce 60 character max length\n\nreturn {\n  json: {\n    session_id: session_id,\n    analysis_type: analysis_type,\n    generated: !env.session_id || env.session_id.trim() === ''\n  }\n};"
+      },
+      "id": "generate-session-id",
+      "name": "Generate Session ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -3344,
+        -224
+      ],
+      "notesInFlow": true,
+      "notes": "Auto-generate session_id if not provided; sanitize for path safety"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "16aacbaf-41e8-4e87-a86b-6d395ab028fa",
+              "leftValue": "={{ $json.success }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1664,
+        -420
+      ],
+      "id": "a9e90991-9cb2-447a-85b4-407584f78e7f",
+      "name": "CSV_Succeeded"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "09510550-59d7-41dc-88ba-7a699a182ff7",
+              "name": "path",
+              "value": "={{ $('Upload CSV to Supabase').item.json.path }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "ed252424-9271-499c-97fb-0f926b8bc3a6",
+      "name": "CSV_Error",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2112,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "16aacbaf-41e8-4e87-a86b-6d395ab028fa",
+              "leftValue": "={{ $json.success }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1456,
+        -260
+      ],
+      "id": "4c445c35-ae08-4d5e-8cf1-52269cc9521a",
+      "name": "JSON_Success"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "09510550-59d7-41dc-88ba-7a699a182ff7",
+              "name": "path",
+              "value": "={{ $('Upload JSON to Supabase').item.json.path }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "2076a968-c096-47c1-90e8-d8bbf2aa27b7",
+      "name": "JSON_Error",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2112,
+        -260
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "09510550-59d7-41dc-88ba-7a699a182ff7",
+              "name": "path",
+              "value": "={{ $('Upload PDF to Supabase').item.json.path }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a9818951-7ee1-46f5-a370-c9b0747a906e",
+      "name": "PDF_Error",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2112,
+        -692
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "16aacbaf-41e8-4e87-a86b-6d395ab028fa",
+              "leftValue": "={{ $json.success }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1904,
+        -612
+      ],
+      "id": "2b88f042-6d6e-4de2-a53b-802190811f45",
+      "name": "PDF_Succeeded"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ai-analysis-success",
+              "leftValue": "={{ $json.success }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1456,
+        -100
+      ],
+      "id": "ai-analysis-succeeded",
+      "name": "AI_Analysis_Succeeded"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "ai-analysis-error-path",
+              "name": "path",
+              "value": "={{ $('Upload AI Analysis to Supabase').item.json.path }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "ai-analysis-error",
+      "name": "AI_Analysis_Error",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2112,
+        -100
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Env Parameters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Health Check": {
+      "main": [
+        [
+          {
+            "node": "Server Healthy?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Server Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Server Healthy?": {
+      "main": [
+        [
+          {
+            "node": "Prepare Simulation",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Server Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Server Error": {
+      "main": [
+        [
+          {
+            "node": "End (Error)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Simulation": {
+      "main": [
+        [
+          {
+            "node": "Submit Simulation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Submit Simulation": {
+      "main": [
+        [
+          {
+            "node": "Submit OK?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Submit Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Submit OK?": {
+      "main": [
+        [
+          {
+            "node": "Store Job ID",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Submit Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Submit Error": {
+      "main": [
+        [
+          {
+            "node": "End (Submit Error)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Job ID": {
+      "main": [
+        [
+          {
+            "node": "Wait 60s",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 60s": {
+      "main": [
+        [
+          {
+            "node": "Check Job Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Job Status": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Status": {
+      "main": [
+        [
+          {
+            "node": "Continue Polling?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Continue Polling?": {
+      "main": [
+        [
+          {
+            "node": "Loop Back",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Need Terminate?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Back": {
+      "main": [
+        [
+          {
+            "node": "Wait 60s",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Need Terminate?": {
+      "main": [
+        [
+          {
+            "node": "Terminate Job",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Skip Terminate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Terminate Job": {
+      "main": [
+        [
+          {
+            "node": "After Terminate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "After Terminate": {
+      "main": [
+        [
+          {
+            "node": "Merge Paths",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skip Terminate": {
+      "main": [
+        [
+          {
+            "node": "Merge Paths",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Paths": {
+      "main": [
+        [
+          {
+            "node": "Get Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Results": {
+      "main": [
+        [
+          {
+            "node": "Process Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Results": {
+      "main": [
+        [
+          {
+            "node": "Prepare AI Analysis Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare AI Analysis Request": {
+      "main": [
+        [
+          {
+            "node": "Server AI Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Server AI Analysis": {
+      "main": [
+        [
+          {
+            "node": "Process AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle AI Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process AI Response": {
+      "main": [
+        [
+          {
+            "node": "Merge AI Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle AI Error": {
+      "main": [
+        [
+          {
+            "node": "Merge AI Results",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge AI Results": {
+      "main": [
+        [
+          {
+            "node": "Generate Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Report": {
+      "main": [
+        [
+          {
+            "node": "Create HTML File",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Generate CSV Data",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Upload JSON to Supabase",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Upload AI Analysis to Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create HTML File": {
+      "main": [
+        [
+          {
+            "node": "Convert to PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert to PDF": {
+      "main": [
+        [
+          {
+            "node": "Upload PDF to Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload PDF to Supabase": {
+      "main": [
+        [
+          {
+            "node": "Process PDF Upload Success",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Process PDF Upload Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process PDF Upload Success": {
+      "main": [
+        [
+          {
+            "node": "Merge PDF Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process PDF Upload Error": {
+      "main": [
+        [
+          {
+            "node": "Merge PDF Results",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge PDF Results": {
+      "main": [
+        [
+          {
+            "node": "PDF_Succeeded",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate CSV Data": {
+      "main": [
+        [
+          {
+            "node": "Upload CSV to Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload CSV to Supabase": {
+      "main": [
+        [
+          {
+            "node": "CSV_Succeeded",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload JSON to Supabase": {
+      "main": [
+        [
+          {
+            "node": "JSON_Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload AI Analysis to Supabase": {
+      "main": [
+        [
+          {
+            "node": "AI_Analysis_Succeeded",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Env Parameters": {
+      "main": [
+        [
+          {
+            "node": "WW Parameters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "WW Parameters": {
+      "main": [
+        [
+          {
+            "node": "Generate Session ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Session ID": {
+      "main": [
+        [
+          {
+            "node": "Health Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CSV_Succeeded": {
+      "main": [
+        [
+          {
+            "node": "End (Success)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CSV_Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CSV_Error": {
+      "main": [
+        [
+          {
+            "node": "End (Success)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "JSON_Success": {
+      "main": [
+        [
+          {
+            "node": "End (Success)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "JSON_Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "JSON_Error": {
+      "main": [
+        [
+          {
+            "node": "End (Success)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PDF_Succeeded": {
+      "main": [
+        [
+          {
+            "node": "End (Success)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "PDF_Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PDF_Error": {
+      "main": [
+        [
+          {
+            "node": "End (Success)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI_Analysis_Succeeded": {
+      "main": [
+        [
+          {
+            "node": "End (Success)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "AI_Analysis_Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI_Analysis_Error": {
+      "main": [
+        [
+          {
+            "node": "End (Success)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "v8-hierarchical-storage",
+  "meta": {
+    "instanceId": "1a31eed7b82cb7f448f2abc5a538a777a1f9a344ccc5df5f3741cf94e7885baa"
+  },
+  "id": "QSDsanSimulationV8",
+  "tags": [
+    {
+      "name": "qsdsan"
+    },
+    {
+      "name": "wastewater"
+    },
+    {
+      "name": "supabase"
+    },
+    {
+      "name": "simulation"
+    },
+    {
+      "name": "ai-analysis"
+    },
+    {
+      "name": "secure"
+    },
+    {
+      "name": "hierarchical-storage"
+    }
+  ]
+}

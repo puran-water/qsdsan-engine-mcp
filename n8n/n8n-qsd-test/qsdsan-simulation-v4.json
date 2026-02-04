@@ -1,0 +1,892 @@
+{
+  "name": "QSDsan Simulation v4.0",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "trigger-manual",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "server_ip",
+              "value": "34.28.104.162"
+            },
+            {
+              "name": "server_port",
+              "value": "8080"
+            },
+            {
+              "name": "gotenberg_url",
+              "value": "http://34.28.104.162:3000"
+            },
+            {
+              "name": "template",
+              "value": "mle_mbr_asm2d"
+            }
+          ],
+          "number": [
+            {
+              "name": "timeout_seconds",
+              "value": 300
+            },
+            {
+              "name": "check_interval_seconds",
+              "value": 60
+            },
+            {
+              "name": "hard_cancel_buffer",
+              "value": 120
+            },
+            {
+              "name": "flow_m3_d",
+              "value": 4000
+            },
+            {
+              "name": "temperature_C",
+              "value": 20
+            },
+            {
+              "name": "COD_mg_L",
+              "value": 350
+            },
+            {
+              "name": "NH4_mg_L",
+              "value": 25
+            },
+            {
+              "name": "TP_mg_L",
+              "value": 8
+            },
+            {
+              "name": "TSS_mg_L",
+              "value": 220
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-parameters",
+      "name": "Set Parameters",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [220, 300],
+      "notesInFlow": true,
+      "notes": "Configure simulation parameters here"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=http://{{ $json.server_ip }}:{{ $json.server_port }}/health",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "health-check",
+      "name": "Health Check",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 300],
+      "notesInFlow": true,
+      "notes": "Step 1: Verify server connection",
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "health-ok",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "healthy",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-health-status",
+      "name": "Server Healthy?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [660, 300]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "error",
+              "value": "Server not reachable or unhealthy"
+            },
+            {
+              "name": "suggestion",
+              "value": "Start the server with: gcloud compute instances start qsdsan-vm --zone=us-central1-a --project=lotsawatts"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "server-error",
+      "name": "Server Error",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [880, 480]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract version from health check (input) and use stored params\nconst inputData = $input.first().json;\nconst params = $('Set Parameters').first().json;\n\n// Health data comes from the health check response\nconst version = inputData.version || 'unknown';\nconst environment = inputData.environment || 'unknown';\n\n// Calculate temperature in Kelvin\nconst temperature_K = params.temperature_C + 273.15;\n\n// Distribute COD among components (50% S_F, 15% S_A, 35% X_S)\nconst S_F = params.COD_mg_L * 0.5 * 0.5;\nconst S_A = params.COD_mg_L * 0.5 * 0.15;\nconst X_S = params.COD_mg_L * 0.35;\n\n// Distribute TSS (25% X_I, 75% added to X_S)\nconst X_I = params.TSS_mg_L * 0.25;\nconst X_S_total = X_S + (params.TSS_mg_L * 0.75 * 0.5);\n\nreturn {\n  json: {\n    startup_message: `Processing with procedure: qsdsan-engine v${version}`,\n    server_version: version,\n    environment: environment,\n    server_ip: params.server_ip,\n    server_port: params.server_port,\n    gotenberg_url: params.gotenberg_url,\n    template: params.template,\n    timeout_seconds: params.timeout_seconds,\n    check_interval_seconds: params.check_interval_seconds,\n    hard_cancel_threshold: params.timeout_seconds + params.hard_cancel_buffer,\n    flow_m3_d: params.flow_m3_d,\n    temperature_K: temperature_K,\n    concentrations: {\n      S_O2: 0,\n      S_F: Math.round(S_F * 10) / 10,\n      S_A: Math.round(S_A * 10) / 10,\n      S_I: 10,\n      S_NH4: params.NH4_mg_L,\n      S_N2: 0,\n      S_NO3: 0,\n      S_PO4: params.TP_mg_L,\n      S_ALK: 300,\n      X_I: Math.round(X_I * 10) / 10,\n      X_S: Math.round(X_S_total * 10) / 10,\n      X_H: 30,\n      X_PAO: 0,\n      X_PP: 0,\n      X_PHA: 0,\n      X_AUT: 0,\n      X_MeOH: 0,\n      X_MeP: 0,\n      H2O: 1000\n    },\n    input_COD: params.COD_mg_L,\n    input_NH4: params.NH4_mg_L,\n    input_TP: params.TP_mg_L,\n    input_TSS: params.TSS_mg_L,\n    input_temp_C: params.temperature_C,\n    start_time: Date.now(),\n    iteration: 0\n  }\n};"
+      },
+      "id": "prepare-simulation",
+      "name": "Prepare Simulation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 300],
+      "notesInFlow": true,
+      "notes": "Step 2-3: Build request payload"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://{{ $json.server_ip }}:{{ $json.server_port }}/api/simulate_system",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"template\": \"{{ $json.template }}\",\n  \"influent\": {\n    \"model_type\": \"ASM2d\",\n    \"flow_m3_d\": {{ $json.flow_m3_d }},\n    \"temperature_K\": {{ $json.temperature_K }},\n    \"concentrations\": {{ JSON.stringify($json.concentrations) }}\n  },\n  \"duration_days\": 1.0\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "submit-simulation",
+      "name": "Submit Simulation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1100, 300],
+      "notesInFlow": true,
+      "notes": "Step 4: Start simulation",
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "submit-ok",
+              "leftValue": "={{ $json.job_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-submit-status",
+      "name": "Submit OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1320, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Display submission error\nconst errorData = $input.first().json;\n\nreturn {\n  json: {\n    error: 'Simulation submission failed',\n    error_details: errorData.error || errorData.message || JSON.stringify(errorData),\n    suggestion: 'Check server logs or try again later'\n  }\n};"
+      },
+      "id": "submit-error",
+      "name": "Submit Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1540, 480],
+      "notesInFlow": true,
+      "notes": "Display submission error"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge job_id with existing data\nconst prevData = $('Prepare Simulation').first().json;\nconst submitResponse = $input.first().json;\n\nreturn {\n  json: {\n    ...prevData,\n    job_id: submitResponse.job_id,\n    job_status: submitResponse.status,\n    submit_message: submitResponse.message\n  }\n};"
+      },
+      "id": "store-job-id",
+      "name": "Store Job ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1540, 300]
+    },
+    {
+      "parameters": {
+        "amount": "={{ $json.check_interval_seconds }}",
+        "unit": "seconds"
+      },
+      "id": "wait-interval",
+      "name": "Wait 60s",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1760, 300],
+      "webhookId": "qsdsan-wait"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=http://{{ $json.server_ip }}:{{ $json.server_port }}/api/get_job_status?job_id={{ $json.job_id }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "check-status",
+      "name": "Check Job Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1980, 300],
+      "notesInFlow": true,
+      "notes": "Step 5: Poll status"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Evaluate status and timeout conditions\nconst prevData = $('Store Job ID').first().json;\nconst statusResponse = $input.first().json;\n\nconst elapsed_seconds = Math.round((Date.now() - prevData.start_time) / 1000);\nconst iteration = (prevData.iteration || 0) + 1;\n\n// Determine exit condition\nlet exit_condition = null;\nlet should_continue = true;\nlet should_terminate = false;\n\nif (statusResponse.status === 'completed' || statusResponse.status === 'failed') {\n  exit_condition = statusResponse.status;\n  should_continue = false;\n} else if (elapsed_seconds >= prevData.hard_cancel_threshold) {\n  exit_condition = 'hard_cancel';\n  should_continue = false;\n  should_terminate = true;\n} else if (elapsed_seconds >= prevData.timeout_seconds) {\n  exit_condition = 'timeout';\n  should_continue = false;\n}\n\nreturn {\n  json: {\n    ...prevData,\n    current_status: statusResponse.status,\n    elapsed_seconds: elapsed_seconds,\n    elapsed_from_api: statusResponse.elapsed_time_seconds,\n    iteration: iteration,\n    progress_message: `Simulation running... elapsed time: ${elapsed_seconds}s (timeout: ${prevData.timeout_seconds}s)`,\n    exit_condition: exit_condition,\n    should_continue: should_continue,\n    should_terminate: should_terminate\n  }\n};"
+      },
+      "id": "evaluate-status",
+      "name": "Evaluate Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2200, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "should-continue",
+              "leftValue": "={{ $json.should_continue }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "continue-polling",
+      "name": "Continue Polling?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2420, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "should-terminate",
+              "leftValue": "={{ $json.should_terminate }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-terminate",
+      "name": "Need Terminate?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2640, 480]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://{{ $json.server_ip }}:{{ $json.server_port }}/api/terminate_job?job_id={{ $json.job_id }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "terminate-job",
+      "name": "Terminate Job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2860, 560],
+      "notesInFlow": true,
+      "notes": "Hard cancel after timeout+120s"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=http://{{ $json.server_ip }}:{{ $json.server_port }}/api/get_job_results?job_id={{ $json.job_id }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "get-results",
+      "name": "Get Results",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3080, 480],
+      "notesInFlow": true,
+      "notes": "Step 6: Retrieve results"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Combine all data for report generation\nconst evalData = $('Evaluate Status').first().json;\nconst resultsResponse = $input.first().json;\n\n// Extract results safely\nconst results = resultsResponse.results || {};\nconst performance = results.performance || {};\nconst effluent = results.effluent || {};\nconst reactor = results.reactor || {};\n\nconst cod = performance.cod || {};\nconst nitrogen = performance.nitrogen || {};\nconst phosphorus = performance.phosphorus || {};\nconst tss = performance.tss || {};\n\n// Determine overall assessment\nlet assessment = 'Incomplete';\nif (evalData.exit_condition === 'completed') {\n  const cod_removal = cod.removal_pct || 0;\n  const nh4_eff = effluent.NH4_mg_N_L || 999;\n  \n  if (cod_removal > 95 && nh4_eff < 1) {\n    assessment = 'Excellent';\n  } else if (cod_removal > 85 && nh4_eff < 5) {\n    assessment = 'Good';\n  } else if (cod_removal > 75) {\n    assessment = 'Needs Optimization';\n  } else {\n    assessment = 'Poor';\n  }\n}\n\nlet status_text = evalData.exit_condition;\nif (status_text === 'hard_cancel') status_text = 'Terminated (hard cancel)';\nif (status_text === 'timeout') status_text = 'Timed Out';\nif (status_text === 'completed') status_text = 'Completed';\nif (status_text === 'failed') status_text = 'Failed';\n\nreturn {\n  json: {\n    report_date: new Date().toISOString(),\n    job_id: evalData.job_id,\n    gotenberg_url: evalData.gotenberg_url,\n    template: evalData.template,\n    status: status_text,\n    elapsed_seconds: evalData.elapsed_seconds,\n    timeout_setting: evalData.timeout_seconds,\n    server_version: evalData.server_version,\n    assessment: assessment,\n    influent: {\n      flow_m3_d: evalData.flow_m3_d,\n      COD_mg_L: evalData.input_COD,\n      TSS_mg_L: evalData.input_TSS,\n      NH4_mg_L: evalData.input_NH4,\n      TP_mg_L: evalData.input_TP,\n      temperature_C: evalData.input_temp_C\n    },\n    reactor: {\n      type: reactor.type || 'N/A',\n      V_total_m3: reactor.V_total_m3 || 'N/A',\n      HRT_hours: reactor.HRT_hours || 'N/A',\n      SRT_days: typeof reactor.SRT_days === 'number' ? reactor.SRT_days.toFixed(1) : 'N/A',\n      DO_aerobic: reactor.DO_aerobic_mg_L || 'N/A'\n    },\n    effluent: {\n      COD_mg_L: effluent.COD_mg_L ? effluent.COD_mg_L.toFixed(2) : 'N/A',\n      TSS_mg_L: effluent.TSS_mg_L ? effluent.TSS_mg_L.toFixed(2) : 'N/A',\n      NH4_mg_L: effluent.NH4_mg_N_L ? effluent.NH4_mg_N_L.toFixed(2) : 'N/A',\n      NO3_mg_L: effluent.NO3_mg_N_L ? effluent.NO3_mg_N_L.toFixed(2) : 'N/A',\n      PO4_mg_L: effluent.PO4_mg_P_L ? effluent.PO4_mg_P_L.toFixed(2) : 'N/A'\n    },\n    removal: {\n      COD_pct: cod.removal_pct ? cod.removal_pct.toFixed(1) : 'N/A',\n      TSS_pct: tss.removal_pct ? tss.removal_pct.toFixed(1) : 'N/A',\n      NH4_pct: nitrogen.removal?.NH4_removal_pct ? nitrogen.removal.NH4_removal_pct.toFixed(1) : 'N/A',\n      TN_pct: nitrogen.removal?.TN_removal_pct ? nitrogen.removal.TN_removal_pct.toFixed(1) : 'N/A',\n      TP_pct: phosphorus.removal?.TP_removal_pct ? phosphorus.removal.TP_removal_pct.toFixed(1) : 'N/A'\n    },\n    nitrification_pct: nitrogen.removal?.nitrification_efficiency_pct ? nitrogen.removal.nitrification_efficiency_pct.toFixed(1) : 'N/A',\n    denitrification_pct: nitrogen.removal?.denitrification_efficiency_pct ? nitrogen.removal.denitrification_efficiency_pct.toFixed(1) : 'N/A',\n    raw_results: resultsResponse\n  }\n};"
+      },
+      "id": "process-results",
+      "name": "Process Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3300, 480],
+      "notesInFlow": true,
+      "notes": "Step 7: Interpret results"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generate HTML report for Gotenberg PDF conversion\nconst data = $input.first().json;\n\n// Extract only what we need (exclude raw_results to reduce payload size)\nconst { raw_results, ...reportData } = data;\n\nconst incomplete_note = data.status !== 'Completed' \n  ? '<div class=\"warning\">Note: This simulation did not complete within the allocated time. Results shown are partial and may not represent steady-state conditions.</div>'\n  : '';\n\n// Generate full HTML report\nconst htmlReport = `<!DOCTYPE html>\n<html>\n<head>\n  <meta charset=\"UTF-8\">\n  <title>Wastewater Simulation Report - ${data.job_id}</title>\n  <style>\n    body { font-family: Arial, sans-serif; margin: 40px; line-height: 1.6; color: #333; }\n    h1 { color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 10px; }\n    h2 { color: #34495e; margin-top: 30px; border-bottom: 1px solid #bdc3c7; padding-bottom: 5px; }\n    table { border-collapse: collapse; width: 100%; margin: 20px 0; }\n    th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }\n    th { background-color: #3498db; color: white; }\n    tr:nth-child(even) { background-color: #f2f2f2; }\n    hr { border: none; border-top: 1px solid #bdc3c7; margin: 30px 0; }\n    .warning { background: #fff3cd; border-left: 4px solid #ffc107; padding: 15px 20px; margin: 20px 0; }\n    .header-info { background: #f8f9fa; padding: 15px; border-radius: 5px; margin-bottom: 20px; }\n    .header-info p { margin: 5px 0; }\n    .assessment { font-size: 1.2em; font-weight: bold; color: #27ae60; }\n    .section { margin-bottom: 30px; }\n  </style>\n</head>\n<body>\n  <h1>Wastewater Treatment Simulation Report</h1>\n  \n  <div class=\"header-info\">\n    <p><strong>Generated:</strong> ${new Date(data.report_date).toLocaleString()}</p>\n    <p><strong>Job ID:</strong> ${data.job_id}</p>\n    <p><strong>Template:</strong> ${data.template}</p>\n    <p><strong>Status:</strong> ${data.status}</p>\n    <p><strong>Elapsed Time:</strong> ${data.elapsed_seconds} seconds</p>\n  </div>\n\n  ${incomplete_note}\n\n  <div class=\"section\">\n    <h2>Executive Summary</h2>\n    <p>Simulation ${data.status.toLowerCase()} using the <strong>${data.template}</strong> template.</p>\n    <p class=\"assessment\">Overall Assessment: ${data.assessment}</p>\n  </div>\n\n  <div class=\"section\">\n    <h2>Influent Characteristics</h2>\n    <table>\n      <tr><th>Parameter</th><th>Value</th><th>Unit</th><th>Typical Range</th></tr>\n      <tr><td>Flow</td><td>${data.influent.flow_m3_d}</td><td>m³/d</td><td>-</td></tr>\n      <tr><td>COD</td><td>${data.influent.COD_mg_L}</td><td>mg/L</td><td>300-600</td></tr>\n      <tr><td>TSS</td><td>${data.influent.TSS_mg_L}</td><td>mg/L</td><td>200-400</td></tr>\n      <tr><td>NH4-N</td><td>${data.influent.NH4_mg_L}</td><td>mg/L</td><td>25-50</td></tr>\n      <tr><td>Total P</td><td>${data.influent.TP_mg_L}</td><td>mg/L</td><td>6-12</td></tr>\n      <tr><td>Temperature</td><td>${data.influent.temperature_C}</td><td>°C</td><td>15-25</td></tr>\n    </table>\n  </div>\n\n  <div class=\"section\">\n    <h2>Treatment System Configuration</h2>\n    <table>\n      <tr><th>Parameter</th><th>Value</th></tr>\n      <tr><td>Template</td><td>${data.template}</td></tr>\n      <tr><td>Reactor Type</td><td>${data.reactor.type}</td></tr>\n      <tr><td>Total Volume</td><td>${data.reactor.V_total_m3} m³</td></tr>\n      <tr><td>HRT</td><td>${data.reactor.HRT_hours} hours</td></tr>\n      <tr><td>SRT</td><td>${data.reactor.SRT_days} days</td></tr>\n      <tr><td>Aerobic DO</td><td>${data.reactor.DO_aerobic} mg/L</td></tr>\n    </table>\n  </div>\n\n  <div class=\"section\">\n    <h2>Effluent Quality</h2>\n    <table>\n      <tr><th>Parameter</th><th>Influent</th><th>Effluent</th><th>Removal %</th></tr>\n      <tr><td>COD</td><td>${data.influent.COD_mg_L} mg/L</td><td>${data.effluent.COD_mg_L} mg/L</td><td>${data.removal.COD_pct}%</td></tr>\n      <tr><td>TSS</td><td>${data.influent.TSS_mg_L} mg/L</td><td>${data.effluent.TSS_mg_L} mg/L</td><td>${data.removal.TSS_pct}%</td></tr>\n      <tr><td>NH4-N</td><td>${data.influent.NH4_mg_L} mg/L</td><td>${data.effluent.NH4_mg_L} mg/L</td><td>${data.removal.NH4_pct}%</td></tr>\n      <tr><td>TN</td><td>-</td><td>-</td><td>${data.removal.TN_pct}%</td></tr>\n      <tr><td>TP</td><td>${data.influent.TP_mg_L} mg/L</td><td>${data.effluent.PO4_mg_L} mg/L</td><td>${data.removal.TP_pct}%</td></tr>\n    </table>\n  </div>\n\n  <div class=\"section\">\n    <h2>Process Performance Analysis</h2>\n    <h3>Nitrification</h3>\n    <p>Nitrification efficiency: <strong>${data.nitrification_pct}%</strong></p>\n    <h3>Denitrification</h3>\n    <p>Denitrification efficiency: <strong>${data.denitrification_pct}%</strong></p>\n  </div>\n\n  <hr>\n\n  <div class=\"section\">\n    <h2>Technical Notes</h2>\n    <ul>\n      <li>Timeout Setting: ${data.timeout_setting} seconds</li>\n      <li>Actual Runtime: ${data.elapsed_seconds} seconds</li>\n      <li>Server Version: ${data.server_version}</li>\n    </ul>\n  </div>\n\n  <hr>\n  <p><em>Report generated by QSDsan Wastewater Simulation Engine v1.0</em></p>\n</body>\n</html>`;\n\nreturn {\n  json: {\n    ...reportData,\n    gotenberg_url: data.gotenberg_url,\n    report_html: htmlReport,\n    report_filename: `wastewater_simulation_${data.job_id}.pdf`\n  }\n};"
+      },
+      "id": "generate-report",
+      "name": "Generate Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3520, 480],
+      "notesInFlow": true,
+      "notes": "Step 8: Generate PDF report"
+    },
+    {
+      "parameters": {
+        "operation": "toText",
+        "sourceProperty": "report_html",
+        "options": {
+          "fileName": "index.html",
+          "mimeType": "text/html"
+        }
+      },
+      "id": "create-html-file",
+      "name": "Create HTML File",
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [3740, 480],
+      "notesInFlow": true,
+      "notes": "Convert HTML string to file"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Generate Report').item.json.gotenberg_url }}/forms/chromium/convert/html",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "files",
+              "inputDataFieldName": "data"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 120000,
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "id": "convert-to-pdf",
+      "name": "Convert to PDF",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3960, 480],
+      "notesInFlow": true,
+      "notes": "Gotenberg HTML→PDF"
+    },
+    {
+      "parameters": {
+        "fileName": "=wastewater_simulation_report.pdf",
+        "mimeType": "application/pdf"
+      },
+      "id": "output-pdf",
+      "name": "Output PDF",
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [4180, 480]
+    },
+    {
+      "parameters": {
+        "operation": "toJson",
+        "options": {}
+      },
+      "id": "output-json",
+      "name": "Output JSON",
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [3960, 620],
+      "notesInFlow": true,
+      "notes": "Backup JSON data"
+    },
+    {
+      "parameters": {},
+      "id": "end-success",
+      "name": "End (Success)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [4400, 480]
+    },
+    {
+      "parameters": {},
+      "id": "end-error",
+      "name": "End (Error)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1100, 480]
+    },
+    {
+      "parameters": {},
+      "id": "end-submit-error",
+      "name": "End (Submit Error)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1760, 480]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Loop back with updated data for next iteration\nconst evalData = $input.first().json;\n\nreturn {\n  json: {\n    ...evalData\n  }\n};"
+      },
+      "id": "loop-back",
+      "name": "Loop Back",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2640, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pass through data after termination\nconst evalData = $('Evaluate Status').first().json;\n\nreturn {\n  json: {\n    ...evalData,\n    termination_response: $input.first().json\n  }\n};"
+      },
+      "id": "after-terminate",
+      "name": "After Terminate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3080, 560]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pass through data when no termination needed\nconst evalData = $input.first().json;\n\nreturn {\n  json: evalData\n};"
+      },
+      "id": "skip-terminate",
+      "name": "Skip Terminate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2860, 400]
+    },
+    {
+      "parameters": {},
+      "id": "merge-paths",
+      "name": "Merge Paths",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [3080, 400]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Set Parameters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Parameters": {
+      "main": [
+        [
+          {
+            "node": "Health Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Health Check": {
+      "main": [
+        [
+          {
+            "node": "Server Healthy?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Server Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Server Healthy?": {
+      "main": [
+        [
+          {
+            "node": "Prepare Simulation",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Server Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Server Error": {
+      "main": [
+        [
+          {
+            "node": "End (Error)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Simulation": {
+      "main": [
+        [
+          {
+            "node": "Submit Simulation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Submit Simulation": {
+      "main": [
+        [
+          {
+            "node": "Submit OK?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Submit Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Submit OK?": {
+      "main": [
+        [
+          {
+            "node": "Store Job ID",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Submit Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Submit Error": {
+      "main": [
+        [
+          {
+            "node": "End (Submit Error)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Job ID": {
+      "main": [
+        [
+          {
+            "node": "Wait 60s",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 60s": {
+      "main": [
+        [
+          {
+            "node": "Check Job Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Job Status": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Status": {
+      "main": [
+        [
+          {
+            "node": "Continue Polling?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Continue Polling?": {
+      "main": [
+        [
+          {
+            "node": "Loop Back",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Need Terminate?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Back": {
+      "main": [
+        [
+          {
+            "node": "Wait 60s",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Need Terminate?": {
+      "main": [
+        [
+          {
+            "node": "Terminate Job",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Skip Terminate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Terminate Job": {
+      "main": [
+        [
+          {
+            "node": "After Terminate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "After Terminate": {
+      "main": [
+        [
+          {
+            "node": "Merge Paths",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skip Terminate": {
+      "main": [
+        [
+          {
+            "node": "Merge Paths",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Paths": {
+      "main": [
+        [
+          {
+            "node": "Get Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Results": {
+      "main": [
+        [
+          {
+            "node": "Process Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Results": {
+      "main": [
+        [
+          {
+            "node": "Generate Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Report": {
+      "main": [
+        [
+          {
+            "node": "Create HTML File",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Output JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create HTML File": {
+      "main": [
+        [
+          {
+            "node": "Convert to PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert to PDF": {
+      "main": [
+        [
+          {
+            "node": "Output PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Output PDF": {
+      "main": [
+        [
+          {
+            "node": "End (Success)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Output JSON": {
+      "main": [
+        [
+          {
+            "node": "End (Success)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "qsdsan-simulation-v4"
+  },
+  "pinData": {},
+  "versionId": "4.0.0",
+  "triggerCount": 0,
+  "tags": [
+    {
+      "name": "wastewater",
+      "id": "1"
+    },
+    {
+      "name": "simulation",
+      "id": "2"
+    },
+    {
+      "name": "qsdsan",
+      "id": "3"
+    }
+  ]
+}
