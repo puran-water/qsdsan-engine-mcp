@@ -47,9 +47,11 @@ output_test/
 jobs/
 
 # Claude Code artifacts (CLAUDE.md is tracked - it contains development context)
-.claude/settings.json
-.claude/*.local.md
-.claude/plans/
+.claude/
+
+# Environment files (use .env.example as template)
+.env
+.env.local
 
 # Temporary files
 tmp_*.py
@@ -59,3 +61,4 @@ tmp_*.py
 # OS files
 .DS_Store
 Thumbs.db
+nul
