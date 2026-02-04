@@ -29,6 +29,7 @@ Universal wastewater simulation engine supporting anaerobic (mADM1, 63 component
 | Phase 11 Plan | `docs/completed-plans/phase11-convergence-simulation.md` | Complete |
 | Phase 12 Plan | `docs/completed-plans/phase12-srt-controlled-simulation.md` | Complete |
 | Phase 12B Plan | `docs/completed-plans/phase12b-srt-control-feature-parity.md` | Complete |
+| Phase ENV-1 Plan | `docs/completed-plans/phase-env-1-cloud-deployment-integration.md` | Complete |
 
 ---
 
@@ -53,8 +54,9 @@ Universal wastewater simulation engine supporting anaerobic (mADM1, 63 component
 | 11 | Convergence-Based Simulation (run-to-steady-state, abs+rel tolerance, auto stream detection) | Complete |
 | 12 | SRT-Controlled Simulation (target SRT, Q_was optimization, brentq root-finding) | Complete |
 | 12B | SRT Control Feature Parity (ao_mbr/a2o_mbr inoculation, mADM1 biomass IDs, detection refinement) | Complete |
+| ENV-1 | Multi-Environment Cloud Deployment (local/Docker/Cloud Run, GCS storage) | Complete |
 
-**Test Count:** 430+ tests passing (Phase 12B validation: 2026-01-25)
+**Test Count:** 450+ tests passing (Phase ENV-1 validation: 2026-01-28)
 
 ---
 
@@ -62,8 +64,15 @@ Universal wastewater simulation engine supporting anaerobic (mADM1, 63 component
 
 ```
 qsdsan-engine-mcp/
-├── server.py              # MCP Adapter (FastMCP) - 29 tools
+├── server.py              # MCP Adapter (FastMCP) - 35 tools
 ├── cli.py                 # CLI Adapter (Typer)
+├── cloud/                 # Phase ENV-1: Multi-environment support
+│   ├── __init__.py
+│   ├── config.py          # Environment detection, configuration
+│   ├── storage.py         # Storage abstraction (local/GCS)
+│   └── gcs_backend.py     # GCS backend (lazy-loaded for cloud)
+├── Dockerfile             # Container build for Cloud Run
+├── docker-compose.yaml    # Local Docker development
 ├── core/
 │   ├── plant_state.py     # PlantState dataclass + validation
 │   ├── model_registry.py  # Component definitions (mADM1: 63, ASM2d: 19)
@@ -320,6 +329,49 @@ python cli.py simulate \
 - `utils/run_to_srt.py`: SRT-controlled wrapper with brentq
 
 **Scope:** Systems with HRT/SRT decoupling (MBR, clarifier). Plain CSTR has SRT ≈ HRT.
+
+### Multi-Environment Deployment (Phase ENV-1)
+
+The engine supports three deployment environments with cloud dependencies being **optional**:
+
+| Environment | Storage | Cloud Deps | Use Case |
+|-------------|---------|------------|----------|
+| `LOCAL_DEV` | Filesystem (`./jobs/`) | None | Development (default) |
+| `LOCAL_DOCKER` | Filesystem (volume) | None | Docker containers |
+| `CLOUD_RUN` | Google Cloud Storage | Required | Production |
+
+**Environment Detection:**
+```
+1. QSDSAN_ENV environment variable (explicit override)
+2. K_SERVICE (auto-set by Cloud Run)
+3. /.dockerenv file (Docker container)
+4. Default: LOCAL_DEV
+```
+
+**Installation:**
+```bash
+# Local development (Hersh, contributors)
+pip install -r requirements.txt
+
+# Cloud deployment (production)
+pip install -r requirements.txt -r requirements-cloud.txt
+```
+
+**Docker:**
+```bash
+docker-compose up --build    # Local Docker testing
+docker build -t qsdsan-mcp . # Production image
+```
+
+**Key Design:**
+- GCS packages only imported when `CLOUD_RUN` detected (lazy loading)
+- `get_version()` MCP tool returns environment info
+- `get_artifact()` returns signed URLs in cloud mode
+
+**Files:**
+- `cloud/config.py`: Environment detection, `get_config()` singleton
+- `cloud/storage.py`: `StorageBackend` ABC, `LocalStorageBackend`, `StorageManager`
+- `cloud/gcs_backend.py`: `GCSStorageBackend` (lazy-loaded)
 
 ---
 

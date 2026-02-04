@@ -31,21 +31,23 @@ Note: This is for development/testing only. For production MCP usage, use server
 """
 
 import argparse
+import os
 import sys
 from pathlib import Path
+import httpx
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent))
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, HTTPException
 from pydantic import BaseModel
 from typing import Any, Dict, List, Optional
 import uvicorn
 
 app = FastAPI(
     title="QSDsan Engine REST API",
-    description="Complete REST wrapper for all 31 QSDsan Engine MCP tools",
-    version="3.0.1",
+    description="Complete REST wrapper for all 35 QSDsan Engine MCP tools",
+    version="3.0.9",
 )
 
 
@@ -157,8 +159,8 @@ async def root():
     """API root - list available endpoints."""
     return {
         "name": "QSDsan Engine REST API",
-        "version": "3.0.1",
-        "total_endpoints": 31,
+        "version": "3.0.8",
+        "total_endpoints": 33,
         "categories": {
             "discovery": ["get_version", "list_templates", "list_units", "get_model_components"],
             "simulation": ["simulate_system", "simulate_built_system"],
@@ -169,6 +171,7 @@ async def root():
             "mutation": ["update_stream", "update_unit", "delete_stream", "delete_unit", "delete_connection"],
             "analysis": ["validate_flowsheet", "suggest_recycles"],
             "results": ["get_flowsheet_timeseries", "get_artifact"],
+            "ai_analysis": ["analyze_results", "ai_status"],
         },
         "docs": "/docs",
     }
@@ -638,6 +641,137 @@ async def api_delete_connection(request: DeleteConnectionRequest):
         from_port=request.from_port,
         to_port=request.to_port,
     )
+
+
+# =============================================================================
+# AI Analysis Endpoints
+# =============================================================================
+
+class AnalyzeResultsRequest(BaseModel):
+    """Request model for AI analysis of simulation results."""
+    results: Dict[str, Any]
+    input_parameters: Optional[Dict[str, Any]] = None
+    model: str = "gpt-4o"
+    temperature: float = 0.7
+    max_tokens: int = 4000
+    override_prompt: Optional[str] = None  # If provided, replaces the default system prompt
+
+
+@app.post("/api/analyze_results", tags=["AI Analysis"])
+async def api_analyze_results(request: AnalyzeResultsRequest):
+    """
+    Analyze simulation results using OpenAI GPT models.
+
+    The OpenAI API key must be set in the OPENAI_API_KEY environment variable
+    on the server. This keeps the key secure and not exposed to clients.
+
+    Returns expert wastewater treatment analysis in markdown format.
+    """
+    # Get API key from environment
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="AI analysis not configured. OPENAI_API_KEY environment variable not set on server."
+        )
+
+    # Build the system prompt (use override if provided)
+    if request.override_prompt and request.override_prompt.strip():
+        system_prompt = request.override_prompt.strip()
+    else:
+        system_prompt = """You are an expert wastewater treatment specialist with deep knowledge of:
+- Activated sludge processes (ASM1, ASM2d, ASM3)
+- Anaerobic digestion (ADM1, mADM1)
+- Membrane bioreactors (MBR)
+- Nutrient removal (nitrogen, phosphorus)
+- Process optimization and troubleshooting
+
+Analyze the provided simulation results and input parameters. Provide:
+1. **Executive Summary** - Key findings in 2-3 sentences
+2. **Treatment Performance Analysis** - Evaluate COD, nitrogen, phosphorus removal efficiencies
+3. **Process Observations** - Note any concerning trends or excellent performance
+4. **Recommendations** - Specific, actionable suggestions for optimization
+5. **Potential Issues** - Any warnings or areas requiring attention
+
+Format your response in clean markdown. Be specific with numbers and percentages.
+Keep the analysis professional but accessible."""
+
+    # Build the user prompt with results
+    import json
+    user_content = "Please analyze these wastewater treatment simulation results:\n\n"
+
+    if request.input_parameters:
+        user_content += "## Input Parameters\n```json\n"
+        user_content += json.dumps(request.input_parameters, indent=2)
+        user_content += "\n```\n\n"
+
+    user_content += "## Simulation Results\n```json\n"
+    user_content += json.dumps(request.results, indent=2)
+    user_content += "\n```\n\nProvide your expert analysis in markdown format."
+
+    # Call OpenAI API
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": request.model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_content},
+                    ],
+                    "temperature": request.temperature,
+                    "max_tokens": request.max_tokens,
+                },
+            )
+
+            if response.status_code != 200:
+                error_detail = response.json().get("error", {}).get("message", response.text)
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"OpenAI API error: {error_detail}"
+                )
+
+            result = response.json()
+            analysis_text = result["choices"][0]["message"]["content"]
+
+            return {
+                "status": "success",
+                "analysis": analysis_text,
+                "model_used": request.model,
+                "usage": result.get("usage", {}),
+            }
+
+    except httpx.TimeoutException:
+        raise HTTPException(
+            status_code=504,
+            detail="OpenAI API request timed out. Try again or use a smaller result set."
+        )
+    except httpx.RequestError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to connect to OpenAI API: {str(e)}"
+        )
+
+
+@app.get("/api/ai_status", tags=["AI Analysis"])
+async def api_ai_status():
+    """
+    Check if AI analysis is configured and available.
+
+    Returns whether the OPENAI_API_KEY is set (without revealing the key).
+    """
+    api_key = os.environ.get("OPENAI_API_KEY")
+    return {
+        "ai_enabled": api_key is not None and len(api_key) > 0,
+        "message": "AI analysis is available" if api_key else "OPENAI_API_KEY not configured",
+        "supported_models": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],
+        "default_model": "gpt-4o",
+    }
 
 
 # =============================================================================

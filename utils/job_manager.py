@@ -778,12 +778,20 @@ class JobManager:
             if status_filter and job["status"] != status_filter:
                 continue
 
+            # Calculate elapsed time based on job status
+            if job["status"] == "running":
+                elapsed = round(time.time() - job["started_at"], 1)
+            elif "completed_at" in job:
+                elapsed = round(job["completed_at"] - job["started_at"], 1)
+            else:
+                elapsed = None
+
             jobs_list.append({
                 "id": job_id,
                 "status": job["status"],
                 "command": " ".join(job["command"][:3]) + ("..." if len(job["command"]) > 3 else ""),
                 "started_at": job["started_at"],
-                "elapsed_time_seconds": round(time.time() - job["started_at"], 1) if job["status"] == "running" else None
+                "elapsed_time_seconds": elapsed
             })
 
             if len(jobs_list) >= limit:

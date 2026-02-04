@@ -93,6 +93,60 @@ session_manager = FlowsheetSessionManager(sessions_dir=_JOBS_DIR)
 
 
 # =============================================================================
+# Cloud Configuration (Phase ENV-1)
+# =============================================================================
+def _get_cloud_config():
+    """
+    Lazy-load cloud configuration.
+    Returns None if cloud module not available or in local mode.
+    """
+    try:
+        from cloud.config import get_config
+        return get_config()
+    except ImportError:
+        return None
+
+
+def _get_artifact_url(job_id: str, artifact_name: str) -> Optional[str]:
+    """
+    Get URL for an artifact, supporting both local and cloud modes.
+
+    In local mode, returns file:// URL.
+    In cloud mode, returns signed GCS URL.
+
+    Args:
+        job_id: Job identifier
+        artifact_name: Artifact filename (e.g., "flowsheet.svg")
+
+    Returns:
+        URL string or None if cloud module not available
+    """
+    config = _get_cloud_config()
+    if config is None:
+        # Cloud module not available - return local file path as URL
+        artifact_path = _JOBS_DIR / job_id / artifact_name
+        if artifact_path.exists():
+            return f"file://{artifact_path}"
+        return None
+
+    if config.is_cloud():
+        # Use cloud storage manager for signed URLs
+        try:
+            from cloud.storage import get_storage_manager
+            storage = get_storage_manager()
+            return storage.get_artifact_url(job_id, artifact_name)
+        except Exception as e:
+            logger.warning(f"Failed to get cloud artifact URL: {e}")
+            return None
+    else:
+        # Local mode - return file path as URL
+        artifact_path = _JOBS_DIR / job_id / artifact_name
+        if artifact_path.exists():
+            return f"file://{artifact_path}"
+        return None
+
+
+# =============================================================================
 # Tool 0: get_version (Version Information)
 # =============================================================================
 @mcp.tool()
@@ -104,10 +158,24 @@ async def get_version() -> Dict[str, Any]:
     This is useful for debugging and ensuring compatibility.
 
     Returns:
-        Dict with engine_version, qsdsan_version, biosteam_version, python_version
+        Dict with engine_version, qsdsan_version, biosteam_version, python_version,
+        and environment info (local_dev, local_docker, or cloud_run)
     """
     from core.version import get_version_info
-    return get_version_info()
+    info = get_version_info()
+
+    # Add environment information
+    config = _get_cloud_config()
+    if config:
+        info["environment"] = config.environment.value
+        info["is_cloud"] = config.is_cloud()
+        info["jobs_dir"] = str(config.storage.jobs_dir)
+    else:
+        info["environment"] = "local_dev"
+        info["is_cloud"] = False
+        info["jobs_dir"] = str(_JOBS_DIR)
+
+    return info
 
 
 # =============================================================================
@@ -2429,7 +2497,7 @@ async def get_artifact(
             import base64
             with open(artifact_path, "rb") as f:
                 content = base64.b64encode(f.read()).decode("ascii")
-            return {
+            result = {
                 "job_id": job_id,
                 "artifact_type": artifact_type,
                 "format": artifact_path.suffix[1:],
@@ -2438,6 +2506,11 @@ async def get_artifact(
                 "path": str(artifact_path),
                 "size_bytes": artifact_path.stat().st_size,
             }
+            # Add artifact URL for cloud access
+            url = _get_artifact_url(job_id, artifact_path.name)
+            if url:
+                result["url"] = url
+            return result
         else:
             # Text file
             with open(artifact_path, "r", encoding="utf-8") as f:
@@ -2447,17 +2520,22 @@ async def get_artifact(
         if artifact_path.suffix == ".json":
             try:
                 parsed = json.loads(content)
-                return {
+                result = {
                     "job_id": job_id,
                     "artifact_type": artifact_type,
                     "format": "json",
                     "content": parsed,
                     "path": str(artifact_path),
                 }
+                # Add artifact URL for cloud access
+                url = _get_artifact_url(job_id, artifact_path.name)
+                if url:
+                    result["url"] = url
+                return result
             except json.JSONDecodeError:
                 pass  # Return as raw text
 
-        return {
+        result = {
             "job_id": job_id,
             "artifact_type": artifact_type,
             "format": artifact_path.suffix[1:] if artifact_path.suffix else "text",
@@ -2465,6 +2543,11 @@ async def get_artifact(
             "path": str(artifact_path),
             "size_bytes": len(content),
         }
+        # Add artifact URL for cloud access
+        url = _get_artifact_url(job_id, artifact_path.name)
+        if url:
+            result["url"] = url
+        return result
 
     except Exception as e:
         logger.error(f"get_artifact failed: {e}", exc_info=True)
@@ -2762,4 +2845,45 @@ async def get_utility_costs(
 # Main entry point
 # =============================================================================
 if __name__ == "__main__":
-    mcp.run()
+    import sys
+
+    # Check if running in Docker without STDIO client
+    config = _get_cloud_config()
+    if config and config.is_docker():
+        # In Docker mode, we need to keep the server alive
+        # FastMCP STDIO transport exits immediately without a client
+        # For Docker/Cloud Run, we run the full REST API server
+        import uvicorn
+        from core.version import get_version_info
+
+        # Import the FastAPI app from server_rest.py
+        from server_rest import app as rest_app
+
+        # Add health check endpoints to the REST app for Cloud Run
+        from fastapi import FastAPI
+        from fastapi.responses import JSONResponse
+
+        @rest_app.get("/health", tags=["Health"])
+        async def health_check():
+            """Health check endpoint for Cloud Run / Docker."""
+            return JSONResponse({
+                "status": "healthy",
+                "environment": config.environment.value,
+                "version": get_version_info().get("engine_version", "unknown"),
+            })
+
+        @rest_app.get("/ready", tags=["Health"])
+        async def ready_check():
+            """Readiness check - confirms MCP tools are available."""
+            return JSONResponse({
+                "status": "ready",
+                "tools_count": len(mcp._tool_manager._tools) if hasattr(mcp, '_tool_manager') else "unknown",
+                "version": get_version_info(),
+            })
+
+        logger.info(f"Starting REST API server on port 8080 (environment: {config.environment.value})")
+        logger.info("REST API docs available at /docs")
+        uvicorn.run(rest_app, host="0.0.0.0", port=8080, log_level="info")
+    else:
+        # Normal STDIO mode for local development / Claude Desktop
+        mcp.run()

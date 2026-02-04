@@ -440,7 +440,7 @@ The workflow uses two parameter nodes:
 >
 > The `supabase_key` must be a **JWT token** starting with `eyJ...`
 >
-> **WRONG:** `YOUR_SUPABASE_SERVICE_ROLE_KEY`
+> **WRONG:** `sb_secret_XXXXXXXXXXXXXXXXXXXXXXXXXXXX`
 >
 > **CORRECT:** `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1...`
 >
