@@ -1,0 +1,54 @@
+# QSDsan Engine MCP - Local Docker Development
+#
+# Usage:
+#   docker-compose up --build        # Build and run
+#   docker-compose up -d             # Run in background
+#   docker-compose logs -f           # Follow logs
+#   docker-compose down              # Stop and remove
+#
+# The jobs directory is mounted as a volume so results persist
+# between container restarts.
+
+version: '3.8'
+
+services:
+  qsdsan-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: qsdsan-engine-mcp
+
+    # Environment configuration
+    environment:
+      - QSDSAN_ENV=local_docker
+      - QSDSAN_JOBS_DIR=/app/jobs
+      - QSDSAN_MAX_JOBS=3
+      - QSDSAN_DEBUG=false
+      - PYTHONUNBUFFERED=1
+
+    # Mount local jobs directory for persistence
+    volumes:
+      - ./jobs:/app/jobs
+
+    # Expose port for optional HTTP health endpoint
+    ports:
+      - "8080:8080"
+
+    # Resource limits (adjust based on simulation requirements)
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 1G
+
+    # Restart policy
+    restart: unless-stopped
+
+    # Health check using the HTTP endpoint (python-based since curl not in slim image)
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s

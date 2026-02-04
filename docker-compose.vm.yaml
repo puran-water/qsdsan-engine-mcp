@@ -1,0 +1,64 @@
+# Docker Compose for GCP VM deployment
+# Includes: QSDsan Engine, n8n, and Gotenberg
+# Run with: docker-compose -f docker-compose.vm.yaml up -d
+
+services:
+  qsdsan-engine:
+    image: gcr.io/lotsawatts/qsdsan-engine-mcp:latest
+    container_name: qsdsan-engine-mcp
+    ports:
+      - "8080:8080"
+    environment:
+      - QSDSAN_ENV=LOCAL_DOCKER
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+    volumes:
+      - qsdsan_jobs:/app/jobs
+    networks:
+      - qsdsan-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: n8n
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=admin
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD:-changeme}
+      - GENERIC_TIMEZONE=UTC
+      - N8N_HOST=0.0.0.0
+      - WEBHOOK_URL=http://localhost:5678/
+    volumes:
+      - n8n_data:/home/node/.n8n
+    depends_on:
+      - gotenberg
+      - qsdsan-engine
+    networks:
+      - qsdsan-network
+
+  gotenberg:
+    image: gotenberg/gotenberg:8
+    container_name: gotenberg
+    # External port needed for n8n workflow access
+    ports:
+      - "3000:3000"
+    command:
+      - "gotenberg"
+      - "--chromium-disable-javascript=true"
+      - "--api-timeout=120s"
+    networks:
+      - qsdsan-network
+
+volumes:
+  qsdsan_jobs:
+  n8n_data:
+
+networks:
+  qsdsan-network:
+    driver: bridge

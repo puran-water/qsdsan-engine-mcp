@@ -1,0 +1,22 @@
+# QSDsan Engine MCP - Cloud Deployment Dependencies
+#
+# These packages are OPTIONAL and only needed for Google Cloud Run deployment.
+# Local development does NOT require these packages.
+#
+# Install with: pip install -r requirements.txt -r requirements-cloud.txt
+
+# Google Cloud Storage
+google-cloud-storage>=2.10.0
+google-auth>=2.20.0
+
+# Cloud logging and monitoring
+google-cloud-logging>=3.5.0
+
+# HTTP server for health checks and REST API (Cloud Run requires HTTP endpoints)
+fastapi>=0.100.0
+starlette>=0.27.0
+uvicorn>=0.23.0
+pydantic>=2.0.0
+
+# Async file I/O (also useful locally, but required for cloud)
+aiofiles>=23.0.0
