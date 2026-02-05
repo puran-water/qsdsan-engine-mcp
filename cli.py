@@ -2110,6 +2110,407 @@ def _display_validation_result(result: dict):
 
 
 # =============================================================================
+# Validation Commands (Phase: anaerobic-skill refactor)
+# =============================================================================
+
+@app.command("validate-composites")
+def validate_composites(
+    state: Path = typer.Option(..., "--state", "-s", help="PlantState JSON file to validate"),
+    targets: Optional[str] = typer.Option(None, "--targets", "-t", help="Target composites as JSON: {\"cod_mg_l\": 7682, \"tss_mg_l\": 5500}"),
+    tolerance: float = typer.Option(0.10, "--tolerance", help="Relative tolerance for validation (default 0.10 = 10%)"),
+    json_out: bool = typer.Option(False, "--json-out", "-j", help="Output as JSON"),
+):
+    """
+    Compute bulk composites (COD, TSS, VSS, TKN, TP) from an mADM1 PlantState
+    and optionally compare against user targets.
+
+    Without targets: returns calculated composites only.
+    With targets: validates calculated vs targets within tolerance.
+
+    Example:
+        qsdsan-engine validate-composites -s state.json --json-out
+        qsdsan-engine validate-composites -s state.json -t '{"cod_mg_l": 7682}' --tolerance 0.10
+    """
+    try:
+        # Load PlantState
+        if not state.exists():
+            _error_exit(f"State file not found: {state}", json_out)
+
+        with open(state) as f:
+            state_data = json.load(f)
+        plant_state = PlantState.from_dict(state_data)
+
+        # Import QSDsan components for mADM1
+        from models.madm1 import create_madm1_cmps
+        from qsdsan import WasteStream
+
+        # Create mADM1 components and set thermo
+        cmps = create_madm1_cmps(set_thermo=True)
+
+        # Build concentration dict for WasteStream (kg/m³)
+        conc_dict = {}
+        cmp_ids = [c.ID for c in cmps]
+        for key, value in plant_state.concentrations.items():
+            if key in cmp_ids and key != 'H2O':
+                conc_dict[key] = value  # Already in kg/m³ for mADM1
+
+        # Create WasteStream and compute composites
+        ws = WasteStream('influent', T=plant_state.temperature_K, units='kg/hr')
+        ws.set_flow_by_concentration(
+            flow_tot=1.0,  # 1 m³/hr for concentration basis
+            concentrations=conc_dict,
+            units=('m3/hr', 'kg/m3')
+        )
+
+        # Calculate composites from WasteStream (convert to Python floats for JSON)
+        calculated = {
+            'cod_mg_l': float(ws.COD),
+            'tss_mg_l': float(ws.get_TSS()),
+            'vss_mg_l': float(ws.get_VSS()),
+            'tkn_mg_l': float(ws.TN),
+            'tp_mg_l': float(ws.TP),
+        }
+
+        result = {
+            "status": "success",
+            "calculated": calculated,
+            "temperature_K": plant_state.temperature_K,
+            "flow_m3_d": plant_state.flow_m3_d,
+        }
+
+        # If targets provided, validate against them
+        if targets:
+            target_dict = json.loads(targets)
+            result["targets"] = target_dict
+            result["tolerance"] = tolerance
+
+            # Compute deviations
+            deviations = {}
+            for k in calculated:
+                if k in target_dict and target_dict[k] > 0:
+                    deviation = abs(calculated[k] - target_dict[k]) / target_dict[k]
+                    deviations[k] = round(deviation, 4)
+                else:
+                    deviations[k] = None
+
+            result["deviations"] = deviations
+
+            # Check if all deviations pass tolerance
+            valid_deviations = {k: v for k, v in deviations.items() if v is not None}
+            passed = all(dev <= tolerance for dev in valid_deviations.values()) if valid_deviations else True
+            result["valid"] = passed
+
+            # Add diagnostic message
+            if passed:
+                result["message"] = "All composite targets met within tolerance"
+            else:
+                failed = [k for k, v in valid_deviations.items() if v > tolerance]
+                result["message"] = f"Composite validation failed for: {failed}"
+
+        if json_out:
+            print(json.dumps(result, indent=2))
+        else:
+            _display_composite_result(result)
+
+    except Exception as e:
+        _error_exit(str(e), json_out)
+
+
+@app.command("validate-ion-balance")
+def validate_ion_balance(
+    state: Path = typer.Option(..., "--state", "-s", help="PlantState JSON file"),
+    target_ph: float = typer.Option(7.0, "--target-ph", "-p", help="Target pH from basis of design"),
+    max_ph_deviation: float = typer.Option(0.5, "--max-ph-deviation", help="Maximum acceptable pH deviation"),
+    json_out: bool = typer.Option(False, "--json-out", "-j", help="Output as JSON"),
+):
+    """
+    Solve for equilibrium pH using the engine's PCM solver and compare against target.
+
+    Uses the production-grade pcm() function with full charge balance including
+    Na+/Cl-, divalent cations (Mg2+, Ca2+, Fe2+), trivalent cations (Fe3+, Al3+),
+    VFAs, and sulfur species (SO4²⁻, HS⁻).
+
+    Example:
+        qsdsan-engine validate-ion-balance -s state.json --target-ph 7.0 --max-ph-deviation 0.5
+    """
+    try:
+        # Load PlantState
+        if not state.exists():
+            _error_exit(f"State file not found: {state}", json_out)
+
+        with open(state) as f:
+            state_data = json.load(f)
+        plant_state = PlantState.from_dict(state_data)
+
+        # Import pcm solver and mADM1 components
+        from models.madm1 import create_madm1_cmps, pcm, ModifiedADM1
+        import numpy as np
+
+        # Create mADM1 components
+        cmps = create_madm1_cmps(set_thermo=True)
+
+        # Create ModifiedADM1 process model to get params dict
+        # This gives us the Ka values and other parameters needed for pcm()
+        model = ModifiedADM1()
+
+        # Build state array in the correct 63-component order
+        state_arr = np.zeros(len(cmps))
+        for i, cmp_id in enumerate(cmps.IDs):
+            if cmp_id in plant_state.concentrations:
+                state_arr[i] = plant_state.concentrations[cmp_id]
+
+        # Build params dict for pcm()
+        # Extract Ka values from ModifiedADM1 rate function parameters
+        params = model.rate_function._params.copy()
+        params['components'] = cmps
+        params['T_op'] = plant_state.temperature_K
+
+        # Solve for pH using pcm()
+        pH, nh3, co2, activities = pcm(state_arr, params)
+
+        # Compare equilibrium pH vs target pH
+        ph_deviation = abs(float(pH) - target_ph)
+        balanced = bool(ph_deviation <= max_ph_deviation)
+
+        result = {
+            "status": "success",
+            "equilibrium_ph": round(float(pH), 3),
+            "target_ph": target_ph,
+            "ph_deviation": round(ph_deviation, 3),
+            "max_ph_deviation": max_ph_deviation,
+            "balanced": balanced,
+            "nh3_kmol_m3": round(float(nh3), 6),
+            "co2_kmol_m3": round(float(co2), 6),
+            "temperature_K": plant_state.temperature_K,
+        }
+
+        if balanced:
+            result["message"] = f"Equilibrium pH ({pH:.2f}) is within {max_ph_deviation} of target ({target_ph})"
+        else:
+            result["message"] = f"pH deviation ({ph_deviation:.2f}) exceeds limit ({max_ph_deviation}). " \
+                               f"Equilibrium pH: {pH:.2f}, Target: {target_ph}"
+
+        if json_out:
+            print(json.dumps(result, indent=2))
+        else:
+            _display_ion_balance_result(result)
+
+    except Exception as e:
+        _error_exit(str(e), json_out)
+
+
+@app.command("validate-finalize")
+def validate_finalize(
+    state: Path = typer.Option(..., "--state", "-s", help="PlantState JSON file"),
+    targets: Optional[str] = typer.Option(None, "--targets", "-t", help="Target composites as JSON (may include 'ph' key)"),
+    tolerance: float = typer.Option(0.10, "--tolerance", help="Relative tolerance for composites (default 0.10)"),
+    max_ph_deviation: float = typer.Option(0.5, "--max-ph-deviation", help="Maximum pH deviation (default 0.5)"),
+    json_out: bool = typer.Option(False, "--json-out", "-j", help="Output as JSON"),
+):
+    """
+    Run both composite and ion-balance validation in a single invocation.
+
+    Exit codes:
+        0 = both pass
+        1 = composites fail
+        2 = ion-balance fails
+        3 = both fail
+
+    Example:
+        qsdsan-engine validate-finalize -s state.json \\
+            -t '{"cod_mg_l": 7682, "ph": 7.0}' --tolerance 0.10 --max-ph-deviation 0.5
+    """
+    try:
+        # Load PlantState
+        if not state.exists():
+            _error_exit(f"State file not found: {state}", json_out)
+
+        with open(state) as f:
+            state_data = json.load(f)
+        plant_state = PlantState.from_dict(state_data)
+
+        # Parse targets
+        target_dict = json.loads(targets) if targets else {}
+        target_ph = target_dict.pop("ph", 7.0)  # Extract pH from targets if present
+
+        # Import QSDsan components
+        from models.madm1 import create_madm1_cmps, pcm, ModifiedADM1
+        from qsdsan import WasteStream
+        import numpy as np
+
+        # Create mADM1 components
+        cmps = create_madm1_cmps(set_thermo=True)
+
+        # === Composite Validation ===
+        conc_dict = {}
+        cmp_ids = [c.ID for c in cmps]
+        for key, value in plant_state.concentrations.items():
+            if key in cmp_ids and key != 'H2O':
+                conc_dict[key] = value
+
+        ws = WasteStream('influent', T=plant_state.temperature_K, units='kg/hr')
+        ws.set_flow_by_concentration(
+            flow_tot=1.0,
+            concentrations=conc_dict,
+            units=('m3/hr', 'kg/m3')
+        )
+
+        calculated = {
+            'cod_mg_l': ws.COD,
+            'tss_mg_l': ws.get_TSS(),
+            'vss_mg_l': ws.get_VSS(),
+            'tkn_mg_l': ws.TN,
+            'tp_mg_l': ws.TP,
+        }
+
+        # Compute deviations if targets provided
+        deviations = {}
+        composites_valid = True
+        if target_dict:
+            for k in calculated:
+                if k in target_dict and target_dict[k] > 0:
+                    deviation = abs(calculated[k] - target_dict[k]) / target_dict[k]
+                    deviations[k] = round(deviation, 4)
+                    if deviation > tolerance:
+                        composites_valid = False
+                else:
+                    deviations[k] = None
+
+        # === Ion Balance Validation ===
+        model = ModifiedADM1()
+        state_arr = np.zeros(len(cmps))
+        for i, cmp_id in enumerate(cmps.IDs):
+            if cmp_id in plant_state.concentrations:
+                state_arr[i] = plant_state.concentrations[cmp_id]
+
+        params = model.rate_function._params.copy()
+        params['components'] = cmps
+        params['T_op'] = plant_state.temperature_K
+
+        pH, nh3, co2, activities = pcm(state_arr, params)
+        ph_deviation = abs(float(pH) - target_ph)
+        ion_balance_valid = bool(ph_deviation <= max_ph_deviation)
+
+        # Convert numpy floats to Python floats for JSON serialization
+        calculated = {k: float(v) for k, v in calculated.items()}
+        deviations = {k: (float(v) if v is not None else None) for k, v in deviations.items()}
+
+        # Build result
+        result = {
+            "status": "success",
+            "composites": {
+                "calculated": calculated,
+                "targets": target_dict if target_dict else None,
+                "deviations": deviations if deviations else None,
+                "tolerance": tolerance,
+                "valid": composites_valid,
+            },
+            "ion_balance": {
+                "equilibrium_ph": round(float(pH), 3),
+                "target_ph": target_ph,
+                "ph_deviation": round(ph_deviation, 3),
+                "max_ph_deviation": max_ph_deviation,
+                "valid": ion_balance_valid,
+            },
+            "overall_valid": composites_valid and ion_balance_valid,
+        }
+
+        # Set exit code
+        exit_code = 0
+        if not composites_valid and not ion_balance_valid:
+            exit_code = 3
+            result["message"] = "Both composite and ion-balance validation failed"
+        elif not composites_valid:
+            exit_code = 1
+            result["message"] = "Composite validation failed"
+        elif not ion_balance_valid:
+            exit_code = 2
+            result["message"] = "Ion-balance validation failed"
+        else:
+            result["message"] = "All validations passed"
+
+        if json_out:
+            print(json.dumps(result, indent=2))
+        else:
+            _display_finalize_result(result)
+
+        if exit_code > 0:
+            sys.exit(exit_code)
+
+    except Exception as e:
+        _error_exit(str(e), json_out)
+
+
+def _display_composite_result(result: dict):
+    """Display composite validation result in human-readable format."""
+    console.print("\n[bold]Bulk Composite Analysis[/bold]")
+    console.print(f"Temperature: {result.get('temperature_K', 'N/A')} K")
+    console.print(f"Flow: {result.get('flow_m3_d', 'N/A')} m³/d\n")
+
+    console.print("[bold]Calculated Composites:[/bold]")
+    calc = result.get("calculated", {})
+    for k, v in calc.items():
+        console.print(f"  {k}: {v:.2f}")
+
+    if "targets" in result and result["targets"]:
+        console.print(f"\n[bold]Validation (tolerance: {result.get('tolerance', 0.10):.0%}):[/bold]")
+        targets = result.get("targets", {})
+        devs = result.get("deviations", {})
+        for k, v in devs.items():
+            if v is not None and k in targets:
+                status = "[green]PASS[/green]" if v <= result.get("tolerance", 0.10) else "[red]FAIL[/red]"
+                console.print(f"  {k}: calculated={calc[k]:.2f}, target={targets[k]:.2f}, deviation={v:.1%} {status}")
+
+        valid = result.get("valid", False)
+        status_color = "green" if valid else "red"
+        console.print(f"\n[{status_color}]{result.get('message', '')}[/{status_color}]")
+
+
+def _display_ion_balance_result(result: dict):
+    """Display ion balance result in human-readable format."""
+    console.print("\n[bold]Ion Balance / pH Analysis[/bold]")
+    console.print(f"Temperature: {result.get('temperature_K', 'N/A')} K")
+    console.print(f"Equilibrium pH: {result.get('equilibrium_ph', 'N/A')}")
+    console.print(f"Target pH: {result.get('target_ph', 'N/A')}")
+    console.print(f"pH Deviation: {result.get('ph_deviation', 'N/A')}")
+    console.print(f"Max Allowed: {result.get('max_ph_deviation', 'N/A')}")
+    console.print(f"NH3: {result.get('nh3_kmol_m3', 'N/A')} kmol/m³")
+    console.print(f"CO2: {result.get('co2_kmol_m3', 'N/A')} kmol/m³")
+
+    balanced = result.get("balanced", False)
+    status_color = "green" if balanced else "red"
+    console.print(f"\n[{status_color}]{result.get('message', '')}[/{status_color}]")
+
+
+def _display_finalize_result(result: dict):
+    """Display combined validation result in human-readable format."""
+    console.print("\n[bold]Combined Validation Results[/bold]")
+
+    # Composites
+    comp = result.get("composites", {})
+    comp_valid = comp.get("valid", False)
+    comp_color = "green" if comp_valid else "red"
+    console.print(f"\n[bold]Composites:[/bold] [{comp_color}]{'PASS' if comp_valid else 'FAIL'}[/{comp_color}]")
+    calc = comp.get("calculated", {})
+    for k, v in calc.items():
+        console.print(f"  {k}: {v:.2f}")
+
+    # Ion balance
+    ion = result.get("ion_balance", {})
+    ion_valid = ion.get("valid", False)
+    ion_color = "green" if ion_valid else "red"
+    console.print(f"\n[bold]Ion Balance:[/bold] [{ion_color}]{'PASS' if ion_valid else 'FAIL'}[/{ion_color}]")
+    console.print(f"  Equilibrium pH: {ion.get('equilibrium_ph', 'N/A')}")
+    console.print(f"  Target pH: {ion.get('target_ph', 'N/A')}")
+    console.print(f"  Deviation: {ion.get('ph_deviation', 'N/A')}")
+
+    # Overall
+    overall = result.get("overall_valid", False)
+    overall_color = "green" if overall else "red"
+    console.print(f"\n[bold]Overall:[/bold] [{overall_color}]{result.get('message', '')}[/{overall_color}]")
+
+
+# =============================================================================
 # Entry point
 # =============================================================================
 if __name__ == "__main__":

@@ -29,6 +29,7 @@ Universal wastewater simulation engine supporting anaerobic (mADM1, 63 component
 | Phase 11 Plan | `docs/completed-plans/phase11-convergence-simulation.md` | Complete |
 | Phase 12 Plan | `docs/completed-plans/phase12-srt-controlled-simulation.md` | Complete |
 | Phase 12B Plan | `docs/completed-plans/phase12b-srt-control-feature-parity.md` | Complete |
+| Phase 13 Plan | `docs/completed-plans/phase13-anaerobic-skill-refactor.md` | Complete |
 
 ---
 
@@ -53,8 +54,9 @@ Universal wastewater simulation engine supporting anaerobic (mADM1, 63 component
 | 11 | Convergence-Based Simulation (run-to-steady-state, abs+rel tolerance, auto stream detection) | Complete |
 | 12 | SRT-Controlled Simulation (target SRT, Q_was optimization, brentq root-finding) | Complete |
 | 12B | SRT Control Feature Parity (ao_mbr/a2o_mbr inoculation, mADM1 biomass IDs, detection refinement) | Complete |
+| 13 | Anaerobic Skill Refactor (validate-composites, validate-ion-balance, validate-finalize CLI) | Complete |
 
-**Test Count:** 430+ tests passing (Phase 12B validation: 2026-01-25)
+**Test Count:** 430+ tests passing (Phase 13 validation: 2026-02-05)
 
 ---
 
