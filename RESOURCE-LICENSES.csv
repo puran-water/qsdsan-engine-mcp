@@ -1,0 +1,3 @@
+file,license,source,disposition,sha256
+src/qsdsan_engine_mcp/models/process_data/_masm2d_2n.tsv,NCSA,https://github.com/QSD-Group/QSDsan,Modified model stoichiometry; upstream attribution retained in NOTICE,e714faac43eed7f8ce7cf91ff5db88d6562c4b78e1143d0b2315215a334a7f2a
+src/qsdsan_engine_mcp/models/process_data/_masm2d_2n_n2o.tsv,NCSA,https://github.com/QSD-Group/QSDsan,Modified model stoichiometry; upstream attribution retained in NOTICE,adb319b4e7da44d22ab91384ec101a2a351a2fa6b422529d14fb267df2644456

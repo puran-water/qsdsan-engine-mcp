@@ -1,0 +1,387 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+Async lazy loader for QSDsan components.
+
+This module provides non-blocking, thread-safe loading of QSDsan components
+to prevent MCP event loop blocking during the 18-second import.
+
+Key features:
+- First call triggers async load in background thread
+- All concurrent calls await the same load task
+- Components are cached globally after first load
+- Background warmup can be started after server startup
+- Event loop remains responsive during 18s import
+
+Supports both mADM1 (63 components) and ASM2d (19 components) models.
+"""
+import asyncio
+import time
+import logging
+from typing import Optional, Dict, Any
+
+logger = logging.getLogger(__name__)
+
+# Global cache and synchronization
+_components_cache: Dict[str, Any] = {}
+_load_tasks: Dict[str, asyncio.Task] = {}
+
+
+async def _do_load_madm1():
+    """
+    Load mADM1 components in a background thread.
+
+    Returns:
+        QSDsan Components object for mADM1 (63 components)
+    """
+    def _import_madm1():
+        """Synchronous import work (runs in thread pool)."""
+        logger.info("Starting mADM1 component creation in background thread...")
+        import_start = time.time()
+
+        # Import from the models module (will be created in Phase 1B)
+        try:
+            from qsdsan_engine_mcp.models.madm1 import create_madm1_cmps
+            components = create_madm1_cmps()
+        except ImportError:
+            # Fallback for development - return None to indicate not yet implemented
+            logger.warning("mADM1 model not yet implemented, returning None")
+            return None
+
+        import_elapsed = time.time() - import_start
+        logger.info(f"mADM1 component creation completed in {import_elapsed:.1f}s")
+        return components
+
+    start_time = time.time()
+    logger.info("Offloading mADM1 import to AnyIO thread pool...")
+
+    import anyio
+    components = await anyio.to_thread.run_sync(
+        _import_madm1,
+        limiter=anyio.to_thread.current_default_thread_limiter()
+    )
+
+    total_elapsed = time.time() - start_time
+    logger.info(f"Total mADM1 async load time: {total_elapsed:.1f}s")
+
+    return components
+
+
+async def _do_load_asm2d():
+    """
+    Load ASM2d components in a background thread.
+
+    Returns:
+        QSDsan Components object for ASM2d (19 components)
+    """
+    def _import_asm2d():
+        """Synchronous import work (runs in thread pool)."""
+        logger.info("Starting ASM2d component creation in background thread...")
+        import_start = time.time()
+
+        try:
+            # Use centralized ASM2d module (wraps QSDsan's pc.create_asm2d_cmps)
+            from qsdsan_engine_mcp.models.asm2d import create_asm2d_components
+            components = create_asm2d_components(set_thermo=False)
+        except ImportError as e:
+            logger.warning(f"ASM2d model import failed: {e}")
+            return None
+
+        import_elapsed = time.time() - import_start
+        logger.info(f"ASM2d component creation completed in {import_elapsed:.1f}s")
+        return components
+
+    start_time = time.time()
+    logger.info("Offloading ASM2d import to AnyIO thread pool...")
+
+    import anyio
+    components = await anyio.to_thread.run_sync(
+        _import_asm2d,
+        limiter=anyio.to_thread.current_default_thread_limiter()
+    )
+
+    total_elapsed = time.time() - start_time
+    logger.info(f"Total ASM2d async load time: {total_elapsed:.1f}s")
+
+    return components
+
+
+async def get_components(model_type: str):
+    """
+    Get QSDsan components for a model type, loading asynchronously if not cached.
+
+    Thread-safe: Multiple concurrent calls will await the same load task.
+
+    Args:
+        model_type: Model type string ("mADM1", "ASM2d", etc.)
+
+    Returns:
+        QSDsan Components object for the requested model
+
+    Example:
+        >>> components = await get_components("mADM1")
+    """
+    global _components_cache, _load_tasks
+
+    model_key = model_type.lower()
+
+    # Fast path: already loaded
+    if model_key in _components_cache:
+        logger.debug(f"{model_type} components retrieved from cache")
+        return _components_cache[model_key]
+
+    # Slow path: need to load
+    if model_key not in _load_tasks:
+        logger.info(f"First caller - creating {model_type} load task")
+        if model_key in ("madm1", "mADM1"):
+            _load_tasks[model_key] = asyncio.create_task(_do_load_madm1())
+        elif model_key in ("asm2d", "ASM2d", "masm2d", "mASM2d"):
+            _load_tasks[model_key] = asyncio.create_task(_do_load_asm2d())
+        else:
+            raise ValueError(f"Unknown model type: {model_type}")
+    else:
+        logger.info(f"Waiting for ongoing {model_type} load task...")
+
+    _components_cache[model_key] = await _load_tasks[model_key]
+    logger.info(f"{model_type} components now cached and ready")
+    return _components_cache[model_key]
+
+
+def start_background_warmup(model_type: str = "mADM1"):
+    """
+    Start loading QSDsan components in the background.
+
+    Call this after MCP server startup to pre-warm the cache.
+
+    Args:
+        model_type: Model type to pre-load ("mADM1", "ASM2d")
+
+    Example:
+        >>> from utils.qsdsan_loader import start_background_warmup
+        >>> asyncio.create_task(start_background_warmup("mADM1"))
+    """
+    logger.info(f"Starting background {model_type} warmup task...")
+
+    async def _warmup():
+        try:
+            await get_components(model_type)
+            logger.info(f"Background {model_type} warmup completed successfully")
+        except Exception as e:
+            logger.error(f"Background {model_type} warmup failed: {e}", exc_info=True)
+
+    asyncio.create_task(_warmup())
+
+
+def is_loaded(model_type: str) -> bool:
+    """
+    Check if components for a model type are already loaded.
+
+    Args:
+        model_type: Model type string
+
+    Returns:
+        True if components are cached, False otherwise
+    """
+    return model_type.lower() in _components_cache
+
+
+async def wait_for_load(model_type: str, timeout: float = 30.0) -> bool:
+    """
+    Wait for components to load (if loading is in progress).
+
+    Args:
+        model_type: Model type string
+        timeout: Maximum seconds to wait (default 30s)
+
+    Returns:
+        True if loaded within timeout, False if timeout occurred
+    """
+    model_key = model_type.lower()
+
+    if model_key in _components_cache:
+        return True
+
+    if model_key not in _load_tasks:
+        return False
+
+    try:
+        await asyncio.wait_for(_load_tasks[model_key], timeout=timeout)
+        return model_key in _components_cache
+    except asyncio.TimeoutError:
+        logger.warning(f"{model_type} load did not complete within {timeout}s")
+        return False
+
+
+def clear_cache():
+    """Clear all cached components. Useful for testing."""
+    global _components_cache, _load_tasks, _model_cache
+    _components_cache.clear()
+    _load_tasks.clear()
+    _model_cache.clear()
+    logger.info("Component and model cache cleared")
+
+
+# =============================================================================
+# Phase 10: Process Model Caching
+# =============================================================================
+
+# Global model cache (ModifiedADM1, ASM2d process models are expensive to compile)
+_model_cache: Dict[str, Any] = {}
+
+
+async def _do_load_madm1_model():
+    """
+    Load and cache the ModifiedADM1 process model.
+
+    The process model compilation is the most expensive part of QSDsan
+    initialization (~5-10s). Caching it separately from components allows
+    faster subsequent simulations.
+
+    Returns:
+        ModifiedADM1 process model instance
+    """
+    def _import_model():
+        """Synchronous model creation (runs in thread pool)."""
+        logger.info("Starting ModifiedADM1 process model compilation...")
+        import_start = time.time()
+
+        try:
+            from qsdsan_engine_mcp.models.madm1 import ModifiedADM1, create_madm1_cmps
+            # Create components first
+            cmps = create_madm1_cmps()
+            # Create the process model
+            model = ModifiedADM1(components=cmps)
+            elapsed = time.time() - import_start
+            logger.info(f"ModifiedADM1 process model compiled in {elapsed:.1f}s")
+            return model
+        except ImportError as e:
+            logger.warning(f"ModifiedADM1 model import failed: {e}")
+            return None
+
+    import anyio
+    model = await anyio.to_thread.run_sync(
+        _import_model,
+        limiter=anyio.to_thread.current_default_thread_limiter()
+    )
+    return model
+
+
+async def _do_load_asm2d_model():
+    """
+    Load and cache the ASM2d process model.
+
+    Returns:
+        ASM2d process model instance
+    """
+    def _import_model():
+        """Synchronous model creation (runs in thread pool)."""
+        logger.info("Starting ASM2d process model compilation...")
+        import_start = time.time()
+
+        try:
+            from qsdsan_engine_mcp.models.asm2d import create_asm2d_components, create_asm2d_process
+            # Create components first
+            cmps = create_asm2d_components(set_thermo=True)
+            # Create the process model
+            model = create_asm2d_process(cmps)
+            elapsed = time.time() - import_start
+            logger.info(f"ASM2d process model compiled in {elapsed:.1f}s")
+            return model
+        except ImportError as e:
+            logger.warning(f"ASM2d model import failed: {e}")
+            return None
+
+    import anyio
+    model = await anyio.to_thread.run_sync(
+        _import_model,
+        limiter=anyio.to_thread.current_default_thread_limiter()
+    )
+    return model
+
+
+async def get_process_model(model_type: str):
+    """
+    Get a cached process model instance.
+
+    Thread-safe: Multiple concurrent calls await the same load task.
+
+    Args:
+        model_type: Model type ("mADM1", "ASM2d")
+
+    Returns:
+        Compiled process model instance
+
+    Example:
+        >>> model = await get_process_model("mADM1")
+    """
+    global _model_cache, _load_tasks
+
+    model_key = f"{model_type.lower()}_model"
+
+    # Fast path: already loaded
+    if model_key in _model_cache:
+        logger.debug(f"{model_type} process model retrieved from cache")
+        return _model_cache[model_key]
+
+    # Slow path: need to load
+    if model_key not in _load_tasks:
+        logger.info(f"First caller - creating {model_type} process model load task")
+        if model_type.lower() in ("madm1",):
+            _load_tasks[model_key] = asyncio.create_task(_do_load_madm1_model())
+        elif model_type.lower() in ("asm2d", "masm2d"):
+            _load_tasks[model_key] = asyncio.create_task(_do_load_asm2d_model())
+        else:
+            raise ValueError(f"Process model caching not implemented for: {model_type}")
+    else:
+        logger.info(f"Waiting for ongoing {model_type} process model load task...")
+
+    _model_cache[model_key] = await _load_tasks[model_key]
+    logger.info(f"{model_type} process model now cached and ready")
+    return _model_cache[model_key]
+
+
+def is_model_loaded(model_type: str) -> bool:
+    """Check if a process model is cached."""
+    return f"{model_type.lower()}_model" in _model_cache
+
+
+async def full_warmup(models: list = None):
+    """
+    Comprehensive warmup that pre-loads components and process models.
+
+    Phase 10 enhancement: Loads both components AND process models in parallel
+    to minimize cold-start latency.
+
+    Args:
+        models: List of model types to warm up (default: ["mADM1", "ASM2d"])
+
+    Example:
+        >>> asyncio.create_task(full_warmup(["mADM1", "ASM2d"]))
+    """
+    if models is None:
+        models = ["mADM1", "ASM2d"]
+
+    logger.info(f"Starting full warmup for models: {models}")
+    warmup_start = time.time()
+
+    tasks = []
+
+    # Load components
+    for model in models:
+        tasks.append(get_components(model))
+
+    # Load process models
+    for model in models:
+        if model.lower() in ("madm1", "asm2d", "masm2d"):
+            tasks.append(get_process_model(model))
+
+    # Wait for all tasks
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Log any errors
+    for i, result in enumerate(results):
+        if isinstance(result, Exception):
+            logger.error(f"Warmup task {i} failed: {result}")
+
+    elapsed = time.time() - warmup_start
+    logger.info(f"Full warmup completed in {elapsed:.1f}s")

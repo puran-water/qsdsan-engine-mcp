@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "qsdsan-engine-mcp"
+version = "0.1.0"
+description = "Build and simulate dynamic wastewater-treatment flowsheets using QSDsan and retrieve structured numerical results."
+requires-python = ">=3.12"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE*", "NOTICE", "THIRD-PARTY-NOTICES/**/*"]
+authors = [{name = "Puran Water"}]
+dependencies = [
+  "qsdsan>=1.5.3,<1.6",
+  "biosteam>=2.53.11,<2.54",
+  "thermosteam>=0.53.5,<0.54",
+  "setuptools>=69",
+  "pydantic>=2.0",
+  "fastmcp>=3.0",
+  "numpy>=2,<3",
+  "scipy>=1.10",
+  "typer>=0.9",
+  "rich>=13.0",
+  "jinja2>=3.0",
+  "matplotlib>=3.7",
+  "psutil>=5.9",
+  "puran-mcp-support[simulation]==0.1.0"
+]
+
+[project.scripts]
+qsdsan-engine-mcp = "qsdsan_engine_mcp.__main__:main"
+
+[project.urls]
+Homepage = "https://puranwater.com"
+Repository = "https://github.com/puran-water/qsdsan-engine-mcp"
+Issues = "https://github.com/puran-water/qsdsan-engine-mcp/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/qsdsan_engine_mcp"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "README.md", "LICENSE*", "NOTICE", "THIRD-PARTY-NOTICES", "LICENSE-TABLE.md", "SCAN-REPORT.md", "TEST-RESULTS.md", "HISTORICAL-QUALITY.md", "RESOURCE-LICENSES.csv", "KNOWN-ISSUES.md", "pyproject.toml"]
