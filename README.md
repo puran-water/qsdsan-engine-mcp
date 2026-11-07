@@ -59,3 +59,20 @@ Historical source-suite snapshot: 27 error, 1544 passed, 7 skipped, 39 failed. T
 Bundled feedstock input presets are excluded. Supply a complete influent basis; classification names alone do not provide a design input dataset.
 
 First startup can spend several minutes compiling upstream numerical kernels and creating caches. Allow for this when configuring the client startup timeout.
+
+## Following current development
+
+The `main` branch receives approved development fixes through a one-way source
+mirror. Publication still checks secrets, private content, redistribution rights
+and package boundaries. Version tags such as `v0.1.0` remain immutable. Installed
+copies do not update automatically. To upgrade the server and its public support
+package together from the current branches in your existing environment:
+
+```sh
+uv pip install --upgrade --reinstall \
+  "puran-mcp-support[simulation] @ git+https://github.com/puran-water/fluids-mcp.git@main#subdirectory=support/puran-mcp-support" \
+  "qsdsan-engine-mcp @ git+https://github.com/puran-water/qsdsan-engine-mcp.git@main"
+```
+
+Pin both Git commits when repeatability is more important than following changes.
+The mirror records the source commit in `.puran-mirror.json`.
